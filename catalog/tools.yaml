@@ -1,0 +1,62 @@
+# sys-bozo tool catalog sketch.
+# Phase 1 should parse this and support profile defaults plus exclusions.
+
+groups:
+  fun-tools:
+    tools:
+      - cmatrix
+      - figlet
+      - toilet
+      - fortune
+      - cowsay
+      - lolcat
+
+tools:
+  eza:
+    category: core
+    defaultProfiles: [cli-nix, home-manager, darwin-full, linux-home]
+    nix: eza
+    brew: eza
+
+  bat:
+    category: core
+    defaultProfiles: [cli-nix, home-manager, darwin-full, linux-home]
+    nix: bat
+    brew: bat
+
+  zoxide:
+    category: shell
+    defaultProfiles: [cli-nix, home-manager, darwin-full, linux-home]
+    nix: zoxide
+    brew: zoxide
+
+  yazi:
+    category: tui
+    defaultProfiles: [cli-nix, home-manager, darwin-full, linux-home]
+    nix: yazi
+    brew: yazi
+
+  zellij:
+    category: tui
+    defaultProfiles: [cli-nix, home-manager, darwin-full, linux-home]
+    nix: zellij
+    brew: zellij
+
+  atuin:
+    category: shell
+    defaultProfiles: [cli-nix, home-manager, darwin-full, linux-home]
+    nix: atuin
+    brew: atuin
+    config:
+      sync: local-only
+
+  iterm2:
+    category: gui
+    defaultProfiles: [brew-apps, darwin-full]
+    brewCask: iterm2
+    platforms: [macos]
+
+  fun-tools:
+    category: group
+    defaultProfiles: [cli-nix, home-manager, darwin-full, linux-home]
+    optional: true

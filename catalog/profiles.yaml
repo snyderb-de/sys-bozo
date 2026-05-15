@@ -1,0 +1,73 @@
+# sys-bozo profile sketch.
+# This file is documentation-first until Phase 1 implements a parser.
+
+profiles:
+  docs:
+    description: "HTML docs only; no machine mutation."
+    requires: []
+    modules:
+      - docs
+
+  shell-lite:
+    description: "XDG directories, shell-safe links, and checks without package managers."
+    requires:
+      - posix-shell
+    modules:
+      - xdg
+      - shell
+
+  cli-nix:
+    description: "Shared CLI/TUI tools through Nix."
+    requires:
+      - nix
+    modules:
+      - nix-cli-tools
+
+  home-manager:
+    description: "User-level packages and dotfiles through Home Manager."
+    requires:
+      - nix
+      - home-manager
+    modules:
+      - home-manager
+      - nix-cli-tools
+      - shell
+      - git
+
+  brew-apps:
+    description: "macOS GUI apps and fonts through Homebrew."
+    requires:
+      - macos
+      - homebrew
+    modules:
+      - brew-casks
+      - fonts
+
+  darwin-full:
+    description: "Full managed macOS host."
+    requires:
+      - macos
+      - nix
+      - nix-darwin
+      - homebrew
+    modules:
+      - nix-darwin
+      - home-manager
+      - nix-cli-tools
+      - brew-casks
+      - fonts
+      - macos-defaults
+      - secrets
+
+  linux-home:
+    description: "Shared Linux user environment through Home Manager."
+    requires:
+      - linux
+      - nix
+      - home-manager
+    modules:
+      - home-manager
+      - nix-cli-tools
+      - shell
+      - git
+      - secrets

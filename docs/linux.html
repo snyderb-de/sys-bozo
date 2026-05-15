@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Linux - sys-bozo</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="site">
+    <header class="topbar">
+      <a class="brand" href="index.html"><span class="brand-mark">D</span><span>sys-bozo</span></a>
+      <nav class="nav" aria-label="System docs">
+        <a href="index.html">Overview</a><a href="tools.html">Tools</a><a href="machines.html">Machines</a><a href="sync-plan.html">Sync Plan</a><a href="shell.html">Shell</a><a href="apps.html">Apps</a><a href="secrets.html">Secrets</a><a href="install.html">Install</a><a href="linux.html">Linux</a>
+      </nav>
+    </header>
+
+    <section class="section">
+      <p class="kicker">Future path</p>
+      <h1>Linux</h1>
+      <p class="lede">Linux support should reuse shared sys-bozo modules and skip macOS-only ceremony. A Linux host should be able to run docs-only, shell-only, Home Manager, or full package profiles.</p>
+    </section>
+
+    <section class="section">
+      <table class="matrix">
+        <tr><th>Concern</th><th>Linux answer</th><th>Mac answer</th></tr>
+        <tr><td>CLI tools</td><td>Home Manager, distro packages, or checklist</td><td>Home Manager, Nix, or checklist</td></tr>
+        <tr><td>GUI apps</td><td>Optional host module</td><td>Optional Homebrew cask module</td></tr>
+        <tr><td>System defaults</td><td>Distro/window-manager modules</td><td>nix-darwin system.defaults</td></tr>
+        <tr><td>Secrets</td><td>SOPS activation</td><td>SOPS activation</td></tr>
+        <tr><td>Apply command</td><td>home-manager switch</td><td>darwin-rebuild switch</td></tr>
+      </table>
+    </section>
+
+    <section class="section">
+      <div class="callout"><h3>Do not rush this</h3><p>Split shared modules first. Linux should consume clean modules, not reverse-engineer a 200-line macOS flake wearing a fake mustache.</p></div>
+    </section>
+
+    <footer class="footer"><span>Linux is queued behind module cleanup.</span><span>Updated <span data-updated></span></span></footer>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

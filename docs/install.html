@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Install - sys-bozo</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="site">
+    <header class="topbar">
+      <a class="brand" href="index.html"><span class="brand-mark">D</span><span>sys-bozo</span></a>
+      <nav class="nav" aria-label="System docs">
+        <a href="index.html">Overview</a><a href="tools.html">Tools</a><a href="machines.html">Machines</a><a href="sync-plan.html">Sync Plan</a><a href="shell.html">Shell</a><a href="apps.html">Apps</a><a href="secrets.html">Secrets</a><a href="install.html">Install</a><a href="linux.html">Linux</a>
+      </nav>
+    </header>
+
+    <section class="section">
+      <p class="kicker">Composable install</p>
+      <h1>Install shapes</h1>
+      <p class="lede">sys-bozo should be installable as a set of opt-in profiles. A machine can adopt the docs, the shell, Nix packages, Homebrew apps, Home Manager config, nix-darwin settings, or any combination that makes sense.</p>
+    </section>
+
+    <section class="section">
+      <table class="matrix">
+        <tr><th>Profile</th><th>Requires</th><th>Installs</th><th>Use when</th></tr>
+        <tr><td>docs</td><td>browser</td><td>HTML docs only</td><td>You want inventory and runbooks without touching the machine.</td></tr>
+        <tr><td>shell-lite</td><td>POSIX shell</td><td>XDG directories, safe links, checks</td><td>You want structure without Nix, Homebrew, or Home Manager.</td></tr>
+        <tr><td>cli-nix</td><td>Nix</td><td>CLI/TUI tools</td><td>You want repeatable command-line tooling without macOS system management.</td></tr>
+        <tr><td>home-manager</td><td>Nix + Home Manager</td><td>User config, packages, shell, git</td><td>You want managed dotfiles but not nix-darwin.</td></tr>
+        <tr><td>brew-apps</td><td>Homebrew</td><td>GUI casks and fonts</td><td>You want app sync without Nix.</td></tr>
+        <tr><td>darwin-full</td><td>Nix + nix-darwin + Homebrew</td><td>System defaults, HM, apps</td><td>You want the full macOS managed host.</td></tr>
+        <tr><td>linux-home</td><td>Nix + Home Manager</td><td>Linux user environment</td><td>You want the shared sys-bozo layer on Linux.</td></tr>
+      </table>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><h2>Future CLI shape</h2><p>Not implemented yet. This is the target interface.</p></div>
+      <div class="terminal">sys-bozo doctor
+sys-bozo plan --host new-macbook
+sys-bozo install docs
+sys-bozo install shell-lite
+sys-bozo install cli-nix
+sys-bozo install home-manager
+sys-bozo install brew-apps
+sys-bozo install darwin-full --host bags-Mac-mini
+sys-bozo install linux-home --host linux-workstation
+sys-bozo install darwin-full --exclude yazi,zellij,fun-tools
+sys-bozo diff --profile darwin-full --host new-macbook</div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <p class="kicker">What must exist</p>
+          <h2>Implementation roadmap</h2>
+        </div>
+        <p>Buying a new MacBook or installing Linux should become a guided, reversible install. No mystery mutation. No “hope brew exists.” No package-manager hostage situation.</p>
+      </div>
+      <table class="matrix">
+        <tr><th>Capability</th><th>What it does</th><th>Why it matters</th></tr>
+        <tr><td>Bootstrap script</td><td>Runs with plain shell, detects OS/arch/package managers, creates XDG dirs, and can install only docs or shell-lite.</td><td>First contact must not require Nix, Homebrew, or Home Manager.</td></tr>
+        <tr><td>Profile manifest</td><td>Defines profiles like docs, shell-lite, cli-nix, home-manager, brew-apps, darwin-full, linux-home.</td><td>Management style becomes data, not scattered conditionals.</td></tr>
+        <tr><td>Tool catalog</td><td>Stores every tool with category, package names per manager, default profile membership, and dependencies.</td><td>Excluding tools requires a catalog, not hand-editing Nix lists.</td></tr>
+        <tr><td>Exclusion support</td><td>Accepts `--exclude` and persistent host exclusions.</td><td>New machines can opt out of heavy, silly, GUI, or work-only tools.</td></tr>
+        <tr><td>Dry-run planner</td><td>Prints files, links, packages, casks, secrets, and commands before applying.</td><td>Installers should earn trust before touching a fresh machine.</td></tr>
+        <tr><td>Module outputs</td><td>Generates or selects Nix, Home Manager, nix-darwin, Homebrew, and shell-lite actions from the same catalog.</td><td>One sys-bozo inventory, many management methods.</td></tr>
+        <tr><td>Host identity flow</td><td>Prompts for canonical host name, role, user, OS, and privacy-safe labels.</td><td>Many machines need consistent names without leaking private aliases.</td></tr>
+        <tr><td>Secrets handoff</td><td>Checks for age key/SOPS access and gracefully skips private fragments if unavailable.</td><td>A public installer must not assume private secrets exist.</td></tr>
+        <tr><td>Audit integration</td><td>Compares declared profile to installed state after install.</td><td>Install success should be measurable.</td></tr>
+      </table>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><h2>Tool exclusion model</h2><p>The important part is choosing what not to install without forking the whole setup.</p></div>
+      <div class="terminal"># Example future catalog shape
+tools:
+  yazi:
+    category: tui
+    defaultProfiles: [cli-nix, home-manager, darwin-full, linux-home]
+    nix: yazi
+    brew: yazi
+  fun-tools:
+    group: [cmatrix, figlet, toilet, fortune, cowsay, lolcat]
+    defaultProfiles: [cli-nix, home-manager]
+    optional: true
+
+hosts:
+  new-macbook:
+    profile: darwin-full
+    exclude: [zellij, fun-tools]</div>
+    </section>
+
+    <section class="section">
+      <div class="grid two">
+        <article class="callout"><h3>CSS framework answer</h3><p>Yes: once sys-bozo is more than a static sketch, use a framework or generated utility CSS. The practical choice is a build step that emits local CSS, not a CDN dependency. Amazing-looking docs, no network dependency, no mystery runtime.</p></article>
+        <article class="callout"><h3>Module answer</h3><p>Every installer should have a dry-run and explain exactly which files, packages, and app managers it will touch before doing anything.</p></article>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <p class="kicker">Testing model</p>
+          <h2>How we test without wrecking the machine.</h2>
+        </div>
+        <p>sys-bozo should prove what it will do before it touches a real home directory, package manager, or system setting.</p>
+      </div>
+      <div class="grid two">
+        <article class="card"><span class="meta">Step one</span><strong>Plan first</strong><p>`sys-bozo plan` prints the folders, files, packages, casks, and secret checks it would perform. Tests can inspect that plan without changing the computer.</p></article>
+        <article class="card"><span class="meta">Step two</span><strong>Apply later</strong><p>`sys-bozo apply` should only run after the plan is correct. The mutating layer stays separate from the planning layer.</p></article>
+        <article class="card"><span class="meta">Local safety</span><strong>Fake home</strong><p>Tests create a temporary fake home like `/tmp/sys-bozo-test-home` and verify writes there instead of touching `/Users/bag`.</p></article>
+        <article class="card"><span class="meta">Linux</span><strong>Containers</strong><p>Docker or Podman can test Linux flows cheaply: no-Nix, Nix-present, Home Manager-present, and missing dependency cases.</p></article>
+        <article class="card"><span class="meta">macOS</span><strong>Real Mac runners</strong><p>Docker cannot test macOS. macOS behavior needs GitHub Actions macOS runners, a macOS VM, or a spare test Mac.</p></article>
+        <article class="card"><span class="meta">Full install</span><strong>Disposable VM</strong><p>End-to-end “new MacBook” or “fresh Linux” tests should run in disposable environments, not on the daily driver.</p></article>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><h2>Plan, then apply</h2><p>The installer should sound boring before it becomes powerful.</p></div>
+      <div class="terminal"># Safe: describes intended work
+sys-bozo plan --profile darwin-full --exclude zellij,fun-tools
+
+Would create:
+  ~/.config/sys-bozo/
+  ~/.config/sops/age/
+
+Would install Nix tools:
+  eza
+  bat
+  yazi
+
+Would install Homebrew apps:
+  iterm2
+  raycast
+
+Would skip:
+  zellij
+  fun-tools
+
+# Mutating command comes later, after the plan is trusted
+sys-bozo apply</div>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><h2>Test ladder</h2><p>Most tests should be fast. Only a few need real operating systems.</p></div>
+      <table class="matrix">
+        <tr><th>Tier</th><th>Runs where</th><th>Tests what</th></tr>
+        <tr><td>Unit</td><td>Any dev machine</td><td>Catalog parsing, profile resolution, exclusions, path safety.</td></tr>
+        <tr><td>Fake home</td><td>Any dev machine</td><td>Docs install, shell-lite files, SOPS skeleton, no writes outside temp dirs.</td></tr>
+        <tr><td>Linux container</td><td>Docker/Podman/CI</td><td>Linux bootstrap behavior across clean and partially prepared systems.</td></tr>
+        <tr><td>macOS runner</td><td>GitHub Actions macOS, VM, or spare Mac</td><td>Homebrew, nix-darwin planning, macOS paths, app bundle checks.</td></tr>
+        <tr><td>Full VM</td><td>Disposable VM</td><td>Whole new-machine story from bootstrap to audit.</td></tr>
+      </table>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <p class="kicker">Extraction path</p>
+          <h2>What happens next</h2>
+        </div>
+        <p>sys-bozo should become its own repo after the catalog and profile boundaries are real enough to extract cleanly.</p>
+      </div>
+      <table class="matrix">
+        <tr><th>Milestone</th><th>Output</th><th>Done when</th></tr>
+        <tr><td>Spec in dotfiles</td><td>Catalog schema, profile schema, host-choice schema, dry-run examples</td><td>A new-machine install can be planned on paper without guessing.</td></tr>
+        <tr><td>Prototype CLI</td><td>`scripts/sys-bozo` with `doctor`, `plan`, and `install docs`</td><td>Runs without Nix/Homebrew and writes only under XDG paths.</td></tr>
+        <tr><td>Managed outputs</td><td>Nix/Home Manager/Homebrew/darwin actions generated from the catalog</td><td>One exclusion changes every selected backend consistently.</td></tr>
+        <tr><td>New repo extraction</td><td>Separate `sys-bozo` repository</td><td>This dotfiles repo can consume sys-bozo as a profile instead of owning the engine.</td></tr>
+      </table>
+    </section>
+
+    <footer class="footer"><span>Install profiles are design targets until implementation lands.</span><span>Updated <span data-updated></span></span></footer>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

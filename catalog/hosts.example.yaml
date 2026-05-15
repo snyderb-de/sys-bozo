@@ -1,0 +1,20 @@
+# Example host choices. Real host files belong to the user's own repo or local
+# config, not the public sys-bozo repo.
+
+hosts:
+  new-macbook:
+    os: macos
+    arch: aarch64
+    profile: darwin-full
+    exclude:
+      - zellij
+      - fun-tools
+    include:
+      - iterm2
+
+  linux-workstation:
+    os: linux
+    arch: x86_64
+    profile: linux-home
+    exclude:
+      - gui-apps

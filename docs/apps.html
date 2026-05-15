@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Apps - sys-bozo</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="site">
+    <header class="topbar">
+      <a class="brand" href="index.html"><span class="brand-mark">D</span><span>sys-bozo</span></a>
+      <nav class="nav" aria-label="System docs">
+        <a href="index.html">Overview</a><a href="tools.html">Tools</a><a href="machines.html">Machines</a><a href="sync-plan.html">Sync Plan</a><a href="shell.html">Shell</a><a href="apps.html">Apps</a><a href="secrets.html">Secrets</a><a href="install.html">Install</a><a href="linux.html">Linux</a>
+      </nav>
+    </header>
+
+    <section class="section">
+      <p class="kicker">GUI layer</p>
+      <h1>Apps</h1>
+      <p class="lede">GUI apps and fonts belong to an optional app module. On macOS that probably means Homebrew casks. On Linux it may mean native packages, Flatpak, AppImage, or nothing at all.</p>
+    </section>
+
+    <section class="section">
+      <table class="matrix">
+        <tr><th>App</th><th>Authority</th><th>Scope</th><th>Note</th></tr>
+        <tr><td>iTerm2</td><td>Homebrew cask module</td><td>macOS shared</td><td>Chosen terminal for this machine.</td></tr>
+        <tr><td>Raycast</td><td>Homebrew cask module</td><td>macOS shared</td><td>Launcher baseline.</td></tr>
+        <tr><td>Nerd Fonts</td><td>Font module</td><td>selected hosts</td><td>Required for terminal iconography.</td></tr>
+        <tr><td>BetterDisplay</td><td>Host module</td><td>mini only</td><td>Hardware/display-specific.</td></tr>
+        <tr><td>Godot</td><td>Host module</td><td>bagbook only</td><td>Host-specific creative/game work.</td></tr>
+        <tr><td>Edge / Zen</td><td>Host module</td><td>bagbook only</td><td>Browser variance, declared explicitly.</td></tr>
+        <tr><td>MAS apps</td><td>Brewfile</td><td>manual</td><td>Kept separate until MAS is integrated into apply flow.</td></tr>
+      </table>
+    </section>
+
+    <section class="section">
+      <div class="callout"><h3>Cleanup target</h3><p>`claude-code` and `libreoffice` are installed on the mini but not declared. Either declare them or remove them. Ambiguous local state is the tax you pay later with interest.</p></div>
+    </section>
+
+    <footer class="footer"><span>App source: flake.nix and Brewfile</span><span>Updated <span data-updated></span></span></footer>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tools - sys-bozo</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="site">
+    <header class="topbar">
+      <a class="brand" href="index.html"><span class="brand-mark">D</span><span>sys-bozo</span></a>
+      <nav class="nav" aria-label="System docs">
+        <a href="index.html">Overview</a><a href="tools.html">Tools</a><a href="machines.html">Machines</a><a href="sync-plan.html">Sync Plan</a><a href="shell.html">Shell</a><a href="apps.html">Apps</a><a href="secrets.html">Secrets</a><a href="install.html">Install</a><a href="linux.html">Linux</a>
+      </nav>
+    </header>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <p class="kicker">Imported from sys-bozo</p>
+          <h1>Toolchain</h1>
+        </div>
+        <p>These tools are the shared daily-driver stack. In the managed profile they are Nix packages; in a no-Nix install they become a checklist or package-manager-specific recipe.</p>
+      </div>
+      <div class="pill-row">
+        <span class="pill good">already present</span>
+        <span class="pill">newly declared</span>
+        <span class="pill warn">manual auth/config</span>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><h2>Core replacements</h2><p>Fast replacements for old Unix defaults, because suffering is not a workflow.</p></div>
+      <div class="tool-list">
+        <div class="row"><span class="name">eza</span><span class="desc">Modern ls with icons, git state, and sane tree output.</span><span class="status">present</span></div>
+        <div class="row"><span class="name">bat</span><span class="desc">Syntax-highlighted cat and preview renderer for fzf.</span><span class="status">present</span></div>
+        <div class="row"><span class="name">zoxide</span><span class="desc">Smart directory jumping by frecency.</span><span class="status">present</span></div>
+        <div class="row"><span class="name">fd</span><span class="desc">Fast, gitignore-aware find replacement.</span><span class="status">present</span></div>
+        <div class="row"><span class="name">ripgrep</span><span class="desc">Fast search across code and text.</span><span class="status">present</span></div>
+        <div class="row"><span class="name">xh</span><span class="desc">Friendly HTTP client for JSON-heavy work.</span><span class="status add">add nix</span></div>
+        <div class="row"><span class="name">dust</span><span class="desc">Disk usage tree with visual weight.</span><span class="status add">add nix</span></div>
+        <div class="row"><span class="name">duf</span><span class="desc">Readable disk free overview.</span><span class="status add">add nix</span></div>
+        <div class="row"><span class="name">btop</span><span class="desc">Process monitor worth looking at.</span><span class="status add">add nix</span></div>
+        <div class="row"><span class="name">moar</span><span class="desc">Modern pager for files, pipes, and man pages.</span><span class="status add">add nix</span></div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><h2>Shell and history</h2><p>Local-first shell ergonomics. Atuin is configured without sync.</p></div>
+      <div class="tool-list">
+        <div class="row"><span class="name">fzf</span><span class="desc">Fuzzy file, history, and directory picker.</span><span class="status">present</span></div>
+        <div class="row"><span class="name">atuin</span><span class="desc">Searchable shell history, local-only.</span><span class="status add">add nix</span></div>
+        <div class="row"><span class="name">direnv</span><span class="desc">Per-directory environments with nix-direnv enabled.</span><span class="status">present</span></div>
+        <div class="row"><span class="name">zsh plugins</span><span class="desc">Autosuggestions, syntax highlighting, git helpers, fzf integration.</span><span class="status">present</span></div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><h2>Git and TUI workbench</h2><p>Small tools that remove friction from daily repo work.</p></div>
+      <div class="tool-list">
+        <div class="row"><span class="name">delta</span><span class="desc">Readable git diffs with syntax highlighting.</span><span class="status add">add nix</span></div>
+        <div class="row"><span class="name">lazygit</span><span class="desc">Git TUI for commits, hunks, rebases, and branches.</span><span class="status add">add nix</span></div>
+        <div class="row"><span class="name">gh</span><span class="desc">GitHub CLI.</span><span class="status">present</span></div>
+        <div class="row"><span class="name">gh-dash</span><span class="desc">GitHub PR and issue dashboard.</span><span class="status add">add nix</span></div>
+        <div class="row"><span class="name">onefetch</span><span class="desc">Repo summary for quick orientation.</span><span class="status add">add nix</span></div>
+        <div class="row"><span class="name">yazi</span><span class="desc">Terminal file manager with preview-friendly workflows.</span><span class="status add">add nix</span></div>
+        <div class="row"><span class="name">zellij</span><span class="desc">Modern terminal workspace multiplexer.</span><span class="status add">add nix</span></div>
+        <div class="row"><span class="name">tmux</span><span class="desc">Classic persistent terminal sessions.</span><span class="status add">add nix</span></div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><h2>Information and fun</h2><p>Yes, the fun tools come over. Morale is infrastructure.</p></div>
+      <div class="tool-list">
+        <div class="row"><span class="name">fastfetch</span><span class="desc">System info snapshot.</span><span class="status add">add nix</span></div>
+        <div class="row"><span class="name">tealdeer</span><span class="desc">Fast tldr command examples.</span><span class="status add">add nix</span></div>
+        <div class="row"><span class="name">glow</span><span class="desc">Markdown renderer.</span><span class="status">present</span></div>
+        <div class="row"><span class="name">chafa / viu</span><span class="desc">Terminal image renderers.</span><span class="status add">add nix</span></div>
+        <div class="row"><span class="name">cmatrix</span><span class="desc">Matrix screensaver.</span><span class="status add">add nix</span></div>
+        <div class="row"><span class="name">figlet / toilet</span><span class="desc">Terminal banners.</span><span class="status add">add nix</span></div>
+        <div class="row"><span class="name">fortune / cowsay / lolcat</span><span class="desc">Classic command-line nonsense, declared responsibly.</span><span class="status add">add nix</span></div>
+      </div>
+    </section>
+
+    <footer class="footer"><span>Tool source: /Users/bag/Downloads/sys-bozo.html</span><span>Updated <span data-updated></span></span></footer>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

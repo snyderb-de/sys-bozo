@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Shell - sys-bozo</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="site">
+    <header class="topbar">
+      <a class="brand" href="index.html"><span class="brand-mark">D</span><span>sys-bozo</span></a>
+      <nav class="nav" aria-label="System docs">
+        <a href="index.html">Overview</a><a href="tools.html">Tools</a><a href="machines.html">Machines</a><a href="sync-plan.html">Sync Plan</a><a href="shell.html">Shell</a><a href="apps.html">Apps</a><a href="secrets.html">Secrets</a><a href="install.html">Install</a><a href="linux.html">Linux</a>
+      </nav>
+    </header>
+
+    <section class="section">
+      <p class="kicker">Interactive environment</p>
+      <h1>Shell</h1>
+      <p class="lede">zsh, Starship, fzf, zoxide, direnv, Atuin local history, and a pile of sharp little tools. The managed path can use Home Manager; the portable path should install or link only the pieces requested.</p>
+    </section>
+
+    <section class="section">
+      <div class="grid two">
+        <article class="card"><span class="meta">Prompt</span><strong>Starship</strong><p>Initialized from a stable path when managed, and still usable from a plain package install.</p></article>
+        <article class="card"><span class="meta">History</span><strong>Atuin local-only</strong><p>Declared via Nix, configured with <code>auto_sync = false</code>.</p></article>
+        <article class="card"><span class="meta">Jumping</span><strong>zoxide + fzf</strong><p>Directory frecency and fuzzy pickers for file/history movement.</p></article>
+        <article class="card"><span class="meta">Project env</span><strong>direnv + nix-direnv</strong><p>Project-specific shells without global version-manager soup.</p></article>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><h2>Cheatsheet</h2><p>Commands worth keeping in muscle memory.</p></div>
+      <div class="terminal">z proj                 # jump to a remembered directory
+zi                     # interactive zoxide picker
+fd pattern             # find files
+rg "TODO"              # search text
+fzf --preview 'bat {}' # fuzzy file preview
+lg                     # lazygit
+gh dash                # GitHub dashboard
+y                      # yazi, once wrapper is added
+tmux                   # classic sessions
+zellij                 # modern workspace</div>
+    </section>
+
+    <footer class="footer"><span>Shell source: home/common/home.nix and configs/zsh/init.zsh</span><span>Updated <span data-updated></span></span></footer>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

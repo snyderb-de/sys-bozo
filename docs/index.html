@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>sys-bozo</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="site">
+    <header class="topbar">
+      <a class="brand" href="index.html"><span class="brand-mark">D</span><span>sys-bozo</span></a>
+      <nav class="nav" aria-label="System docs">
+        <a href="index.html">Overview</a>
+        <a href="tools.html">Tools</a>
+        <a href="machines.html">Machines</a>
+        <a href="sync-plan.html">Sync Plan</a>
+        <a href="shell.html">Shell</a>
+        <a href="apps.html">Apps</a>
+        <a href="secrets.html">Secrets</a>
+        <a href="install.html">Install</a><a href="linux.html">Linux</a>
+      </nav>
+    </header>
+
+    <section class="hero">
+      <div class="hero-copy">
+        <p class="kicker">Installable system profile</p>
+        <h1>sys-bozo: many machines, one sane baseline.</h1>
+        <p class="lede">sys-bozo documents and installs the shared workstation layer across macOS and Linux hosts. Nix, Homebrew, Home Manager, GUI apps, and host policy are optional modules, not mandatory religion.</p>
+        <div class="hero-actions">
+          <a class="button primary" href="install.html">Choose an install shape</a>
+          <a class="button" href="tools.html">Review imported tools</a>
+        </div>
+      </div>
+      <div class="hero-map">
+        <img src="assets/topology.svg" alt="Dotfiles topology map">
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <p class="kicker">Operating rule</p>
+          <h2>Make every layer optional. Make every secret absent.</h2>
+        </div>
+        <p>sys-bozo should run as a docs-only guide, a plain shell installer, a Home Manager profile, a nix-darwin host, a Homebrew GUI layer, or a full managed workstation.</p>
+      </div>
+      <div class="grid">
+        <article class="card"><span class="meta">Core</span><strong>No package manager required</strong><p>Docs, inventory, host model, and bootstrap checks should work without Nix or Homebrew.</p></article>
+        <article class="card"><span class="meta">Managed</span><strong>Nix/Homebrew when selected</strong><p>Use Nix for CLI tools and Homebrew for GUI apps only when that module is enabled.</p></article>
+        <article class="card"><span class="meta">Private</span><strong>Secrets never bundled</strong><p>SSH aliases, tailnet details, and internal host facts stay out of public docs and installs.</p></article>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <p class="kicker">Immediate blockers</p>
+          <h2>Trust starts with reachability.</h2>
+        </div>
+        <p>The audit is only useful after every Tailscale device can be reached by SSH from every machine that needs to compare state.</p>
+      </div>
+      <table class="matrix">
+        <tr><th>Priority</th><th>Work</th><th>Why it matters</th></tr>
+        <tr><td>Zero</td><td>Fix SSH across Tailscale devices</td><td>Without this, host comparison is theater.</td></tr>
+        <tr><td>One</td><td>Normalize host identity</td><td>Canonical host names should be separate from private SSH aliases.</td></tr>
+        <tr><td>Two</td><td>Import work-system tools</td><td>Shared daily tools should be declared once and applied through whichever module is enabled.</td></tr>
+        <tr><td>Three</td><td>Package sys-bozo profiles</td><td>Install paths must support docs-only, shell-only, Home Manager, nix-darwin, Homebrew, and Linux variants.</td></tr>
+      </table>
+    </section>
+
+    <footer class="footer">
+      <span>Generated documentation lives in <code>docs/sys-bozo/</code>.</span>
+      <span>Updated <span data-updated></span></span>
+    </footer>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

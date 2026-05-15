@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sync Plan - sys-bozo</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="site">
+    <header class="topbar">
+      <a class="brand" href="index.html"><span class="brand-mark">D</span><span>sys-bozo</span></a>
+      <nav class="nav" aria-label="System docs">
+        <a href="index.html">Overview</a><a href="tools.html">Tools</a><a href="machines.html">Machines</a><a href="sync-plan.html">Sync Plan</a><a href="shell.html">Shell</a><a href="apps.html">Apps</a><a href="secrets.html">Secrets</a><a href="install.html">Install</a><a href="linux.html">Linux</a>
+      </nav>
+    </header>
+
+    <section class="section">
+      <p class="kicker">Policy</p>
+      <h1>Sync Plan</h1>
+      <p class="lede">The goal is not identical machines. The goal is identical intent: shared defaults everywhere, explicit host differences where reality demands it, and install profiles that do not require buying into every tool at once.</p>
+    </section>
+
+    <section class="section">
+      <table class="matrix">
+        <tr><th>Layer</th><th>Authority</th><th>Sync policy</th></tr>
+        <tr><td>CLI and TUI packages</td><td>Nix profile or plain checklist</td><td>Shared baseline across selected hosts.</td></tr>
+        <tr><td>GUI apps</td><td>Homebrew casks when enabled</td><td>Shared baseline plus explicit host-only additions.</td></tr>
+        <tr><td>Mac App Store</td><td>MAS-only Brewfile</td><td>Manual run until MAS is pulled into an apply flow.</td></tr>
+        <tr><td>Shell config</td><td>Home Manager or shell installer</td><td>Shared, with private overrides in local files only.</td></tr>
+        <tr><td>SSH aliases</td><td>SOPS private config</td><td>Never public. Decrypt into XDG config.</td></tr>
+        <tr><td>Host facts</td><td>HOST_MATRIX.md</td><td>Public only when not sensitive.</td></tr>
+      </table>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><h2>Order of operations</h2><p>Short version: fix plumbing before adding ceremony.</p></div>
+      <div class="terminal">0. Get Tailscale SSH working across all devices
+1. Make dotfiles-audit compare canonical hosts
+2. Import the sys-bozo CLI/TUI tools through Nix
+3. Add iTerm2 through the optional Homebrew module
+4. Define sys-bozo install profiles
+5. Split flake.nix into hosts/ and modules/
+6. Add Linux profiles after the module boundaries are clean</div>
+    </section>
+
+    <footer class="footer"><span>Sync policy favors explicit drift over accidental drift.</span><span>Updated <span data-updated></span></span></footer>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

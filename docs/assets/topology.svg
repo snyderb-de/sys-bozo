@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="520" viewBox="0 0 760 520" role="img" aria-labelledby="title desc">
+  <title id="title">Dotfiles topology map</title>
+  <desc id="desc">A visual map showing sys-bozo driving optional Nix, Homebrew, Home Manager, SSH secrets, and documentation modules.</desc>
+  <defs>
+    <linearGradient id="gold" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#f3c969"/>
+      <stop offset="1" stop-color="#79e6d9"/>
+    </linearGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="9" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <rect width="760" height="520" rx="28" fill="#111722"/>
+  <g opacity=".16" stroke="#9cb2d2">
+    <path d="M56 86h648M56 146h648M56 206h648M56 266h648M56 326h648M56 386h648M56 446h648"/>
+    <path d="M94 48v424M174 48v424M254 48v424M334 48v424M414 48v424M494 48v424M574 48v424M654 48v424"/>
+  </g>
+  <g fill="none" stroke="#78a9ff" stroke-width="3" opacity=".78">
+    <path d="M378 132 C250 150 202 218 171 292"/>
+    <path d="M382 132 C508 156 570 222 604 292"/>
+    <path d="M382 132 C390 238 374 318 326 382"/>
+    <path d="M382 132 C440 240 464 322 472 393"/>
+  </g>
+  <g filter="url(#glow)">
+    <circle cx="382" cy="126" r="72" fill="#0d0f14" stroke="url(#gold)" stroke-width="3"/>
+    <text x="382" y="116" text-anchor="middle" fill="#e7edf7" font-family="ui-monospace, Menlo, monospace" font-size="18" font-weight="800">sys-bozo</text>
+    <text x="382" y="140" text-anchor="middle" fill="#9daabd" font-family="ui-monospace, Menlo, monospace" font-size="12">optional profiles</text>
+  </g>
+  <g font-family="ui-monospace, Menlo, monospace">
+    <g>
+      <rect x="72" y="286" width="196" height="86" rx="14" fill="#181d28" stroke="#9cb2d2" opacity=".96"/>
+      <text x="170" y="321" text-anchor="middle" fill="#f3c969" font-size="16" font-weight="800">nix</text>
+      <text x="170" y="346" text-anchor="middle" fill="#9daabd" font-size="12">CLI + TUI tools</text>
+    </g>
+    <g>
+      <rect x="492" y="286" width="196" height="86" rx="14" fill="#181d28" stroke="#9cb2d2" opacity=".96"/>
+      <text x="590" y="321" text-anchor="middle" fill="#f3c969" font-size="16" font-weight="800">homebrew</text>
+      <text x="590" y="346" text-anchor="middle" fill="#9daabd" font-size="12">GUI casks only</text>
+    </g>
+    <g>
+      <rect x="220" y="388" width="210" height="86" rx="14" fill="#181d28" stroke="#9cb2d2" opacity=".96"/>
+      <text x="325" y="423" text-anchor="middle" fill="#79e6d9" font-size="16" font-weight="800">home manager</text>
+      <text x="325" y="448" text-anchor="middle" fill="#9daabd" font-size="12">XDG config</text>
+    </g>
+    <g>
+      <rect x="450" y="388" width="210" height="86" rx="14" fill="#181d28" stroke="#9cb2d2" opacity=".96"/>
+      <text x="555" y="423" text-anchor="middle" fill="#79e6d9" font-size="16" font-weight="800">sops secrets</text>
+      <text x="555" y="448" text-anchor="middle" fill="#9daabd" font-size="12">private fragments</text>
+    </g>
+  </g>
+</svg>

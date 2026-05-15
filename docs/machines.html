@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Machines - sys-bozo</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="site">
+    <header class="topbar">
+      <a class="brand" href="index.html"><span class="brand-mark">D</span><span>sys-bozo</span></a>
+      <nav class="nav" aria-label="System docs">
+        <a href="index.html">Overview</a><a href="tools.html">Tools</a><a href="machines.html">Machines</a><a href="sync-plan.html">Sync Plan</a><a href="shell.html">Shell</a><a href="apps.html">Apps</a><a href="secrets.html">Secrets</a><a href="install.html">Install</a><a href="linux.html">Linux</a>
+      </nav>
+    </header>
+
+    <section class="section">
+      <p class="kicker">Host matrix</p>
+      <h1>Machines</h1>
+      <p class="lede">sys-bozo is intended for many machines: personal Macs, work Macs, small servers, Linux desktops, and future oddballs. Canonical names are public repo identifiers. SSH aliases and tailnet details stay private.</p>
+    </section>
+
+    <section class="section">
+      <table class="matrix">
+        <tr><th>Role</th><th>Flake host</th><th>User</th><th>Status</th><th>Notes</th></tr>
+        <tr><td>mini</td><td>bags-Mac-mini</td><td>bag</td><td>active</td><td>Current repo operator. Needs Tailscale SSH reachability to every device.</td></tr>
+        <tr><td>book</td><td>bagbook-pro</td><td>baghead</td><td>active</td><td>Physically nearby but currently failed audit SSH.</td></tr>
+        <tr><td>gamer</td><td>gamer</td><td>TBD</td><td>planned</td><td>Add after the first managed profiles are dull and repeatable.</td></tr>
+        <tr><td>butler</td><td>butler</td><td>TBD</td><td>planned</td><td>Future host.</td></tr>
+        <tr><td>btw</td><td>btw</td><td>TBD</td><td>planned</td><td>Likely Linux proving ground.</td></tr>
+        <tr><td>valet</td><td>valet</td><td>TBD</td><td>planned</td><td>Future host.</td></tr>
+        <tr><td>linux</td><td>linux-*</td><td>TBD</td><td>planned</td><td>Pattern for arbitrary future Linux machines.</td></tr>
+      </table>
+    </section>
+
+    <section class="section">
+      <div class="grid two">
+        <article class="callout"><h3>Audit blocker</h3><p>Fix SSH across Tailscale devices before trusting package or defaults comparisons. A failed connection should be a red alert, not a drift row.</p></article>
+        <article class="callout"><h3>Naming rule</h3><p>Reports should show canonical flake host names while using private aliases only for connection details.</p></article>
+      </div>
+    </section>
+
+    <footer class="footer"><span>Machine source: HOST_MATRIX.md</span><span>Updated <span data-updated></span></span></footer>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
