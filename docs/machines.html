@@ -11,7 +11,7 @@
     <header class="topbar">
       <a class="brand" href="index.html"><span class="brand-mark">D</span><span>sys-bozo</span></a>
       <nav class="nav" aria-label="System docs">
-        <a href="index.html">Overview</a><a href="tools.html">Tools</a><a href="machines.html">Machines</a><a href="sync-plan.html">Sync Plan</a><a href="shell.html">Shell</a><a href="apps.html">Apps</a><a href="secrets.html">Secrets</a><a href="install.html">Install</a><a href="linux.html">Linux</a>
+        <a href="index.html">Overview</a><a href="tools.html">Tools</a><a href="machines.html">Machines</a><a href="sync-plan.html">Sync Plan</a><a href="shell.html">Shell</a><a href="apps.html">Apps</a><a href="secrets.html">Secrets</a><a href="install.html">Install</a><a href="control-center.html">Control Center</a><a href="linux.html">Linux</a>
       </nav>
     </header>
 
@@ -25,7 +25,7 @@
       <table class="matrix">
         <tr><th>Role</th><th>Flake host</th><th>User</th><th>Status</th><th>Notes</th></tr>
         <tr><td>mini</td><td>bags-Mac-mini</td><td>bag</td><td>active</td><td>Current repo operator. Needs Tailscale SSH reachability to every device.</td></tr>
-        <tr><td>book</td><td>bagbook-pro</td><td>baghead</td><td>active</td><td>Physically nearby but currently failed audit SSH.</td></tr>
+        <tr><td>book</td><td>bagbook-pro</td><td>baghead</td><td>active</td><td>SSH works over Tailscale with lid open. Closed-lid SSH currently sleeps or drops network; revisit clamshell/maintenance mode later.</td></tr>
         <tr><td>gamer</td><td>gamer</td><td>TBD</td><td>planned</td><td>Add after the first managed profiles are dull and repeatable.</td></tr>
         <tr><td>butler</td><td>butler</td><td>TBD</td><td>planned</td><td>Future host.</td></tr>
         <tr><td>btw</td><td>btw</td><td>TBD</td><td>planned</td><td>Likely Linux proving ground.</td></tr>
@@ -36,9 +36,29 @@
 
     <section class="section">
       <div class="grid two">
-        <article class="callout"><h3>Audit blocker</h3><p>Fix SSH across Tailscale devices before trusting package or defaults comparisons. A failed connection should be a red alert, not a drift row.</p></article>
+        <article class="callout"><h3>Audit blocker</h3><p>Fix SSH across Tailscale devices before trusting package or defaults comparisons. bagbook-pro is reachable with the lid open; closed-lid reachability is pinned as a power-management issue.</p></article>
         <article class="callout"><h3>Naming rule</h3><p>Reports should show canonical flake host names while using private aliases only for connection details.</p></article>
       </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <p class="kicker">Current compare</p>
+          <h2>Mac mini vs MacBook Pro</h2>
+        </div>
+        <p>Observed over Tailscale SSH. Treat as inventory input, not final policy.</p>
+      </div>
+      <table class="matrix">
+        <tr><th>Area</th><th>Mac mini</th><th>MacBook Pro</th><th>Policy thought</th></tr>
+        <tr><td>User</td><td>bag</td><td>baghead</td><td>Host-specific.</td></tr>
+        <tr><td>macOS</td><td>26.4.1</td><td>26.5</td><td>Track, do not force-match automatically.</td></tr>
+        <tr><td>Nix</td><td>Determinate Nix 3.11.2 / Nix 2.31.1</td><td>Determinate Nix 3.17.3 / Nix 2.33.3</td><td>Drift worth normalizing after package policy is settled.</td></tr>
+        <tr><td>Homebrew</td><td>Installed, visible in SSH path</td><td>Installed at `/opt/homebrew`, not visible in default SSH path</td><td>Fix shell/PATH handling or call manager paths explicitly.</td></tr>
+        <tr><td>Home Manager</td><td>Visible and has generations</td><td>Not visible in SSH path; profile path exists only as Nix profile entry</td><td>Confirm whether MacBook should use Home Manager or nix-darwin only.</td></tr>
+        <tr><td>nix-darwin</td><td>Present</td><td>Present</td><td>Shared management layer candidate.</td></tr>
+        <tr><td>AC sleep</td><td>sleep 0, displaysleep 0</td><td>sleep 0, displaysleep 180</td><td>Host-specific; laptop needs different power policy.</td></tr>
+      </table>
     </section>
 
     <footer class="footer"><span>Machine source: HOST_MATRIX.md</span><span>Updated <span data-updated></span></span></footer>

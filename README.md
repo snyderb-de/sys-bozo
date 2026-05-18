@@ -56,9 +56,12 @@ Build the smallest useful prototype:
 sys-bozo doctor
 sys-bozo plan
 sys-bozo install docs
+sys-bozo
 ```
 
 That prototype must run without Nix, Homebrew, or Home Manager.
+
+The default `sys-bozo` command should become the control-center TUI. It should use the same planner as the CLI commands, so package updates, installs, config edits, tarball installs, and audits can be previewed before anything mutates the machine.
 
 ## Tests
 

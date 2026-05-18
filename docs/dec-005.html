@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DEC-005 - GUI Apps</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="site">
+    <header class="topbar">
+      <a class="brand" href="index.html"><span class="brand-mark">D</span><span>sys-bozo</span></a>
+      <nav class="nav" aria-label="System docs">
+        <a href="index.html">Overview</a><a href="tools.html">Tools</a><a href="machines.html">Machines</a><a href="sync-plan.html">Sync Plan</a><a href="shell.html">Shell</a><a href="apps.html">Apps</a><a href="secrets.html">Secrets</a><a href="install.html">Install</a><a href="control-center.html">Control Center</a><a href="linux.html">Linux</a>
+      </nav>
+    </header>
+
+    <section class="section">
+      <p class="kicker">DEC-005</p>
+      <h1>GUI app decisions</h1>
+      <p class="lede">Classify apps as shared, Mini-only, MacBook-only, manual/private, or cleanup. The machines should differ by intent, not because old installers left fingerprints.</p>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><h2>Decision key</h2><p>Pick one target per app.</p></div>
+      <table class="matrix">
+        <tr><th>Choice</th><th>Meaning</th><th>Config action</th></tr>
+        <tr><td>shared</td><td>Install on both Macs.</td><td>Declare in shared macOS app module when possible.</td></tr>
+        <tr><td>mini-only</td><td>Desk hardware, display, server-ish, or Mini workflow.</td><td>Declare in Mini host profile.</td></tr>
+        <tr><td>macbook-only</td><td>Laptop/travel/workflow-specific.</td><td>Declare in MacBook host profile.</td></tr>
+        <tr><td>manual/private</td><td>License, work auth, App Store, vendor account, or secret-ish setup.</td><td>Document but do not auto-install yet.</td></tr>
+        <tr><td>cleanup</td><td>Old, duplicate, or unused.</td><td>Remove after confirmation.</td></tr>
+      </table>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><h2>Already decided</h2><p>Committed policy from Bag.</p></div>
+      <table class="matrix">
+        <tr><th>App</th><th>Current state</th><th>Decision</th><th>Reason</th></tr>
+        <tr><td>DisplayLink Manager</td><td>Mini only</td><td>mini-only</td><td>MacBook does not need DisplayLink.</td></tr>
+        <tr><td>Elgato Stream Deck</td><td>Mini only</td><td>mini-only</td><td>MacBook does not need Elgato.</td></tr>
+        <tr><td>Ivanti Secure Access</td><td>Both</td><td>manual/private</td><td>Work VPN. Ignore entirely for sys-bozo automation; Bag handles manually.</td></tr>
+        <tr><td>No Man's Sky</td><td>Both</td><td>cleanup</td><td>Remove from both.</td></tr>
+        <tr><td>Affinity Designer 2</td><td>Mini only</td><td>cleanup</td><td>Remove.</td></tr>
+        <tr><td>Affinity Photo 2</td><td>Mini only</td><td>cleanup</td><td>Remove.</td></tr>
+        <tr><td>Perplexity</td><td>Mini only</td><td>cleanup</td><td>Remove.</td></tr>
+        <tr><td>CameraController</td><td>MacBook only</td><td>cleanup</td><td>Remove from MacBook.</td></tr>
+      </table>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><h2>Shared candidates</h2><p>Seen on both hosts. Decide if they are true baseline, manual, or cleanup.</p></div>
+      <table class="matrix">
+        <tr><th>App</th><th>Current state</th><th>Decision</th><th>Notes</th></tr>
+        <tr><td>Affinity</td><td>Both</td><td>TBD</td><td>May be suite/folder; license-aware.</td></tr>
+        <tr><td>Antinote</td><td>Both</td><td>TBD</td><td>Likely shared if daily notes.</td></tr>
+        <tr><td>BetterDisplay</td><td>Both</td><td>TBD</td><td>Previously tagged Mini-only, but installed on both. Decide reality.</td></tr>
+        <tr><td>Bitwarden</td><td>Both</td><td>TBD</td><td>Strong shared/manual auth candidate.</td></tr>
+        <tr><td>ChatGPT</td><td>Both</td><td>TBD</td><td>Likely shared.</td></tr>
+        <tr><td>Claude</td><td>Both</td><td>TBD</td><td>Likely shared.</td></tr>
+        <tr><td>CleanMyMac_5_MAS</td><td>Both</td><td>TBD</td><td>MAS/license-aware.</td></tr>
+        <tr><td>Codex</td><td>Both</td><td>TBD</td><td>Likely shared.</td></tr>
+        <tr><td>ColorSlurp</td><td>Both</td><td>TBD</td><td>Likely shared if design/dev utility.</td></tr>
+        <tr><td>CrossOver</td><td>Both</td><td>TBD</td><td>License/manual candidate.</td></tr>
+        <tr><td>Cyberduck</td><td>Both</td><td>TBD</td><td>Shared if used for file transfer.</td></tr>
+        <tr><td>Discord</td><td>Both</td><td>TBD</td><td>Shared or manual.</td></tr>
+        <tr><td>Dockey</td><td>Both</td><td>TBD</td><td>Shared if Dock policy is managed.</td></tr>
+        <tr><td>Ghostty</td><td>Both</td><td>TBD</td><td>Terminal choice variance with iTerm.</td></tr>
+        <tr><td>GitHub Desktop</td><td>Both</td><td>TBD</td><td>Shared if actively used.</td></tr>
+        <tr><td>Google Chrome</td><td>Both</td><td>TBD</td><td>Likely shared/manual sign-in.</td></tr>
+        <tr><td>IINA</td><td>Both</td><td>TBD</td><td>Shared media utility if used.</td></tr>
+        <tr><td>Ivanti Secure Access</td><td>Both</td><td>manual/private</td><td>Work VPN. Ignore entirely; manually handled by Bag.</td></tr>
+        <tr><td>LM Studio</td><td>Both</td><td>TBD</td><td>Shared if both run local models.</td></tr>
+        <tr><td>LibreOffice</td><td>Both</td><td>TBD</td><td>Shared or cleanup depending use.</td></tr>
+        <tr><td>Microsoft Excel</td><td>Both</td><td>TBD</td><td>Manual/license-aware.</td></tr>
+        <tr><td>Microsoft Word</td><td>Both</td><td>TBD</td><td>Manual/license-aware.</td></tr>
+        <tr><td>No Man's Sky</td><td>Both</td><td>cleanup</td><td>Remove from both.</td></tr>
+        <tr><td>Obsidian</td><td>Both</td><td>TBD</td><td>Likely shared/manual vault setup.</td></tr>
+        <tr><td>Path Finder</td><td>Both</td><td>TBD</td><td>License/manual candidate.</td></tr>
+        <tr><td>PhotoSweeper</td><td>Both</td><td>TBD</td><td>License/manual candidate.</td></tr>
+        <tr><td>Plex</td><td>Both</td><td>TBD</td><td>Shared or manual.</td></tr>
+        <tr><td>Raycast</td><td>Both</td><td>likely shared</td><td>Launcher baseline candidate.</td></tr>
+        <tr><td>Safari</td><td>Both</td><td>system</td><td>Built-in. Track only.</td></tr>
+        <tr><td>Steam</td><td>Both</td><td>TBD</td><td>Manual/game.</td></tr>
+        <tr><td>Tailscale</td><td>Both</td><td>likely shared</td><td>Required for remote management.</td></tr>
+        <tr><td>Telegram</td><td>Both</td><td>TBD</td><td>Shared or manual.</td></tr>
+        <tr><td>Vanilla</td><td>Both</td><td>TBD</td><td>Shared UI utility if used.</td></tr>
+        <tr><td>Visual Studio Code</td><td>Both</td><td>TBD</td><td>Likely shared.</td></tr>
+        <tr><td>Windows App</td><td>Both</td><td>TBD</td><td>Work/manual candidate.</td></tr>
+        <tr><td>Xcode</td><td>Both</td><td>TBD</td><td>Manual/App Store/developer baseline.</td></tr>
+        <tr><td>iLok License Manager</td><td>Both</td><td>shared</td><td>Should be on both.</td></tr>
+        <tr><td>iScreen Shoter</td><td>Both</td><td>TBD</td><td>Decide shared vs cleanup.</td></tr>
+        <tr><td>iTerm</td><td>Both</td><td>likely shared</td><td>User selected terminal.</td></tr>
+        <tr><td>iwallpaper</td><td>Both</td><td>TBD</td><td>Personalization/manual.</td></tr>
+      </table>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><h2>Mini-only candidates</h2><p>Currently present only on Mini.</p></div>
+      <table class="matrix">
+        <tr><th>App</th><th>Current state</th><th>Decision</th><th>Notes</th></tr>
+        <tr><td>ACCDB MDB Explorer</td><td>Mini only</td><td>shared</td><td>MDB tool should be on both.</td></tr>
+        <tr><td>Affinity Designer 2</td><td>Mini only</td><td>cleanup</td><td>Remove.</td></tr>
+        <tr><td>Affinity Photo 2</td><td>Mini only</td><td>cleanup</td><td>Remove.</td></tr>
+        <tr><td>AnkerDockManager</td><td>Mini only</td><td>TBD</td><td>Desk dock hardware.</td></tr>
+        <tr><td>Bible Study</td><td>Mini only</td><td>TBD</td><td>Personal/manual.</td></tr>
+        <tr><td>Brave Browser</td><td>Mini only</td><td>shared</td><td>Add to both.</td></tr>
+        <tr><td>ChatGPT Atlas</td><td>Mini only</td><td>shared</td><td>Add to both.</td></tr>
+        <tr><td>CuaDriver</td><td>Mini only</td><td>TBD</td><td>Automation/dev tool.</td></tr>
+        <tr><td>DaisyDisk</td><td>Mini only</td><td>TBD</td><td>Disk utility; shared or cleanup.</td></tr>
+        <tr><td>Door Kickers 2</td><td>Mini only</td><td>TBD</td><td>Manual/game.</td></tr>
+        <tr><td>Firefox Developer Edition</td><td>Mini only</td><td>shared</td><td>Add to both.</td></tr>
+        <tr><td>GarageBand</td><td>Mini only</td><td>shared</td><td>Add to both; likely MAS/manual.</td></tr>
+        <tr><td>Logi Options</td><td>Mini only</td><td>mini-only</td><td>Desk hardware.</td></tr>
+        <tr><td>MDB ACCDB Viewer</td><td>Mini only</td><td>shared</td><td>MDB tool should be on both.</td></tr>
+        <tr><td>MDB Decode</td><td>Mini only</td><td>shared</td><td>MDB tool should be on both.</td></tr>
+        <tr><td>Magnet</td><td>Mini only</td><td>shared</td><td>Add to both.</td></tr>
+        <tr><td>Native Access</td><td>Mini only</td><td>mini-only</td><td>Audio/license workflow on Mini.</td></tr>
+        <tr><td>OpenClaw / Hermes</td><td>Mini only</td><td>mini-only</td><td>Mini-only game/manual item.</td></tr>
+        <tr><td>Overcast</td><td>Mini only</td><td>shared</td><td>Add to both; likely MAS/manual.</td></tr>
+        <tr><td>Perplexity</td><td>Mini only</td><td>cleanup</td><td>Remove from both / do not add to MacBook.</td></tr>
+        <tr><td>SABnzbd</td><td>Mini only</td><td>mini-only</td><td>Mini-only download/server workflow.</td></tr>
+        <tr><td>Stats</td><td>Mini only</td><td>mini-only</td><td>Mini-only menu bar monitor.</td></tr>
+        <tr><td>Vivaldi</td><td>Mini only</td><td>shared</td><td>Add to both.</td></tr>
+        <tr><td>balenaEtcher</td><td>Mini only</td><td>shared</td><td>Add to both.</td></tr>
+        <tr><td>cmux</td><td>Mini only</td><td>shared</td><td>Terminal emulator; add to both.</td></tr>
+      </table>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><h2>MacBook-only candidates</h2><p>Currently present only on MacBook.</p></div>
+      <table class="matrix">
+        <tr><th>App</th><th>Current state</th><th>Decision</th><th>Notes</th></tr>
+        <tr><td>Asana</td><td>MacBook only</td><td>shared</td><td>Add to both.</td></tr>
+        <tr><td>CameraController</td><td>MacBook only</td><td>cleanup</td><td>Remove from MacBook.</td></tr>
+        <tr><td>Claude Code URL Handler</td><td>MacBook only</td><td>macbook-only</td><td>MacBook-specific Claude Code handler for now.</td></tr>
+        <tr><td>Crimson Desert</td><td>MacBook only</td><td>macbook-only</td><td>MacBook game/manual item.</td></tr>
+        <tr><td>Developer</td><td>MacBook only</td><td>inspect</td><td>Pin to inspect before declaring.</td></tr>
+        <tr><td>Godot</td><td>MacBook only</td><td>shared</td><td>Add to both.</td></tr>
+        <tr><td>Hack RUN</td><td>MacBook only</td><td>manual/private</td><td>Ignore; game/manual item.</td></tr>
+        <tr><td>Ledger Live</td><td>MacBook only</td><td>macbook-only</td><td>Finance/hardware wallet. MacBook only.</td></tr>
+        <tr><td>Microsoft Edge</td><td>MacBook only</td><td>shared</td><td>Add to both.</td></tr>
+        <tr><td>TestFlight</td><td>MacBook only</td><td>shared</td><td>Add to both; likely App Store/manual.</td></tr>
+        <tr><td>TickTick</td><td>MacBook only</td><td>shared</td><td>Add to both.</td></tr>
+        <tr><td>Transmission</td><td>MacBook only</td><td>shared</td><td>Add to both.</td></tr>
+      </table>
+    </section>
+
+    <footer class="footer"><span>DEC-005 source: app compare over Tailscale SSH.</span><span>Updated <span data-updated></span></span></footer>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

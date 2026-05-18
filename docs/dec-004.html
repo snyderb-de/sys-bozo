@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DEC-004 - Brew CLI Tools</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="site">
+    <header class="topbar">
+      <a class="brand" href="index.html"><span class="brand-mark">D</span><span>sys-bozo</span></a>
+      <nav class="nav" aria-label="System docs">
+        <a href="index.html">Overview</a><a href="tools.html">Tools</a><a href="machines.html">Machines</a><a href="sync-plan.html">Sync Plan</a><a href="shell.html">Shell</a><a href="apps.html">Apps</a><a href="secrets.html">Secrets</a><a href="install.html">Install</a><a href="control-center.html">Control Center</a><a href="linux.html">Linux</a>
+      </nav>
+    </header>
+
+    <section class="section">
+      <p class="kicker">DEC-004</p>
+      <h1>Brew CLI tool decisions</h1>
+      <p class="lede">Decide each Homebrew leaf as shared baseline, Mini-only, MacBook-only, move-to-Nix, manual, or cleanup. Leaves are closer to intentional installs than the full formula list.</p>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><h2>Decision key</h2><p>Pick one target per item.</p></div>
+      <table class="matrix">
+        <tr><th>Choice</th><th>Meaning</th><th>Config action</th></tr>
+        <tr><td>shared</td><td>Should exist on Mini and MacBook.</td><td>Declare in shared profile, preferably Nix for CLI tools.</td></tr>
+        <tr><td>mini-only</td><td>Only the Mini needs it.</td><td>Declare in Mini host profile.</td></tr>
+        <tr><td>macbook-only</td><td>Only the MacBook needs it.</td><td>Declare in MacBook host profile.</td></tr>
+        <tr><td>move-to-nix</td><td>Useful tool, wrong manager.</td><td>Add to Nix/Home Manager, verify, then remove Brew copy.</td></tr>
+        <tr><td>manual</td><td>Install is tied to auth, vendor flow, or one-off work.</td><td>Document as manual/private.</td></tr>
+        <tr><td>cleanup</td><td>Probably old or accidental.</td><td>Remove after confirming no current use.</td></tr>
+      </table>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><h2>Already shared</h2><p>Present as Brew leaves on both hosts.</p></div>
+      <table class="matrix">
+        <tr><th>Tool</th><th>Current state</th><th>Decision</th><th>Notes</th></tr>
+        <tr><td>ruby</td><td>Mini + MacBook</td><td>TBD</td><td>Likely dependency or local scripting support. Decide if Nix should own it.</td></tr>
+        <tr><td>remindctl</td><td>Mini + MacBook</td><td>TBD</td><td>Personal workflow tool. Likely shared if actively used.</td></tr>
+      </table>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><h2>Mini-only candidates</h2><p>Currently present only on Mini.</p></div>
+      <table class="matrix">
+        <tr><th>Tool</th><th>Current state</th><th>Decision</th><th>Notes</th></tr>
+        <tr><td>git-filter-repo</td><td>Mini only</td><td>shared</td><td>Repo surgery tool should exist on both. Prefer Nix if available.</td></tr>
+      </table>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><h2>MacBook-only candidates</h2><p>Currently present only on MacBook.</p></div>
+      <table class="matrix">
+        <tr><th>Tool</th><th>Current state</th><th>Decision</th><th>Notes</th></tr>
+        <tr><td>ansible</td><td>MacBook only</td><td>cleanup</td><td>Not needed on either machine.</td></tr>
+        <tr><td>ffmpeg</td><td>MacBook only</td><td>shared</td><td>Install on both. Prefer Nix unless a Brew-specific reason appears.</td></tr>
+        <tr><td>ghostscript</td><td>MacBook only</td><td>shared</td><td>Install on both for PDF/image pipeline support.</td></tr>
+        <tr><td>go</td><td>MacBook only</td><td>shared convenience</td><td>Install on both as baseline convenience. Project versions are owned by dev shells.</td></tr>
+        <tr><td>libpst</td><td>MacBook only</td><td>shared</td><td>Install on both.</td></tr>
+        <tr><td>mole</td><td>MacBook only</td><td>shared</td><td>Install on both as remote-work/SSH tooling.</td></tr>
+        <tr><td>neonctl</td><td>MacBook only</td><td>shared</td><td>Install on both.</td></tr>
+        <tr><td>neovim</td><td>MacBook only</td><td>shared</td><td>Install on both, likely through Nix.</td></tr>
+        <tr><td>node@22</td><td>MacBook only</td><td>shared convenience</td><td>Install Node.js on both as baseline convenience. Project versions are owned by dev shells.</td></tr>
+        <tr><td>openjdk</td><td>MacBook only</td><td>as-needed</td><td>Do not remove, but do not mark shared. Project-specific runtime unless a workflow requires it globally.</td></tr>
+        <tr><td>poppler</td><td>MacBook only</td><td>shared</td><td>Install on both for PDF tooling.</td></tr>
+        <tr><td>python-tk@3.13</td><td>MacBook only</td><td>project-specific</td><td>Keep out of global baseline unless a project needs it.</td></tr>
+        <tr><td>supabase</td><td>MacBook only</td><td>shared</td><td>Install on both.</td></tr>
+        <tr><td>syncthing</td><td>MacBook only</td><td>shared</td><td>Should be on both already; verify Mini state.</td></tr>
+        <tr><td>xcodegen</td><td>MacBook only</td><td>shared</td><td>Install on both for Apple dev workflows.</td></tr>
+      </table>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><h2>Runtime version policy</h2><p>DEC-013 and DEC-014 are the same issue: app projects need project-owned runtimes.</p></div>
+      <table class="matrix">
+        <tr><th>ID</th><th>Decision</th><th>Why</th></tr>
+        <tr><td>DEC-013</td><td>Use Nix dev shells plus direnv as the default version-management model for Go and Node project work.</td><td>Project runtime versions live with the project, work across Mac/Linux, and do not depend on global mutable state.</td></tr>
+        <tr><td>DEC-014</td><td>Keep global Go and Node as shared convenience tools only.</td><td>Useful for scratch commands and simple tooling, but app development should enter the project shell.</td></tr>
+        <tr><td>DEC-015</td><td>Keep OpenJDK as-needed.</td><td>Do not remove current installs blindly, but do not mark Java shared/global unless a project or workflow needs it.</td></tr>
+      </table>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><h2>Dev shell rule</h2><p>The shell beats the machine.</p></div>
+      <table class="matrix">
+        <tr><th>Context</th><th>Runtime owner</th><th>Policy</th></tr>
+        <tr><td>Inside app repo</td><td>`flake.nix` / `devShells` / `direnv`</td><td>Pin Go, Node, pnpm, package managers, Java, and project CLIs here.</td></tr>
+        <tr><td>Outside app repo</td><td>sys-bozo shared baseline</td><td>Provide convenient `go` and `node` so the terminal is not useless.</td></tr>
+        <tr><td>No-Nix repo</td><td>Project docs or fallback tool</td><td>Support later with an optional bridge; do not let fallback drive the main design.</td></tr>
+        <tr><td>CI</td><td>Same project shell where possible</td><td>Use the project-defined environment so local and CI stop disagreeing.</td></tr>
+      </table>
+      <div class="terminal"># Target app repo shape
+direnv allow
+nix develop
+
+# Runtime versions belong here, not in random global installs.
+go version
+node --version
+pnpm --version</div>
+    </section>
+
+    <footer class="footer"><span>DEC-004 source: Brew leaves compare over Tailscale SSH.</span><span>Updated <span data-updated></span></span></footer>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

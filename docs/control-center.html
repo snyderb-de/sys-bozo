@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Control Center - sys-bozo</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="site">
+    <header class="topbar">
+      <a class="brand" href="index.html"><span class="brand-mark">D</span><span>sys-bozo</span></a>
+      <nav class="nav" aria-label="System docs">
+        <a href="index.html">Overview</a><a href="tools.html">Tools</a><a href="machines.html">Machines</a><a href="sync-plan.html">Sync Plan</a><a href="shell.html">Shell</a><a href="apps.html">Apps</a><a href="secrets.html">Secrets</a><a href="install.html">Install</a><a href="control-center.html" aria-current="page">Control Center</a><a href="linux.html">Linux</a>
+      </nav>
+    </header>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <p class="kicker">Baller TUI</p>
+          <h1>One command to manage the machine.</h1>
+        </div>
+        <p>`sys-bozo` should grow into a visual terminal control center for updates, packages, config editing, audits, secrets, and host sync.</p>
+      </div>
+      <div class="terminal">sys-bozo</div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <p class="kicker">Core rule</p>
+          <h2>Plan first. Apply second.</h2>
+        </div>
+        <p>Every screen creates an explicit plan before it mutates files, package managers, or system state.</p>
+      </div>
+      <div class="grid three">
+        <article class="card"><span class="meta">Preview</span><strong>Show exact changes</strong><p>Files, symlinks, package installs, package removals, config writes, and commands appear before execution.</p></article>
+        <article class="card"><span class="meta">Approve</span><strong>Confirm grouped work</strong><p>Apply all, apply selected tasks, or back out without changing the machine.</p></article>
+        <article class="card"><span class="meta">Record</span><strong>Keep local history</strong><p>Save last runs under `~/.local/state/sys-bozo/` so audits can explain what changed.</p></article>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><h2>Main screens</h2><p>Top-level navigation should be obvious, dense, and useful on a real terminal.</p></div>
+      <table class="matrix">
+        <tr><th>Screen</th><th>Jobs</th><th>Stats shown</th></tr>
+        <tr><td>Dashboard</td><td>Host status, repo status, profile, enabled managers, last audit, dirty files.</td><td>OS, arch, uptime, Tailscale state, Nix/Brew versions, package counts, pending updates.</td></tr>
+        <tr><td>Updates</td><td>Update Nix inputs, Home Manager, nix-darwin, Brew formulae, Brew casks, or selected packages only.</td><td>Outdated count, selected count, pinned/skipped packages, estimated commands.</td></tr>
+        <tr><td>Packages</td><td>Search, install, remove, move between Nix and Brew, hold, pin, or add to catalog.</td><td>Install source, package owner, catalog status, profile membership, manager availability.</td></tr>
+        <tr><td>Configs</td><td>Open zsh, ssh, git, starship, atuin, nix, Home Manager, and host config in `$EDITOR`.</td><td>Dirty state, secret risk, validation result, target path, backup path.</td></tr>
+        <tr><td>Secrets</td><td>SOPS doctor, age key setup, recipient checks, starter templates, private config handoff.</td><td>Key present, public recipient, encrypted files found, decrypted access check.</td></tr>
+        <tr><td>Audit</td><td>Compare declared profile to local state and remote Tailscale hosts.</td><td>Missing tools, extra tools, SSH reachability, drift, last successful compare.</td></tr>
+      </table>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <p class="kicker">Package manager reality</p>
+          <h2>Selected updates are easy in Brew, trickier in Nix.</h2>
+        </div>
+        <p>The TUI should be honest when a package manager cannot safely do the exact thing the user asked.</p>
+      </div>
+      <div class="grid two">
+        <article class="callout"><h3>Homebrew</h3><p>`brew outdated --json=v2` can feed a package picker. Then `brew upgrade foo bar` updates selected formulae or casks.</p></article>
+        <article class="callout"><h3>Nix flakes</h3><p>Most packages follow one `nixpkgs` input, so “update only yazi” may require pinning, overlays, or profile installs. Default TUI action should update inputs by scope, then explain exceptions.</p></article>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <p class="kicker">Nix policy</p>
+          <h2>Be an editor, planner, validator, and verifier first.</h2>
+        </div>
+        <p>Do not build clever Nix abstractions before the boring human-editable shape is trustworthy.</p>
+      </div>
+      <table class="matrix">
+        <tr><th>Rule</th><th>Decision</th><th>Reason</th></tr>
+        <tr><td>Package lists</td><td>Keep direct Nix lists human-readable first.</td><td>`home.packages = with pkgs; [ bat eza yazi ];` is easier to debug than an early generated variable maze.</td></tr>
+        <tr><td>Adding packages</td><td>Search, ask Nix or Brew, open the right config, show diff, apply, verify.</td><td>The TUI should assist the declaration instead of hiding it.</td></tr>
+        <tr><td>Nix updates</td><td>Update flake inputs by scope/input unless explicit pin/overlay support exists.</td><td>Most Nix packages share the same `nixpkgs` snapshot; pretending otherwise is lying with extra steps.</td></tr>
+        <tr><td>Generated config</td><td>Defer generator output until catalog/profile tests are strong.</td><td>Early magic creates debt faster than it creates repeatability.</td></tr>
+      </table>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><h2>Package flows</h2><p>Search should end in a catalog change, not a random one-off install.</p></div>
+      <div class="terminal">Search: yazi
+
+Found:
+  nixpkgs: yazi 25.x
+  brew:    yazi 25.x
+
+Choose:
+  [ ] Install now only
+  [x] Add to sys-bozo catalog
+  [x] Include in current host profile
+  [ ] Install with Brew instead of Nix
+
+Plan:
+  edit catalog/tools.yaml
+  edit host profile
+  run nix/home-manager apply
+  verify `yazi --version`</div>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><h2>Move flows</h2><p>Moving between managers must verify replacement before uninstalling the old copy.</p></div>
+      <table class="matrix">
+        <tr><th>Move</th><th>Plan</th><th>Safety check</th></tr>
+        <tr><td>Brew to Nix</td><td>Find Brew owner, search nixpkgs, add catalog entry, apply Nix profile, then offer Brew uninstall.</td><td>Only uninstall Brew after command resolves to Nix path and version works.</td></tr>
+        <tr><td>Nix to Brew</td><td>Find catalog entry, search Brew formula/cask, update host/profile choice, apply Brew install.</td><td>Only remove Nix declaration after Brew binary or app bundle verifies.</td></tr>
+        <tr><td>Tarball</td><td>Download or use local archive, checksum when possible, unpack under chosen target, symlink command.</td><td>Default target is `~/.local/opt/name/version`; uninstall manifest required.</td></tr>
+      </table>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <p class="kicker">Build shape</p>
+          <h2>Go TUI with Charm stack.</h2>
+        </div>
+        <p>Use Go for one portable binary, Bubble Tea for app state, Bubbles for widgets, Lip Gloss for visual polish, and a planner package underneath.</p>
+      </div>
+      <div class="grid two">
+        <article class="card"><span class="meta">UI layer</span><strong>`internal/tui`</strong><p>Navigation, tables, search boxes, checklists, progress, preview panes, command palette.</p></article>
+        <article class="card"><span class="meta">Planner</span><strong>`internal/plan`</strong><p>Pure functions returning actions. Tests inspect actions without touching the machine.</p></article>
+        <article class="card"><span class="meta">Adapters</span><strong>`internal/managers`</strong><p>Nix, Brew, Git, SSH, SOPS, tarball, and editor operations live behind small interfaces.</p></article>
+        <article class="card"><span class="meta">State</span><strong>XDG paths</strong><p>Config in `~/.config/sys-bozo/`; cache in `~/.cache/sys-bozo/`; run history in `~/.local/state/sys-bozo/`.</p></article>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><h2>First implementation slice</h2><p>Small enough to ship. Useful enough to matter.</p></div>
+      <table class="matrix">
+        <tr><th>Order</th><th>Feature</th><th>Done when</th></tr>
+        <tr><td>1</td><td>Dashboard</td><td>Shows host facts, repo dirty state, Nix/Brew presence, pending Brew updates, and docs link.</td></tr>
+        <tr><td>2</td><td>Update picker</td><td>User can choose Brew update/upgrade/autoremove, Nix flake update, Home Manager apply, or docs open.</td></tr>
+        <tr><td>3</td><td>Plan preview</td><td>Chosen tasks render a plan and require confirmation before running.</td></tr>
+        <tr><td>4</td><td>Package search planner</td><td>Searches Brew and Nix, then proposes catalog/profile edits without applying them blindly.</td></tr>
+        <tr><td>5</td><td>Config editor launcher</td><td>Opens selected config in `$EDITOR`, validates after exit, and shows changed files.</td></tr>
+      </table>
+    </section>
+
+    <footer class="footer"><span>Control center spec. No mutating TUI implemented yet.</span><span>Updated <span data-updated></span></span></footer>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

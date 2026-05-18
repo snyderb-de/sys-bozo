@@ -11,7 +11,7 @@
     <header class="topbar">
       <a class="brand" href="index.html"><span class="brand-mark">D</span><span>sys-bozo</span></a>
       <nav class="nav" aria-label="System docs">
-        <a href="index.html">Overview</a><a href="tools.html">Tools</a><a href="machines.html">Machines</a><a href="sync-plan.html">Sync Plan</a><a href="shell.html">Shell</a><a href="apps.html">Apps</a><a href="secrets.html">Secrets</a><a href="install.html">Install</a><a href="linux.html">Linux</a>
+        <a href="index.html">Overview</a><a href="tools.html">Tools</a><a href="machines.html">Machines</a><a href="sync-plan.html">Sync Plan</a><a href="shell.html">Shell</a><a href="apps.html">Apps</a><a href="secrets.html">Secrets</a><a href="install.html">Install</a><a href="control-center.html">Control Center</a><a href="linux.html">Linux</a>
       </nav>
     </header>
 
@@ -42,6 +42,70 @@
 4. Define sys-bozo install profiles
 5. Split flake.nix into hosts/ and modules/
 6. Add Linux profiles after the module boundaries are clean</div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <p class="kicker">Host difference policy</p>
+          <h2>Make differences intentional.</h2>
+        </div>
+        <p>The Mini and MacBook do not need to match. They need declared reasons for not matching.</p>
+      </div>
+      <table class="matrix">
+        <tr><th>Bucket</th><th>Examples</th><th>Action</th></tr>
+        <tr><td>Shared baseline</td><td>Core CLI/TUI tools, shell behavior, Git defaults, editor defaults, SSH include pattern.</td><td>Move into shared module/profile.</td></tr>
+        <tr><td>Mini-only</td><td>DisplayLink, Stream Deck, desktop utilities, server-ish helpers, apps tied to desk setup.</td><td>Declare in mini host profile.</td></tr>
+        <tr><td>MacBook-only</td><td>Battery/lid policy, laptop-only apps, travel/workflow tools, alternate display sleep.</td><td>Declare in laptop host profile.</td></tr>
+        <tr><td>Manual/private</td><td>SSH aliases, tailnet details, work VPN/auth, app licenses.</td><td>Keep in SOPS/private includes or manual checklist.</td></tr>
+        <tr><td>Cleanup candidates</td><td>Package manager duplicates, old apps, PATH-only drift, one-off Brew leaves.</td><td>Review before declaring.</td></tr>
+      </table>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <p class="kicker">Decision log</p>
+          <h2>Things Bag must decide.</h2>
+        </div>
+        <p>Each item gets a stable ID so decisions can become config instead of conversational fog.</p>
+      </div>
+      <table class="matrix">
+        <tr><th>ID</th><th>Decision</th><th>Default recommendation</th><th>Why it matters</th></tr>
+        <tr><td>DEC-001</td><td>Should MacBook use Home Manager directly, nix-darwin only, or both?</td><td>Decided: MacBook should do what Mac mini does.</td><td>Bring MacBook management shape into parity with Mini before comparing higher-level drift.</td></tr>
+        <tr><td>DEC-002</td><td>Should Brew be in noninteractive SSH PATH on every Mac?</td><td>Decided: Brew should be installed and found like Mac mini.</td><td>Remote audits and applies should not need one-off PATH hacks.</td></tr>
+        <tr><td>DEC-003</td><td>Should Determinate Nix versions be normalized between Mini and MacBook?</td><td>Decided: track first, normalize after package policy is stable.</td><td>Mini and MacBook are on different Nix/Determinate versions.</td></tr>
+        <tr><td><a href="dec-004.html">DEC-004</a></td><td>Which Brew CLI leaves belong in shared baseline?</td><td>Mostly decided item by item; remaining work is implementation and verification.</td><td>MacBook has many Brew CLI tools that may be work/dev leftovers or intentional.</td></tr>
+        <tr><td><a href="dec-005.html">DEC-005</a></td><td>Which GUI apps are shared, Mini-only, MacBook-only, or manual?</td><td>Mostly classified; remaining TBD items stay visible on the decision page.</td><td>Apps should differ by reason, not archaeology.</td></tr>
+        <tr><td>DEC-006</td><td>Should MacBook closed-lid SSH be supported?</td><td>Research pros/cons before deciding. Prefer supported clamshell/maintenance mode over `disablesleep` until proven otherwise.</td><td>Closed-lid SSH currently times out.</td></tr>
+        <tr><td>DEC-007</td><td>Should laptop power settings be managed declaratively?</td><td>Decided: yes, with separate AC and battery laptop settings.</td><td>MacBook power policy should not be copied from the Mini.</td></tr>
+        <tr><td>DEC-008</td><td>Where should SSH host aliases and Tailscale names live?</td><td>Decided: SOPS/private include.</td><td>Secrets and connection details stay protected.</td></tr>
+        <tr><td>DEC-009</td><td>Should Mac App Store apps be managed now?</td><td>Decided: later; keep MAS as manual/checklist until core profiles are stable.</td><td>MAS adds auth/app-store friction.</td></tr>
+        <tr><td>DEC-010</td><td>Should sys-bozo generate Nix configs or only help edit them?</td><td>Decided: edit, plan, validate, verify now; generate later.</td><td>Human-readable Nix beats early abstraction soup.</td></tr>
+        <tr><td>DEC-011</td><td>What are canonical host names in this private config?</td><td>Revised: this working repo can use real/private host names; the public `~/code/sys-bozo` release project must scrub or abstract them.</td><td>This project is operational config, not the public release artifact.</td></tr>
+        <tr><td>DEC-012</td><td>What counts as cleanup versus intentional drift?</td><td>Decided: anything not used weekly becomes cleanup candidate unless assigned a host/profile reason.</td><td>This prevents syncing old junk to new machines.</td></tr>
+        <tr><td>DEC-013</td><td>How should project runtime versions be managed?</td><td>Decided: app repos use Nix dev shells plus direnv.</td><td>Project Go/Node versions live with the project and can match CI.</td></tr>
+        <tr><td>DEC-014</td><td>Should Go and Node exist globally?</td><td>Decided: yes, as shared convenience tools only.</td><td>The machine stays useful outside repos, but global runtimes are not project truth.</td></tr>
+        <tr><td>DEC-015</td><td>What is Java/OpenJDK policy?</td><td>Decided: as-needed. Do not remove blindly; do not mark shared/global yet.</td><td>Java is project/workflow-specific unless proven otherwise.</td></tr>
+      </table>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <p class="kicker">DEC-006 research</p>
+          <h2>Closed-lid SSH needs care.</h2>
+        </div>
+        <p>Apple supports wake-for-network and closed-display style workflows, but preventing sleep can increase power use. Treat always-on closed-lid SSH as a researched policy decision, not a default.</p>
+      </div>
+      <table class="matrix">
+        <tr><th>Option</th><th>Pros</th><th>Cons</th></tr>
+        <tr><td>Supported clamshell</td><td>Normal Apple path with power/external-display style setup.</td><td>Not a pure headless laptop server mode.</td></tr>
+        <tr><td>Maintenance mode</td><td>Use `caffeinate` only while actively working over SSH.</td><td>Manual session management.</td></tr>
+        <tr><td>`disablesleep`</td><td>Most likely to keep SSH alive when closed.</td><td>Battery drain, heat risk, and easy to forget.</td></tr>
+        <tr><td>Leave lid cracked</td><td>Simple and low-risk during setup.</td><td>Not elegant.</td></tr>
+      </table>
+      <p class="lede">Sources to review: <a href="https://support.apple.com/guide/mac-help/-mchle41a6ccd/mac">Apple sleep and wake settings</a>, <a href="https://support.apple.com/en-ie/117373">Apple external display guidance</a>.</p>
     </section>
 
     <footer class="footer"><span>Sync policy favors explicit drift over accidental drift.</span><span>Updated <span data-updated></span></span></footer>

@@ -11,7 +11,7 @@
     <header class="topbar">
       <a class="brand" href="index.html"><span class="brand-mark">D</span><span>sys-bozo</span></a>
       <nav class="nav" aria-label="System docs">
-        <a href="index.html">Overview</a><a href="tools.html">Tools</a><a href="machines.html">Machines</a><a href="sync-plan.html">Sync Plan</a><a href="shell.html">Shell</a><a href="apps.html">Apps</a><a href="secrets.html">Secrets</a><a href="install.html">Install</a><a href="linux.html">Linux</a>
+        <a href="index.html">Overview</a><a href="tools.html">Tools</a><a href="machines.html">Machines</a><a href="sync-plan.html">Sync Plan</a><a href="shell.html">Shell</a><a href="apps.html">Apps</a><a href="secrets.html">Secrets</a><a href="install.html">Install</a><a href="control-center.html">Control Center</a><a href="linux.html">Linux</a>
       </nav>
     </header>
 
@@ -27,15 +27,25 @@
         <tr><td>iTerm2</td><td>Homebrew cask module</td><td>macOS shared</td><td>Chosen terminal for this machine.</td></tr>
         <tr><td>Raycast</td><td>Homebrew cask module</td><td>macOS shared</td><td>Launcher baseline.</td></tr>
         <tr><td>Nerd Fonts</td><td>Font module</td><td>selected hosts</td><td>Required for terminal iconography.</td></tr>
-        <tr><td>BetterDisplay</td><td>Host module</td><td>mini only</td><td>Hardware/display-specific.</td></tr>
-        <tr><td>Godot</td><td>Host module</td><td>bagbook only</td><td>Host-specific creative/game work.</td></tr>
-        <tr><td>Edge / Zen</td><td>Host module</td><td>bagbook only</td><td>Browser variance, declared explicitly.</td></tr>
+        <tr><td>BetterDisplay</td><td>Host module</td><td>TBD</td><td>Installed on both; decide if truly shared or hardware-specific.</td></tr>
+        <tr><td>DisplayLink Manager</td><td>Host module</td><td>mini only</td><td>Desk display hardware. Not needed on MacBook.</td></tr>
+        <tr><td>Elgato Stream Deck</td><td>Host module</td><td>mini only</td><td>Desk hardware. Not needed on MacBook.</td></tr>
+        <tr><td>Godot</td><td>Host module</td><td>macOS shared</td><td>Creative/game dev work on both.</td></tr>
+        <tr><td>Microsoft Edge</td><td>Host module</td><td>macOS shared</td><td>Browser baseline per DEC-005.</td></tr>
+        <tr><td>Ivanti Secure Access</td><td>manual/private</td><td>ignored</td><td>Work VPN. Bag handles manually.</td></tr>
         <tr><td>MAS apps</td><td>Brewfile</td><td>manual</td><td>Kept separate until MAS is integrated into apply flow.</td></tr>
       </table>
     </section>
 
     <section class="section">
-      <div class="callout"><h3>Cleanup target</h3><p>`claude-code` and `libreoffice` are installed on the mini but not declared. Either declare them or remove them. Ambiguous local state is the tax you pay later with interest.</p></div>
+      <div class="callout"><h3>Cleanup target</h3><p>Current removals: Ansible, No Man's Sky, Affinity Designer 2, Affinity Photo 2, Perplexity, and CameraController. Confirm before uninstalling anything.</p></div>
+    </section>
+
+    <section class="section">
+      <div class="grid two">
+        <article class="callout"><h3>CLI decisions</h3><p>Use <a href="dec-004.html">DEC-004</a> to classify Brew CLI leaves as shared, host-only, move-to-Nix, manual, or cleanup.</p></article>
+        <article class="callout"><h3>GUI decisions</h3><p>Use <a href="dec-005.html">DEC-005</a> to classify GUI apps as shared, Mini-only, MacBook-only, manual/private, or cleanup.</p></article>
+      </div>
     </section>
 
     <footer class="footer"><span>App source: flake.nix and Brewfile</span><span>Updated <span data-updated></span></span></footer>
