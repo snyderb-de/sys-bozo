@@ -61,15 +61,15 @@
         <tr><td>go</td><td>MacBook only</td><td>shared convenience</td><td>Install on both as baseline convenience. Project versions are owned by dev shells.</td></tr>
         <tr><td>libpst</td><td>MacBook only</td><td>shared</td><td>Install on both.</td></tr>
         <tr><td>mole</td><td>MacBook only</td><td>shared</td><td>Install on both as remote-work/SSH tooling.</td></tr>
-        <tr><td>neonctl</td><td>MacBook only</td><td>shared</td><td>Install on both.</td></tr>
+        <tr><td>neonctl</td><td>MacBook only</td><td>shared (manual)</td><td>Not packaged in nixpkgs 24.11 or unstable as of 2026-06-05. Install via <code>npm i -g neonctl</code> per host; revisit when upstream packaging exists.</td></tr>
         <tr><td>neovim</td><td>MacBook only</td><td>shared</td><td>Install on both, likely through Nix.</td></tr>
         <tr><td>node@22</td><td>MacBook only</td><td>shared convenience</td><td>Install Node.js on both as baseline convenience. Project versions are owned by dev shells.</td></tr>
         <tr><td>openjdk</td><td>MacBook only</td><td>as-needed</td><td>Do not remove, but do not mark shared. Project-specific runtime unless a workflow requires it globally.</td></tr>
-        <tr><td>poppler</td><td>MacBook only</td><td>shared</td><td>Install on both for PDF tooling.</td></tr>
+        <tr><td>poppler</td><td>MacBook only</td><td>shared</td><td>Install on both for PDF tooling. Nix attr name on 24.11 is <code>poppler_utils</code> (renamed to <code>poppler-utils</code> in unstable).</td></tr>
         <tr><td>python-tk@3.13</td><td>MacBook only</td><td>project-specific</td><td>Keep out of global baseline unless a project needs it.</td></tr>
         <tr><td>supabase</td><td>MacBook only</td><td>shared</td><td>Install on both.</td></tr>
         <tr><td>syncthing</td><td>MacBook only</td><td>shared</td><td>Should be on both already; verify Mini state.</td></tr>
-        <tr><td>xcodegen</td><td>MacBook only</td><td>shared</td><td>Install on both for Apple dev workflows.</td></tr>
+        <tr><td>xcodegen</td><td>MacBook only</td><td>shared</td><td>Install on both for Apple dev workflows. Not in nixpkgs 24.11; consume via <code>pkgsUnstable.xcodegen</code> until on 25.05 channel.</td></tr>
       </table>
     </section>
 

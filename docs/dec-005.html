@@ -45,6 +45,23 @@
         <tr><td>Affinity Photo 2</td><td>Mini only</td><td>cleanup</td><td>Remove.</td></tr>
         <tr><td>Perplexity</td><td>Mini only</td><td>cleanup</td><td>Remove.</td></tr>
         <tr><td>CameraController</td><td>MacBook only</td><td>cleanup</td><td>Remove from MacBook.</td></tr>
+        <tr><td>macFUSE</td><td>MacBook only</td><td>shared</td><td>Filesystem support useful on both Macs.</td></tr>
+        <tr><td>Zen browser</td><td>MacBook only</td><td>cleanup</td><td>Not in use on any machine.</td></tr>
+        <tr><td>CleanMyMac (MAS)</td><td>Both</td><td>shared</td><td>Promoted from TBD.</td></tr>
+        <tr><td>Bible Study (MAS)</td><td>Both</td><td>shared</td><td>Promoted from TBD.</td></tr>
+        <tr><td>Bitwarden (MAS)</td><td>Both</td><td>shared</td><td>Promoted from TBD.</td></tr>
+        <tr><td>Calcbot (MAS)</td><td>Both</td><td>shared</td><td>Promoted from TBD.</td></tr>
+        <tr><td>ColorSlurp (MAS)</td><td>Both</td><td>shared</td><td>Promoted from TBD.</td></tr>
+        <tr><td>DaisyDisk (MAS)</td><td>Both</td><td>shared</td><td>Promoted from mini-only TBD.</td></tr>
+        <tr><td>iScreen Shoter (MAS)</td><td>Both</td><td>cleanup</td><td>Resolved from TBD.</td></tr>
+        <tr><td>MyWallpaper (MAS)</td><td>Both</td><td>cleanup</td><td>Resolved.</td></tr>
+        <tr><td>PhotoSweeper (MAS)</td><td>Both</td><td>shared</td><td>Promoted from TBD.</td></tr>
+        <tr><td>Webcam Effects (MAS)</td><td>Both</td><td>cleanup</td><td>Resolved.</td></tr>
+        <tr><td>Microsoft Excel (MAS)</td><td>Both</td><td>shared</td><td>Promoted from TBD.</td></tr>
+        <tr><td>Microsoft Word (MAS)</td><td>Both</td><td>shared</td><td>Promoted from TBD.</td></tr>
+        <tr><td>Windows App (MAS)</td><td>Both</td><td>shared</td><td>Promoted from TBD.</td></tr>
+        <tr><td>Overcast (MAS)</td><td>Both</td><td>shared</td><td>Promoted from mini-only TBD.</td></tr>
+        <tr><td>TestFlight (MAS)</td><td>Both</td><td>shared</td><td>Resolved from macbook-only.</td></tr>
       </table>
     </section>
 
@@ -133,12 +150,12 @@
         <tr><th>App</th><th>Current state</th><th>Decision</th><th>Notes</th></tr>
         <tr><td>Asana</td><td>MacBook only</td><td>shared</td><td>Add to both.</td></tr>
         <tr><td>CameraController</td><td>MacBook only</td><td>cleanup</td><td>Remove from MacBook.</td></tr>
-        <tr><td>Claude Code URL Handler</td><td>MacBook only</td><td>macbook-only</td><td>MacBook-specific Claude Code handler for now.</td></tr>
+        <tr><td>Claude Code URL Handler</td><td>MacBook only</td><td>macbook-only</td><td>MacBook-specific Claude Code handler. As of 2026-06-05 there is no <code>claude-code-url-handler</code> cask in homebrew-cask; install manually until upstream packaging exists.</td></tr>
         <tr><td>Crimson Desert</td><td>MacBook only</td><td>macbook-only</td><td>MacBook game/manual item.</td></tr>
         <tr><td>Developer</td><td>MacBook only</td><td>inspect</td><td>Pin to inspect before declaring.</td></tr>
         <tr><td>Godot</td><td>MacBook only</td><td>shared</td><td>Add to both.</td></tr>
         <tr><td>Hack RUN</td><td>MacBook only</td><td>manual/private</td><td>Ignore; game/manual item.</td></tr>
-        <tr><td>Ledger Live</td><td>MacBook only</td><td>macbook-only</td><td>Finance/hardware wallet. MacBook only.</td></tr>
+        <tr><td>Ledger Live</td><td>MacBook only</td><td>macbook-only</td><td>Finance/hardware wallet. MacBook only. Brew cask identifier is <code>ledger-wallet</code> (upstream did not rename the cask when the app was rebranded to Ledger Live).</td></tr>
         <tr><td>Microsoft Edge</td><td>MacBook only</td><td>shared</td><td>Add to both.</td></tr>
         <tr><td>TestFlight</td><td>MacBook only</td><td>shared</td><td>Add to both; likely App Store/manual.</td></tr>
         <tr><td>TickTick</td><td>MacBook only</td><td>shared</td><td>Add to both.</td></tr>
