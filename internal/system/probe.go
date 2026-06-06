@@ -152,14 +152,19 @@ func LocalAudit() []AuditItem {
 		items = append(items, item)
 	}
 
-	// Key tools resolve to nix-profile
+	// Key tools resolve to a nix-managed location. On nix-darwin, HM
+	// user packages land in `/etc/profiles/per-user/<user>/bin/` and
+	// system packages in `/run/current-system/sw/bin/`. On Linux HM
+	// standalone, tools live in `~/.nix-profile/bin/`. We accept any of
+	// these prefixes, and we also follow the symlink to the /nix/store
+	// for cases where LookPath returns the linked path directly.
 	tools := []string{"bat", "jq", "gh", "lazygit", "starship", "atuin"}
 	for _, t := range tools {
 		item := AuditItem{Name: t}
 		p, err := exec.LookPath(t)
 		if err != nil {
 			item.Detail = "not in PATH"
-		} else if strings.Contains(p, ".nix-profile") || strings.Contains(p, "/nix/store/") {
+		} else if isNixManagedPath(p) {
 			item.OK = true
 			item.Detail = "nix"
 		} else {
@@ -169,6 +174,47 @@ func LocalAudit() []AuditItem {
 	}
 
 	return items
+}
+
+// isNixManagedPath returns true when p resolves to anything Nix owns. Covers:
+//
+//   - /nix/store/...                          — direct store path
+//   - ~/.nix-profile/...                      — Linux HM standalone user profile
+//   - /etc/profiles/per-user/<user>/bin/...   — nix-darwin HM user profile
+//   - /run/current-system/sw/bin/...          — nix-darwin system profile
+//
+// We also dereference one level of symlink so that, e.g., a /etc/profiles
+// entry pointing into the store still counts even on hosts where we only
+// match the store prefix.
+func isNixManagedPath(p string) bool {
+	if p == "" {
+		return false
+	}
+	prefixes := []string{
+		"/nix/store/",
+		"/etc/profiles/per-user/",
+		"/run/current-system/sw/",
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		prefixes = append(prefixes, filepath.Join(home, ".nix-profile")+"/")
+	}
+	for _, pfx := range prefixes {
+		if strings.HasPrefix(p, pfx) {
+			return true
+		}
+	}
+	// Resolve a single symlink hop and re-test.
+	if resolved, err := os.Readlink(p); err == nil && resolved != p {
+		if !filepath.IsAbs(resolved) {
+			resolved = filepath.Join(filepath.Dir(p), resolved)
+		}
+		for _, pfx := range prefixes {
+			if strings.HasPrefix(resolved, pfx) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func gitDirtyCount(dir string) int {
