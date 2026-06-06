@@ -1,376 +1,803 @@
 package tui
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
-	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/snyderb-de/sys-bozo/internal/plan"
+	"github.com/snyderb-de/sys-bozo/internal/runner"
 	"github.com/snyderb-de/sys-bozo/internal/system"
 )
 
+// ── Palette (Tokyo Night Storm) ───────────────────────────────────────────
+
 var (
-	gold  = lipgloss.Color("#f3c969")
-	cyan  = lipgloss.Color("#79e6d9")
-	blue  = lipgloss.Color("#78a9ff")
-	green = lipgloss.Color("#9be58f")
-	red   = lipgloss.Color("#ff7d90")
-	muted = lipgloss.Color("#9daabd")
-	faint = lipgloss.Color("#667286")
-	panel = lipgloss.Color("#131720")
-	bg    = lipgloss.Color("#0d0f14")
-
-	titleStyle = lipgloss.NewStyle().Foreground(gold).Bold(true)
-	mutedStyle = lipgloss.NewStyle().Foreground(muted)
-	faintStyle = lipgloss.NewStyle().Foreground(faint)
-	goodStyle  = lipgloss.NewStyle().Foreground(green).Bold(true)
-	warnStyle  = lipgloss.NewStyle().Foreground(gold).Bold(true)
-	stopStyle  = lipgloss.NewStyle().Foreground(red).Bold(true)
-
-	shellStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#e7edf7")).
-			Background(bg).
-			Padding(1, 2)
-
-	cardStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("#2d3748")).
-			Background(panel).
-			Padding(1, 2)
-
-	activeTabStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#080a0f")).
-			Background(cyan).
-			Bold(true).
-			Padding(0, 1)
-
-	tabStyle = lipgloss.NewStyle().
-			Foreground(muted).
-			Border(lipgloss.NormalBorder(), false, false, true, false).
-			BorderForeground(lipgloss.Color("#2d3748")).
-			Padding(0, 1)
+	clrBg      = lipgloss.Color("#1e2030")
+	clrPanel   = lipgloss.Color("#222436")
+	clrBorder  = lipgloss.Color("#2d3f6a")
+	clrText    = lipgloss.Color("#c8d3f5")
+	clrMuted   = lipgloss.Color("#636da6")
+	clrFaint   = lipgloss.Color("#444a73")
+	clrGold    = lipgloss.Color("#ffc777")
+	clrCyan    = lipgloss.Color("#86e1fc")
+	clrBlue    = lipgloss.Color("#82aaff")
+	clrGreen   = lipgloss.Color("#c3e88d")
+	clrRed     = lipgloss.Color("#ff757f")
+	clrOrange  = lipgloss.Color("#ff966c")
+	clrPurple  = lipgloss.Color("#c099ff")
 )
 
-type updateTask struct {
-	ID          string
-	Label       string
-	Description string
-	Selected    bool
+// ── Styles ────────────────────────────────────────────────────────────────
+
+var (
+	styleBold    = lipgloss.NewStyle().Bold(true)
+	styleTitle   = lipgloss.NewStyle().Foreground(clrGold).Bold(true)
+	styleMuted   = lipgloss.NewStyle().Foreground(clrMuted)
+	styleFaint   = lipgloss.NewStyle().Foreground(clrFaint)
+	styleGood    = lipgloss.NewStyle().Foreground(clrGreen).Bold(true)
+	styleWarn    = lipgloss.NewStyle().Foreground(clrOrange).Bold(true)
+	styleErr     = lipgloss.NewStyle().Foreground(clrRed).Bold(true)
+	styleCmd     = lipgloss.NewStyle().Foreground(clrMuted)
+	styleAccent  = lipgloss.NewStyle().Foreground(clrCyan)
+	stylePurple  = lipgloss.NewStyle().Foreground(clrPurple)
+
+	styleCard = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(clrBorder).
+			Background(clrPanel).
+			Padding(1, 2)
+
+	styleActiveTab = lipgloss.NewStyle().
+			Foreground(clrBg).
+			Background(clrBlue).
+			Bold(true).
+			Padding(0, 2)
+
+	styleTab = lipgloss.NewStyle().
+			Foreground(clrMuted).
+			Padding(0, 2)
+
+	styleLogPane = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(clrBorder).
+			Background(clrPanel)
+
+	styleShell = lipgloss.NewStyle().
+			Background(clrBg).
+			Foreground(clrText).
+			Padding(1, 2)
+)
+
+// ── Log line types ────────────────────────────────────────────────────────
+
+type logKind int
+
+const (
+	logHeader  logKind = iota // task section header
+	logCmd                    // $ command
+	logOutput                 // normal stdout/stderr
+	logSuccess                // line containing success indicators
+	logError                  // line containing error indicators
+)
+
+type logLine struct {
+	kind logKind
+	text string
 }
 
-type configTarget struct {
-	Name string
-	Path string
+// ── Run state ─────────────────────────────────────────────────────────────
+
+type appMode int
+
+const (
+	modeView    appMode = iota
+	modeRunning
+	modeDone
+)
+
+// ── Tea messages ─────────────────────────────────────────────────────────
+
+type lineMsg    struct{ text string }
+type stepDoneMsg struct {
+	err     error
+	elapsed time.Duration
 }
+type auditReadyMsg struct{ items []system.AuditItem }
+
+// ── Model ─────────────────────────────────────────────────────────────────
 
 type Model struct {
-	facts        system.Facts
-	tabs         []string
-	tab          int
-	cursor       int
-	width        int
-	height       int
-	updates      []updateTask
-	configs      []configTarget
-	packageInput textinput.Model
-	preview      *plan.Plan
+	facts  system.Facts
+	runCtx runner.Context
+	tasks  []runner.Task
+
+	tabs   []string
+	tab    int
+	cursor int
+	width  int
+	height int
+
+	mode     appMode
+	queue    []runner.WorkItem
+	queuePos int
+	runStart time.Time
+	stepStart time.Time
+
+	logLines  []logLine
+	logVP     viewport.Model
+	logFollow bool
+	spinner   spinner.Model
+
+	activeScanner *bufio.Scanner
+	activeWait    func() error
+
+	auditItems []system.AuditItem
+	auditReady bool
 }
 
 func New() Model {
-	input := textinput.New()
-	input.Placeholder = "search package..."
-	input.CharLimit = 80
-	input.Prompt = "> "
-	input.Focus()
+	ctx := runner.Build()
+	tasks := runner.DefaultTasks(ctx)
+
+	sp := spinner.New()
+	sp.Spinner = spinner.Dot
+	sp.Style = lipgloss.NewStyle().Foreground(clrCyan)
 
 	return Model{
-		facts: system.Probe(),
-		tabs:  []string{"Dashboard", "Updates", "Packages", "Configs", "Secrets", "Audit"},
-		updates: []updateTask{
-			{ID: "brew-update", Label: "Brew update", Description: "Refresh Homebrew metadata.", Selected: true},
-			{ID: "brew-upgrade", Label: "Brew selected upgrades", Description: "Upgrade chosen formulae/casks once picker lands.", Selected: true},
-			{ID: "brew-autoremove", Label: "Brew autoremove", Description: "Remove unused Homebrew dependencies."},
-			{ID: "nix-flake-update", Label: "Nix flake update", Description: "Update flake inputs by scope/input.", Selected: true},
-			{ID: "home-manager-apply", Label: "Home Manager apply", Description: "Apply user profile."},
-			{ID: "darwin-apply", Label: "nix-darwin apply", Description: "Apply macOS host profile."},
-		},
-		configs: []configTarget{
-			{Name: "zsh", Path: "~/.zshrc"},
-			{Name: "ssh", Path: "~/.ssh/config"},
-			{Name: "git", Path: "~/.gitconfig"},
-			{Name: "starship", Path: "~/.config/starship.toml"},
-			{Name: "atuin", Path: "~/.config/atuin/config.toml"},
-			{Name: "home-manager", Path: "home/common/home.nix"},
-			{Name: "nix-darwin", Path: "flake.nix"},
-		},
-		packageInput: input,
+		facts:     system.Probe(),
+		runCtx:    ctx,
+		tasks:     tasks,
+		tabs:      []string{"Dashboard", "Updates", "Audit", "Doctor"},
+		logFollow: true,
+		spinner:   sp,
 	}
 }
+
+// ── Init ──────────────────────────────────────────────────────────────────
 
 func (m Model) Init() tea.Cmd {
 	return nil
 }
 
+// ── Update ────────────────────────────────────────────────────────────────
+
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-	case tea.KeyMsg:
-		switch msg.String() {
-		case "ctrl+c", "q":
-			return m, tea.Quit
-		case "tab", "right":
-			m.nextTab()
-		case "shift+tab", "left":
-			m.prevTab()
-		case "1", "2", "3", "4", "5", "6":
-			m.tab = int(msg.String()[0] - '1')
-			m.cursor = 0
-			m.preview = nil
-		case "j", "down":
-			m.moveCursor(1)
-		case "k", "up":
-			m.moveCursor(-1)
-		case " ":
-			if m.tabs[m.tab] == "Updates" && len(m.updates) > 0 {
-				m.updates[m.cursor].Selected = !m.updates[m.cursor].Selected
-				m.preview = nil
-			}
-		case "enter", "p":
-			m.previewPlan()
-		case "r":
-			m.facts = system.Probe()
+		m.logVP = viewport.New(m.logWidth(), m.logHeight())
+		m.logVP.SetContent(m.renderLog())
+		if m.logFollow {
+			m.logVP.GotoBottom()
 		}
+		return m, nil
+
+	case tea.KeyMsg:
+		return m.handleKey(msg)
+
+	case lineMsg:
+		line := classifyLine(msg.text)
+		m.logLines = append(m.logLines, line)
+		m.logVP.SetContent(m.renderLog())
+		if m.logFollow {
+			m.logVP.GotoBottom()
+		}
+		return m, m.readNextLine()
+
+	case stepDoneMsg:
+		if msg.err != nil {
+			m.logLines = append(m.logLines, logLine{kind: logError,
+				text: fmt.Sprintf("  ✗ failed: %s", msg.err)})
+			m.mode = modeDone
+			m.logVP.SetContent(m.renderLog())
+			m.logVP.GotoBottom()
+			return m, nil
+		}
+		m.logLines = append(m.logLines, logLine{kind: logSuccess,
+			text: fmt.Sprintf("  ✓ done in %s", msg.elapsed.Round(time.Second))})
+		m.logVP.SetContent(m.renderLog())
+		m.logVP.GotoBottom()
+		m.queuePos++
+		return m, m.advanceQueue()
+
+	case auditReadyMsg:
+		m.auditItems = msg.items
+		m.auditReady = true
+		return m, nil
+
+	case spinner.TickMsg:
+		if m.mode == modeRunning {
+			var cmd tea.Cmd
+			m.spinner, cmd = m.spinner.Update(msg)
+			return m, cmd
+		}
+		return m, nil
 	}
 
-	if m.tabs[m.tab] == "Packages" {
+	// Forward scroll events to viewport when log is visible
+	if m.mode == modeRunning || m.mode == modeDone {
 		var cmd tea.Cmd
-		m.packageInput, cmd = m.packageInput.Update(msg)
+		m.logVP, cmd = m.logVP.Update(msg)
 		return m, cmd
 	}
 
 	return m, nil
 }
 
-func (m Model) View() string {
-	width := m.width
-	if width <= 0 {
-		width = 110
+func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c", "q":
+		if m.mode == modeDone {
+			m.mode = modeView
+			m.logLines = nil
+			m.queue = nil
+			m.queuePos = 0
+			return m, nil
+		}
+		return m, tea.Quit
+
+	case "Q":
+		return m, tea.Quit
+
+	case "tab", "right":
+		m.nextTab()
+	case "shift+tab", "left":
+		m.prevTab()
+	case "1", "2", "3", "4":
+		m.tab = int(msg.String()[0]-'1')
+		m.cursor = 0
+		if m.tabs[m.tab] == "Audit" && !m.auditReady {
+			return m, m.runAudit()
+		}
+
+	case "j", "down":
+		if m.mode == modeView {
+			m.moveCursor(1)
+		} else {
+			m.logFollow = false
+			var cmd tea.Cmd
+			m.logVP, cmd = m.logVP.Update(msg)
+			return m, cmd
+		}
+	case "k", "up":
+		if m.mode == modeView {
+			m.moveCursor(-1)
+		} else {
+			m.logFollow = false
+			var cmd tea.Cmd
+			m.logVP, cmd = m.logVP.Update(msg)
+			return m, cmd
+		}
+	case "f":
+		m.logFollow = !m.logFollow
+		if m.logFollow {
+			m.logVP.GotoBottom()
+		}
+
+	case " ":
+		if m.tabs[m.tab] == "Updates" && m.mode == modeView {
+			if m.cursor < len(m.tasks) {
+				m.tasks[m.cursor].Selected = !m.tasks[m.cursor].Selected
+			}
+		}
+
+	case "r":
+		if m.tabs[m.tab] == "Updates" && m.mode == modeView {
+			return m, m.startRun()
+		}
+		if m.mode == modeView {
+			m.facts = system.Probe()
+			m.runCtx = runner.Build()
+			m.tasks = runner.DefaultTasks(m.runCtx)
+			m.auditReady = false
+			m.auditItems = nil
+		}
+
+	case "a":
+		if m.tabs[m.tab] == "Audit" {
+			m.auditReady = false
+			m.auditItems = nil
+			return m, m.runAudit()
+		}
 	}
-	contentWidth := clamp(width-4, 76, 132)
-	shell := shellStyle.Width(contentWidth)
+
+	return m, nil
+}
+
+// ── Run logic ─────────────────────────────────────────────────────────────
+
+func (m *Model) startRun() tea.Cmd {
+	m.queue = runner.BuildQueue(m.tasks, m.runCtx)
+	if len(m.queue) == 0 {
+		return nil
+	}
+	m.queuePos = 0
+	m.mode = modeRunning
+	m.logLines = nil
+	m.logFollow = true
+	m.runStart = time.Now()
+
+	m.logVP = viewport.New(m.logWidth(), m.logHeight())
+
+	return tea.Batch(m.advanceQueue(), m.spinner.Tick)
+}
+
+func (m *Model) advanceQueue() tea.Cmd {
+	if m.queuePos >= len(m.queue) {
+		m.mode = modeDone
+		elapsed := time.Since(m.runStart).Round(time.Second)
+		m.logLines = append(m.logLines, logLine{kind: logHeader, text: ""})
+		m.logLines = append(m.logLines, logLine{kind: logSuccess,
+			text: fmt.Sprintf("  ✓ all done · %s", elapsed)})
+		m.logVP.SetContent(m.renderLog())
+		m.logVP.GotoBottom()
+		return nil
+	}
+
+	item := m.queue[m.queuePos]
+
+	// Task header when first step of a new task
+	if item.TaskFirst {
+		total := countTasks(m.queue)
+		taskNum := countCompletedTasks(m.queue, m.queuePos) + 1
+		m.logLines = append(m.logLines, logLine{kind: logHeader,
+			text: fmt.Sprintf("  ● [%d/%d] %s", taskNum, total, item.TaskLabel)})
+	}
+
+	// Command line
+	m.logLines = append(m.logLines, logLine{kind: logCmd,
+		text: "    $ " + runner.CmdLabel(item)})
+
+	m.stepStart = time.Now()
+	scanner, wait, err := runner.StartWork(item)
+	if err != nil {
+		m.logLines = append(m.logLines, logLine{kind: logError,
+			text: "  ✗ " + err.Error()})
+		m.mode = modeDone
+		m.logVP.SetContent(m.renderLog())
+		m.logVP.GotoBottom()
+		return nil
+	}
+
+	m.activeScanner = scanner
+	m.activeWait = wait
+	m.logVP.SetContent(m.renderLog())
+	m.logVP.GotoBottom()
+
+	return m.readNextLine()
+}
+
+func (m Model) readNextLine() tea.Cmd {
+	scanner := m.activeScanner
+	wait := m.activeWait
+	start := m.stepStart
+
+	return func() tea.Msg {
+		if scanner.Scan() {
+			return lineMsg{text: scanner.Text()}
+		}
+		err := wait()
+		return stepDoneMsg{err: err, elapsed: time.Since(start)}
+	}
+}
+
+func (m Model) runAudit() tea.Cmd {
+	return func() tea.Msg {
+		return auditReadyMsg{items: system.LocalAudit()}
+	}
+}
+
+// ── View ──────────────────────────────────────────────────────────────────
+
+func (m Model) View() string {
+	w := m.width
+	if w <= 0 {
+		w = 120
+	}
+	inner := clamp(w-4, 80, 140)
 
 	parts := []string{
-		m.header(contentWidth),
-		m.tabsView(),
-		m.body(contentWidth),
-		m.footer(),
+		m.viewHeader(inner),
+		m.viewTabs(),
+		m.viewBody(inner),
+		m.viewFooter(inner),
 	}
-	return shell.Render(strings.Join(parts, "\n\n"))
+
+	return styleShell.Width(inner).Render(strings.Join(parts, "\n\n"))
 }
 
-func (m Model) header(width int) string {
-	left := titleStyle.Render("sys-bozo control center")
-	right := faintStyle.Render("plan first | apply later | q quits | r refresh")
-	return lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", max(1, width-lipgloss.Width(left)-lipgloss.Width(right))), right)
+func (m Model) viewHeader(w int) string {
+	left := styleTitle.Render("⊛ sys-bozo")
+	branch := m.facts.DotfilesBranch
+	if branch == "" {
+		branch = "?"
+	}
+	if m.facts.DotfilesDirty > 0 {
+		branch += styleWarn.Render("*")
+	}
+	right := styleMuted.Render(
+		m.facts.User + "@" + m.facts.Hostname +
+			"  ·  " + m.facts.OS + "/" + m.facts.Arch +
+			"  ·  " + branch,
+	)
+	pad := max(1, w-lipgloss.Width(left)-lipgloss.Width(right))
+	return left + strings.Repeat(" ", pad) + right
 }
 
-func (m Model) tabsView() string {
-	var rendered []string
-	for i, tab := range m.tabs {
-		label := fmt.Sprintf("%d %s", i+1, tab)
+func (m Model) viewTabs() string {
+	var parts []string
+	for i, name := range m.tabs {
+		label := fmt.Sprintf("%d·%s", i+1, name)
 		if i == m.tab {
-			rendered = append(rendered, activeTabStyle.Render(label))
+			parts = append(parts, styleActiveTab.Render(label))
 		} else {
-			rendered = append(rendered, tabStyle.Render(label))
+			parts = append(parts, styleTab.Render(label))
 		}
 	}
-	return lipgloss.JoinHorizontal(lipgloss.Top, rendered...)
+	return lipgloss.JoinHorizontal(lipgloss.Top, parts...)
 }
 
-func (m Model) body(width int) string {
-	var main string
+func (m Model) viewBody(w int) string {
+	cw := innerWidth(w)
+
 	switch m.tabs[m.tab] {
 	case "Dashboard":
-		main = m.dashboard(width)
+		return m.viewDashboard(cw)
 	case "Updates":
-		main = m.updatesView(width)
-	case "Packages":
-		main = m.packagesView(width)
-	case "Configs":
-		main = m.configsView(width)
-	case "Secrets":
-		main = m.secretsView(width)
+		return m.viewUpdates(cw)
 	case "Audit":
-		main = m.auditView(width)
+		return m.viewAudit(cw)
+	case "Doctor":
+		return m.viewDoctor(cw)
 	}
-
-	if m.preview == nil {
-		return main
-	}
-
-	return lipgloss.JoinVertical(lipgloss.Left, main, "", m.planView(width))
+	return ""
 }
 
-func (m Model) dashboard(width int) string {
-	if width < 108 {
-		cardWidth := innerCardWidth(width)
-		return lipgloss.JoinVertical(lipgloss.Left,
-			m.hostCard(cardWidth),
-			"",
-			m.stateCard(cardWidth),
-			"",
-			m.managerCard(cardWidth),
-		)
-	}
+// ── Dashboard ─────────────────────────────────────────────────────────────
 
-	colWidth := max(24, (width-22)/3)
-	return lipgloss.JoinHorizontal(lipgloss.Top, m.hostCard(colWidth), "  ", m.stateCard(colWidth), "  ", m.managerCard(colWidth))
-}
+func (m Model) viewDashboard(w int) string {
+	colW := max(26, (w-6)/3)
 
-func (m Model) hostCard(width int) string {
-	return cardStyle.Width(width).Render(strings.Join([]string{
-		titleStyle.Render("Host"),
-		"Name:  " + value(m.facts.Hostname),
-		"User:  " + value(m.facts.User),
-		"OS:    " + m.facts.OS + "/" + m.facts.Arch,
-		"Shell: " + shortPath(m.facts.Shell),
+	host := styleCard.Width(colW).Render(strings.Join([]string{
+		styleTitle.Render("Host"),
+		row("Name ", m.facts.Hostname),
+		row("User ", m.facts.User),
+		row("OS   ", m.facts.OS+"/"+m.facts.Arch),
+		row("Shell", shortPath(m.facts.Shell)),
 	}, "\n"))
-}
 
-func (m Model) stateCard(width int) string {
-	return cardStyle.Width(width).Render(strings.Join([]string{
-		titleStyle.Render("State"),
-		fmt.Sprintf("Repo dirty:   %d files", m.facts.GitDirtyCount),
-		fmt.Sprintf("Brew pending: %d", m.facts.BrewOutdated),
-		"Workdir:      " + shortPath(m.facts.WorkingDir),
-	}, "\n"))
-}
-
-func (m Model) managerCard(width int) string {
-	managers := []string{
-		titleStyle.Render("Managers"),
-		managerLine("nix", m.facts.NixPath),
-		managerLine("brew", m.facts.BrewPath),
-		managerLine("home-manager", m.facts.HomeManager),
+	dirtyStr := styleGood.Render("clean")
+	if m.facts.DotfilesDirty > 0 {
+		dirtyStr = styleWarn.Render(fmt.Sprintf("%d files", m.facts.DotfilesDirty))
 	}
+	branch := m.facts.DotfilesBranch
+	if branch == "" {
+		branch = styleMuted.Render("unknown")
+	}
+	hmGen := m.facts.HMGeneration
+	if hmGen == "" || hmGen == "none" {
+		hmGen = styleMuted.Render("none")
+	}
+	state := styleCard.Width(colW).Render(strings.Join([]string{
+		styleTitle.Render("State"),
+		rowStyled("Branch", branch),
+		rowStyled("Dirty ", dirtyStr),
+		rowStyled("HM    ", hmGen),
+		row("Repo  ", shortPath(m.facts.DotfilesRepo)),
+	}, "\n"))
+
+	var mgrs []string
+	mgrs = append(mgrs, styleTitle.Render("Managers"))
+	mgrs = append(mgrs, managerLine("nix", m.facts.NixPath))
 	if m.facts.OS == "darwin" {
-		managers = append(managers, managerLine("nix-darwin", m.facts.DarwinRebuild))
+		mgrs = append(mgrs, managerLine("brew", m.facts.BrewPath))
+		mgrs = append(mgrs, managerLine("nix-darwin", m.facts.DarwinRebuild))
 	}
-	return cardStyle.Width(width).Render(strings.Join(managers, "\n"))
+	mgrs = append(mgrs, managerLine("home-manager", m.facts.HomeManager))
+	if m.facts.TailscaleIP != "" {
+		mgrs = append(mgrs, row("tailscale", m.facts.TailscaleIP))
+	}
+	managers := styleCard.Width(colW).Render(strings.Join(mgrs, "\n"))
+
+	if w < 100 {
+		return lipgloss.JoinVertical(lipgloss.Left, host, "", state, "", managers)
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, host, "  ", state, "  ", managers)
 }
 
-func managerLine(name, path string) string {
-	if path == "" {
-		return name + ": " + stopStyle.Render("missing")
-	}
-	return name + ": " + goodStyle.Render(shortPath(path))
-}
+// ── Updates ───────────────────────────────────────────────────────────────
 
-func (m Model) updatesView(width int) string {
+func (m Model) viewUpdates(w int) string {
+	cw := innerWidth(w)
+
 	var rows []string
-	rows = append(rows, titleStyle.Render("Update picker")+" "+mutedStyle.Render("space toggles, p previews"))
-	for i, task := range m.updates {
-		cursor := " "
-		if i == m.cursor {
-			cursor = ">"
+	rows = append(rows, styleTitle.Render("Updates")+"  "+styleFaint.Render("space toggle · r run · j/k move"))
+	rows = append(rows, "")
+
+	for i, t := range m.tasks {
+		avail := t.Available(m.runCtx)
+		cur := " "
+		if i == m.cursor && m.mode == modeView {
+			cur = styleAccent.Render("▶")
 		}
-		check := "[ ]"
-		if task.Selected {
-			check = "[x]"
+		var check string
+		if !avail {
+			check = styleFaint.Render("[-]")
+		} else if t.Selected {
+			check = styleGood.Render("[✓]")
+		} else {
+			check = styleMuted.Render("[ ]")
 		}
-		rows = append(rows, fmt.Sprintf("%s %s %-24s %s", cursor, check, task.Label, mutedStyle.Render(task.Description)))
-	}
-	return cardStyle.Width(innerCardWidth(width)).Render(strings.Join(rows, "\n"))
-}
-
-func (m Model) packagesView(width int) string {
-	rows := []string{
-		titleStyle.Render("Package workbench"),
-		mutedStyle.Render("Search package. Enter previews Nix/Brew search plus catalog/profile edit."),
-		"",
-		m.packageInput.View(),
-		"",
-		"Planned flows:",
-		"  - install now only",
-		"  - add to catalog/profile",
-		"  - move Brew -> Nix",
-		"  - move Nix -> Brew",
-		"  - install tarball under ~/.local/opt",
-	}
-	return cardStyle.Width(innerCardWidth(width)).Render(strings.Join(rows, "\n"))
-}
-
-func (m Model) configsView(width int) string {
-	rows := []string{titleStyle.Render("Config editor"), mutedStyle.Render("j/k choose, enter previews editor + validation plan"), ""}
-	for i, target := range m.configs {
-		cursor := " "
-		if i == m.cursor {
-			cursor = ">"
+		label := t.Label
+		if !avail {
+			label = styleFaint.Render(label)
+		} else if m.mode == modeRunning || m.mode == modeDone {
+			label = styleMuted.Render(label)
 		}
-		rows = append(rows, fmt.Sprintf("%s %-14s %s", cursor, target.Name, mutedStyle.Render(target.Path)))
+		desc := t.Desc
+		if !avail {
+			desc = styleFaint.Render("unavailable")
+		} else {
+			desc = styleFaint.Render(desc)
+		}
+		rows = append(rows, fmt.Sprintf("%s %s %-30s %s", cur, check, label, desc))
 	}
-	return cardStyle.Width(innerCardWidth(width)).Render(strings.Join(rows, "\n"))
+
+	taskList := styleCard.Width(cw).Render(strings.Join(rows, "\n"))
+
+	if m.mode == modeView {
+		return taskList
+	}
+
+	// Running or done — show log pane below
+	totalTasks := countTasks(m.queue)
+	doneTasks := countCompletedTasks(m.queue, m.queuePos)
+	var logTitle string
+	if m.mode == modeRunning {
+		logTitle = m.spinner.View() + " " + styleAccent.Render(fmt.Sprintf("running %d/%d", doneTasks, totalTasks)) +
+			"  " + styleFaint.Render(time.Since(m.runStart).Round(time.Second).String())
+	} else {
+		logTitle = styleGood.Render("✓ complete") + "  " +
+			styleFaint.Render(time.Since(m.runStart).Round(time.Second).String()) +
+			"  " + styleFaint.Render("q close")
+	}
+
+	followIndicator := styleFaint.Render("follow")
+	if !m.logFollow {
+		followIndicator = styleWarn.Render("scroll")
+	}
+
+	logHeader := lipgloss.JoinHorizontal(lipgloss.Top,
+		"  "+logTitle,
+		strings.Repeat(" ", max(1, cw-lipgloss.Width(logTitle)-lipgloss.Width(followIndicator)-4)),
+		followIndicator+"  ",
+	)
+
+	logContent := styleLogPane.Width(cw).Render(logHeader + "\n" + m.logVP.View())
+
+	return lipgloss.JoinVertical(lipgloss.Left, taskList, "", logContent)
 }
 
-func (m Model) secretsView(width int) string {
-	rows := []string{
-		titleStyle.Render("Secrets"),
-		"Status: " + warnStyle.Render("doctor not implemented"),
-		"",
-		"Target:",
-		"  - age key setup under ~/.config/sops/age/",
-		"  - .sops.yaml recipient generation",
-		"  - private SSH/env templates",
-		"  - never store secret values in repo",
+// ── Audit ─────────────────────────────────────────────────────────────────
+
+func (m Model) viewAudit(w int) string {
+	cw := innerWidth(w)
+	header := styleTitle.Render("Local Audit") + "  " + styleFaint.Render("a rescan")
+
+	if !m.auditReady {
+		content := strings.Join([]string{
+			header,
+			"",
+			styleMuted.Render("  scanning..."),
+		}, "\n")
+		return styleCard.Width(cw).Render(content)
 	}
-	return cardStyle.Width(innerCardWidth(width)).Render(strings.Join(rows, "\n"))
+
+	var rows []string
+	rows = append(rows, header)
+	rows = append(rows, "")
+
+	rows = append(rows, stylePurple.Render("  Config files"))
+	configCount := 0
+	for _, item := range m.auditItems {
+		if configCount == 6 {
+			rows = append(rows, "")
+			rows = append(rows, stylePurple.Render("  Tools"))
+		}
+		icon := styleGood.Render("  ✓")
+		detail := styleFaint.Render(item.Detail)
+		if !item.OK {
+			icon = styleErr.Render("  ✗")
+			detail = styleWarn.Render(item.Detail)
+		}
+		rows = append(rows, fmt.Sprintf("%s  %-18s %s", icon, item.Name, detail))
+		configCount++
+	}
+
+	ok, fail := 0, 0
+	for _, item := range m.auditItems {
+		if item.OK {
+			ok++
+		} else {
+			fail++
+		}
+	}
+	rows = append(rows, "")
+	summary := styleGood.Render(fmt.Sprintf("  %d ok", ok))
+	if fail > 0 {
+		summary += "  " + styleErr.Render(fmt.Sprintf("%d issues", fail))
+	}
+	rows = append(rows, summary)
+
+	return styleCard.Width(cw).Render(strings.Join(rows, "\n"))
 }
 
-func (m Model) auditView(width int) string {
-	rows := []string{
-		titleStyle.Render("Audit"),
-		"Status: " + warnStyle.Render("compare engine not implemented"),
-		"",
-		"Target:",
-		"  - local declared-vs-installed drift",
-		"  - SSH/Tailscale reachability",
-		"  - remote host package/config compare",
-		"  - report under ~/.cache/sys-bozo/reports/",
-	}
-	return cardStyle.Width(innerCardWidth(width)).Render(strings.Join(rows, "\n"))
-}
+// ── Doctor ────────────────────────────────────────────────────────────────
 
-func (m Model) planView(width int) string {
-	if m.preview == nil {
-		return ""
+func (m Model) viewDoctor(w int) string {
+	cw := innerWidth(w)
+	f := m.facts
+
+	var rows []string
+	rows = append(rows, styleTitle.Render("Doctor"))
+	rows = append(rows, "")
+
+	// Dotfiles state
+	rows = append(rows, stylePurple.Render("  Dotfiles"))
+	branch := f.DotfilesBranch
+	if branch == "" {
+		branch = styleMuted.Render("unknown")
 	}
-	lines := m.preview.Lines()
-	for i, line := range lines {
-		if i == 0 {
-			lines[i] = titleStyle.Render(line)
+	rows = append(rows, rowStyled("    branch    ", branch))
+	if f.DotfilesDirty == 0 {
+		rows = append(rows, rowStyled("    dirty     ", styleGood.Render("clean")))
+	} else {
+		rows = append(rows, rowStyled("    dirty     ", styleWarn.Render(fmt.Sprintf("%d files", f.DotfilesDirty))))
+	}
+	rows = append(rows, "")
+
+	// Home Manager
+	rows = append(rows, stylePurple.Render("  Home Manager"))
+	gen := f.HMGeneration
+	if gen == "" || gen == "none" {
+		rows = append(rows, rowStyled("    generation", styleErr.Render("none — run hms")))
+	} else {
+		rows = append(rows, rowStyled("    generation", styleGood.Render(gen)))
+	}
+	rows = append(rows, "")
+
+	// Secrets
+	rows = append(rows, stylePurple.Render("  Secrets"))
+	if f.AgeKeyExists {
+		rows = append(rows, rowStyled("    age key   ", styleGood.Render("present")))
+	} else {
+		rows = append(rows, rowStyled("    age key   ", styleErr.Render("missing · ~/.config/sops/age/keys.txt")))
+	}
+	rows = append(rows, "")
+
+	// SSH keys
+	rows = append(rows, stylePurple.Render("  SSH"))
+	if f.GitHubKeyExists {
+		rows = append(rows, rowStyled("    github key", styleGood.Render("present")))
+	} else {
+		rows = append(rows, rowStyled("    github key", styleErr.Render("missing")))
+	}
+	rows = append(rows, "")
+
+	// Managers
+	rows = append(rows, stylePurple.Render("  Package Managers"))
+	for _, check := range []struct{ name, path string }{
+		{"nix         ", f.NixPath},
+		{"home-manager", f.HomeManager},
+		{"brew        ", f.BrewPath},
+		{"nix-darwin  ", f.DarwinRebuild},
+	} {
+		if check.path == "" && (check.name == "brew        " || check.name == "nix-darwin  ") {
+			rows = append(rows, rowStyled("    "+check.name, styleFaint.Render("n/a")))
 			continue
 		}
-		if strings.Contains(line, "[mutate]") {
-			lines[i] = warnStyle.Render(line)
+		if check.path == "" {
+			rows = append(rows, rowStyled("    "+check.name, styleErr.Render("missing")))
+		} else {
+			rows = append(rows, rowStyled("    "+check.name, styleGood.Render(shortPath(check.path))))
 		}
 	}
-	return cardStyle.Width(innerCardWidth(width)).BorderForeground(blue).Render(strings.Join(lines, "\n"))
+
+	if f.TailscaleIP != "" {
+		rows = append(rows, "")
+		rows = append(rows, stylePurple.Render("  Network"))
+		rows = append(rows, rowStyled("    tailscale ", styleGood.Render(f.TailscaleIP)))
+	}
+
+	return styleCard.Width(cw).Render(strings.Join(rows, "\n"))
 }
 
-func (m Model) footer() string {
-	return faintStyle.Render("keys: 1-6 tabs | j/k move | space select | p/enter preview | r refresh | q quit")
+// ── Footer ────────────────────────────────────────────────────────────────
+
+func (m Model) viewFooter(w int) string {
+	var hints string
+	switch {
+	case m.mode == modeRunning:
+		hints = "j/k scroll log · f follow · Q force quit"
+	case m.mode == modeDone:
+		hints = "j/k scroll · f follow · q close log · Q quit"
+	case m.tabs[m.tab] == "Updates":
+		hints = "j/k move · space toggle · r run · tab switch tabs · q quit"
+	case m.tabs[m.tab] == "Audit":
+		hints = "a rescan · tab switch tabs · r refresh · q quit"
+	default:
+		hints = "1-4 tabs · tab/shift+tab switch · r refresh · q quit"
+	}
+	return styleFaint.Render(hints)
 }
+
+// ── Log rendering ─────────────────────────────────────────────────────────
+
+func (m Model) renderLog() string {
+	var sb strings.Builder
+	for _, line := range m.logLines {
+		switch line.kind {
+		case logHeader:
+			sb.WriteString(styleBold.Foreground(clrGold).Render(line.text))
+		case logCmd:
+			sb.WriteString(styleCmd.Render(line.text))
+		case logSuccess:
+			sb.WriteString(styleGood.Render(line.text))
+		case logError:
+			sb.WriteString(styleErr.Render(line.text))
+		default:
+			sb.WriteString(line.text)
+		}
+		sb.WriteString("\n")
+	}
+	return sb.String()
+}
+
+func classifyLine(text string) logLine {
+	lower := strings.ToLower(text)
+	switch {
+	case strings.Contains(lower, "error:") || strings.Contains(lower, "failed") ||
+		strings.Contains(lower, "✗"):
+		return logLine{kind: logError, text: "  " + text}
+	case strings.Contains(lower, "activating") || strings.Contains(lower, "✓") ||
+		strings.Contains(text, "Done") || strings.Contains(text, "switched"):
+		return logLine{kind: logSuccess, text: "  " + text}
+	default:
+		return logLine{kind: logOutput, text: "  " + text}
+	}
+}
+
+// ── Layout helpers ────────────────────────────────────────────────────────
+
+func (m Model) logHeight() int {
+	taskLines := len(m.tasks) + 6
+	bodyH := m.height - 10 // header + tabs + footer + padding
+	h := bodyH - taskLines - 4
+	return max(5, h)
+}
+
+func (m Model) logWidth() int {
+	w := m.width - 8
+	if w < 40 {
+		return 40
+	}
+	return w
+}
+
+// ── Navigation ────────────────────────────────────────────────────────────
 
 func (m *Model) nextTab() {
 	m.tab = (m.tab + 1) % len(m.tabs)
 	m.cursor = 0
-	m.preview = nil
 }
 
 func (m *Model) prevTab() {
@@ -379,61 +806,79 @@ func (m *Model) prevTab() {
 		m.tab = len(m.tabs) - 1
 	}
 	m.cursor = 0
-	m.preview = nil
 }
 
 func (m *Model) moveCursor(delta int) {
-	limit := 0
-	switch m.tabs[m.tab] {
-	case "Updates":
-		limit = len(m.updates)
-	case "Configs":
-		limit = len(m.configs)
-	}
-	if limit == 0 {
+	if m.tabs[m.tab] != "Updates" {
 		return
 	}
-	m.cursor = (m.cursor + delta + limit) % limit
+	n := len(m.tasks)
+	if n == 0 {
+		return
+	}
+	m.cursor = (m.cursor + delta + n) % n
 }
 
-func (m *Model) previewPlan() {
-	switch m.tabs[m.tab] {
-	case "Dashboard":
-		preview := plan.Install(plan.InstallOptions{Profile: "docs", Host: m.facts.Hostname})
-		m.preview = &preview
-	case "Updates":
-		var selected []string
-		for _, task := range m.updates {
-			if task.Selected {
-				selected = append(selected, task.ID)
-			}
+// ── Utility ───────────────────────────────────────────────────────────────
+
+func countTasks(queue []runner.WorkItem) int {
+	n := 0
+	for _, item := range queue {
+		if item.TaskFirst {
+			n++
 		}
-		preview := plan.Update(selected)
-		m.preview = &preview
-	case "Packages":
-		preview := plan.PackageSearch(m.packageInput.Value())
-		m.preview = &preview
-	case "Configs":
-		target := m.configs[m.cursor]
-		preview := plan.ConfigEdit(target.Name, target.Path)
-		m.preview = &preview
-	case "Secrets":
-		preview := plan.Install(plan.InstallOptions{Profile: "secrets", Host: m.facts.Hostname})
-		m.preview = &preview
-	case "Audit":
-		preview := plan.Install(plan.InstallOptions{Profile: "audit", Host: m.facts.Hostname})
-		m.preview = &preview
 	}
+	return n
 }
 
-func clamp(value, low, high int) int {
-	if value < low {
-		return low
+func countCompletedTasks(queue []runner.WorkItem, pos int) int {
+	n := 0
+	for i := 0; i < pos && i < len(queue); i++ {
+		if queue[i].TaskFirst {
+			n++
+		}
 	}
-	if value > high {
-		return high
+	return n
+}
+
+func row(label, value string) string {
+	return styleMuted.Render(label) + "  " + value
+}
+
+func rowStyled(label, value string) string {
+	return styleMuted.Render(label) + "  " + value
+}
+
+func managerLine(name, path string) string {
+	if path == "" {
+		return styleFaint.Render(name) + "  " + styleFaint.Render("—")
 	}
-	return value
+	return styleMuted.Render(name) + "  " + styleGood.Render(shortPath(path))
+}
+
+func shortPath(p string) string {
+	if p == "" {
+		return styleMuted.Render("—")
+	}
+	home, _ := os.UserHomeDir()
+	if home != "" && strings.HasPrefix(p, home) {
+		return "~" + p[len(home):]
+	}
+	return p
+}
+
+func innerWidth(w int) int {
+	return max(30, w-8)
+}
+
+func clamp(v, lo, hi int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
 }
 
 func max(a, b int) int {
@@ -441,26 +886,4 @@ func max(a, b int) int {
 		return a
 	}
 	return b
-}
-
-func innerCardWidth(width int) int {
-	return max(24, width-8)
-}
-
-func value(s string) string {
-	if strings.TrimSpace(s) == "" {
-		return "unknown"
-	}
-	return s
-}
-
-func shortPath(path string) string {
-	if path == "" {
-		return "missing"
-	}
-	home, err := os.UserHomeDir()
-	if err == nil && home != "" && strings.HasPrefix(path, home) {
-		return "~" + strings.TrimPrefix(path, home)
-	}
-	return path
 }

@@ -1,0 +1,22 @@
+hosts:
+  bags-Mac-mini:
+    os: macos
+    arch: aarch64
+    profile: darwin-full
+    user: bag
+    dotfiles_flake_key: bags-Mac-mini
+
+  bagbook-pro:
+    os: macos
+    arch: aarch64
+    profile: darwin-full
+    user: baghead
+    dotfiles_flake_key: bagbook-pro
+
+  butler:
+    os: linux
+    arch: x86_64
+    profile: linux-home
+    user: bag
+    dotfiles_flake_key: "bag@butler"
+    notes: Fedora 44 workstation · home-manager standalone

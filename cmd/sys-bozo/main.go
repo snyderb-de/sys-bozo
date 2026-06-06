@@ -86,13 +86,19 @@ func runPlan(args []string) error {
 func printDoctor() {
 	facts := system.Probe()
 	fmt.Println("sys-bozo doctor")
-	fmt.Println("host:", value(facts.Hostname))
-	fmt.Println("user:", value(facts.User))
-	fmt.Println("os:", facts.OS+"/"+facts.Arch)
-	fmt.Println("shell:", value(facts.Shell))
-	fmt.Println("workdir:", value(facts.WorkingDir))
-	fmt.Println("repo dirty files:", facts.GitDirtyCount)
-	fmt.Println("brew outdated:", facts.BrewOutdated)
+	fmt.Println("host:          ", value(facts.Hostname))
+	fmt.Println("user:          ", value(facts.User))
+	fmt.Println("os:            ", facts.OS+"/"+facts.Arch)
+	fmt.Println("dotfiles repo: ", value(facts.DotfilesRepo))
+	fmt.Println("branch:        ", value(facts.DotfilesBranch))
+	fmt.Println("dirty files:   ", facts.DotfilesDirty)
+	fmt.Println("hm generation: ", value(facts.HMGeneration))
+	fmt.Println("age key:       ", facts.AgeKeyExists)
+	fmt.Println("github key:    ", facts.GitHubKeyExists)
+	if facts.TailscaleIP != "" {
+		fmt.Println("tailscale ip:  ", facts.TailscaleIP)
+	}
+	fmt.Println()
 	for _, status := range facts.ManagerStatus() {
 		fmt.Println(status)
 	}
