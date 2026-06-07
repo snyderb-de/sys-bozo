@@ -19,4 +19,13 @@ hosts:
     profile: linux-home
     user: bag
     dotfiles_flake_key: "bag@butler"
-    notes: Fedora 44 workstation · home-manager standalone
+    notes: Fedora 44 workstation · home-manager standalone · NVIDIA RTX A2000 12GB
+
+  # Update hostname/user when known
+  fedora-laptop:
+    os: linux
+    arch: x86_64
+    profile: linux-home
+    user: bag
+    dotfiles_flake_key: "bag@fedora-laptop"
+    notes: Fedora laptop · shares home/linux/default.nix with butler · no GPU/server apps
