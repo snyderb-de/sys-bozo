@@ -250,13 +250,19 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "tab", "right":
 		m.nextTab()
+		if cmd := m.auditCmdIfNeeded(); cmd != nil {
+			return m, cmd
+		}
 	case "shift+tab", "left":
 		m.prevTab()
+		if cmd := m.auditCmdIfNeeded(); cmd != nil {
+			return m, cmd
+		}
 	case "1", "2", "3", "4":
 		m.tab = int(msg.String()[0] - '1')
 		m.cursor = 0
-		if m.tabs[m.tab] == "Audit" && !m.auditReady {
-			return m, m.runAudit()
+		if cmd := m.auditCmdIfNeeded(); cmd != nil {
+			return m, cmd
 		}
 
 	case "j", "down":
@@ -300,6 +306,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.tasks = runner.DefaultTasks(m.runCtx)
 			m.auditReady = false
 			m.auditItems = nil
+			if m.tabs[m.tab] == "Audit" {
+				return m, m.runAudit()
+			}
 		}
 
 	case "a":
@@ -311,6 +320,13 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+func (m Model) auditCmdIfNeeded() tea.Cmd {
+	if m.tabs[m.tab] == "Audit" && !m.auditReady {
+		return m.runAudit()
+	}
+	return nil
 }
 
 // ── Run logic ─────────────────────────────────────────────────────────────
