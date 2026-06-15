@@ -122,12 +122,31 @@ func Install(opts InstallOptions) Plan {
 func Update(selected []string) Plan {
 	tasks := normalizeKeepOrder(selected)
 	if len(tasks) == 0 {
-		tasks = []string{"brew-update", "brew-upgrade", "nix-flake-update", "home-manager-apply"}
+		tasks = []string{"sys-bozo-self-update", "brew-update", "brew-upgrade", "nix-flake-update", "home-manager-apply", "topgrade"}
 	}
 
 	actions := []Action{}
 	for _, task := range tasks {
 		switch task {
+		case "sys-bozo-self-update":
+			actions = append(actions,
+				Action{
+					Kind:        ActionCommand,
+					Title:       "Update sys-bozo source",
+					Description: "Fast-forward the sys-bozo source repo before rebuilding the local binary.",
+					Command:     []string{"git", "pull", "--ff-only"},
+					Targets:     []string{"~/code/sys-bozo"},
+					Mutates:     true,
+				},
+				Action{
+					Kind:        ActionCommand,
+					Title:       "Rebuild sys-bozo",
+					Description: "Install the freshly built binary for the next sys-bozo run.",
+					Command:     []string{"go", "build", "-o", "~/.local/bin/sys-bozo", "./cmd/sys-bozo"},
+					Targets:     []string{"~/.local/bin/sys-bozo"},
+					Mutates:     true,
+				},
+			)
 		case "brew-update":
 			actions = append(actions, Action{Kind: ActionCommand, Title: "Refresh Homebrew metadata", Command: []string{"brew", "update"}, Mutates: true})
 		case "brew-upgrade":
@@ -140,6 +159,27 @@ func Update(selected []string) Plan {
 			actions = append(actions, Action{Kind: ActionCommand, Title: "Apply Home Manager profile", Command: []string{"home-manager", "switch", "--flake", "."}, Mutates: true})
 		case "darwin-apply":
 			actions = append(actions, Action{Kind: ActionCommand, Title: "Apply nix-darwin host", Command: []string{"darwin-rebuild", "switch", "--flake", "."}, Mutates: true})
+		case "topgrade":
+			actions = append(actions, Action{
+				Kind:        ActionCommand,
+				Title:       "Run Topgrade ecosystem sweep",
+				Description: "Skip Nix, Home Manager, Brew, system package upgrades, and restart checks because sys-bozo owns those paths.",
+				Command: []string{
+					"topgrade",
+					"--yes",
+					"--skip-notify",
+					"--no-retry",
+					"--no-self-update",
+					"--disable",
+					"nix",
+					"home_manager",
+					"brew_formula",
+					"brew_cask",
+					"system",
+					"restarts",
+				},
+				Mutates: true,
+			})
 		}
 	}
 

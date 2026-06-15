@@ -37,6 +37,17 @@ func TestUpdatePlanCanSelectSpecificManagers(t *testing.T) {
 	}
 }
 
+func TestUpdatePlanDefaultsIncludeTopgradeSweep(t *testing.T) {
+	p := Update(nil)
+	text := strings.Join(p.Lines(), "\n")
+
+	for _, want := range []string{"Update sys-bozo source", "Rebuild sys-bozo", "topgrade", "--skip-notify", "home_manager", "brew_formula"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("default update plan missing %q:\n%s", want, text)
+		}
+	}
+}
+
 func TestPackageSearchPlanDoesNotMutateBeforeApply(t *testing.T) {
 	p := PackageSearch("yazi")
 	text := strings.Join(p.Lines(), "\n")

@@ -19,34 +19,34 @@ import (
 // ── Palette (Tokyo Night Storm) ───────────────────────────────────────────
 
 var (
-	clrBg      = lipgloss.Color("#1e2030")
-	clrPanel   = lipgloss.Color("#222436")
-	clrBorder  = lipgloss.Color("#2d3f6a")
-	clrText    = lipgloss.Color("#c8d3f5")
-	clrMuted   = lipgloss.Color("#636da6")
-	clrFaint   = lipgloss.Color("#444a73")
-	clrGold    = lipgloss.Color("#ffc777")
-	clrCyan    = lipgloss.Color("#86e1fc")
-	clrBlue    = lipgloss.Color("#82aaff")
-	clrGreen   = lipgloss.Color("#c3e88d")
-	clrRed     = lipgloss.Color("#ff757f")
-	clrOrange  = lipgloss.Color("#ff966c")
-	clrPurple  = lipgloss.Color("#c099ff")
+	clrBg     = lipgloss.Color("#1e2030")
+	clrPanel  = lipgloss.Color("#222436")
+	clrBorder = lipgloss.Color("#2d3f6a")
+	clrText   = lipgloss.Color("#c8d3f5")
+	clrMuted  = lipgloss.Color("#636da6")
+	clrFaint  = lipgloss.Color("#444a73")
+	clrGold   = lipgloss.Color("#ffc777")
+	clrCyan   = lipgloss.Color("#86e1fc")
+	clrBlue   = lipgloss.Color("#82aaff")
+	clrGreen  = lipgloss.Color("#c3e88d")
+	clrRed    = lipgloss.Color("#ff757f")
+	clrOrange = lipgloss.Color("#ff966c")
+	clrPurple = lipgloss.Color("#c099ff")
 )
 
 // ── Styles ────────────────────────────────────────────────────────────────
 
 var (
-	styleBold    = lipgloss.NewStyle().Bold(true)
-	styleTitle   = lipgloss.NewStyle().Foreground(clrGold).Bold(true)
-	styleMuted   = lipgloss.NewStyle().Foreground(clrMuted)
-	styleFaint   = lipgloss.NewStyle().Foreground(clrFaint)
-	styleGood    = lipgloss.NewStyle().Foreground(clrGreen).Bold(true)
-	styleWarn    = lipgloss.NewStyle().Foreground(clrOrange).Bold(true)
-	styleErr     = lipgloss.NewStyle().Foreground(clrRed).Bold(true)
-	styleCmd     = lipgloss.NewStyle().Foreground(clrMuted)
-	styleAccent  = lipgloss.NewStyle().Foreground(clrCyan)
-	stylePurple  = lipgloss.NewStyle().Foreground(clrPurple)
+	styleBold   = lipgloss.NewStyle().Bold(true)
+	styleTitle  = lipgloss.NewStyle().Foreground(clrGold).Bold(true)
+	styleMuted  = lipgloss.NewStyle().Foreground(clrMuted)
+	styleFaint  = lipgloss.NewStyle().Foreground(clrFaint)
+	styleGood   = lipgloss.NewStyle().Foreground(clrGreen).Bold(true)
+	styleWarn   = lipgloss.NewStyle().Foreground(clrOrange).Bold(true)
+	styleErr    = lipgloss.NewStyle().Foreground(clrRed).Bold(true)
+	styleCmd    = lipgloss.NewStyle().Foreground(clrMuted)
+	styleAccent = lipgloss.NewStyle().Foreground(clrCyan)
+	stylePurple = lipgloss.NewStyle().Foreground(clrPurple)
 
 	styleCard = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
@@ -97,14 +97,14 @@ type logLine struct {
 type appMode int
 
 const (
-	modeView    appMode = iota
+	modeView appMode = iota
 	modeRunning
 	modeDone
 )
 
 // ── Tea messages ─────────────────────────────────────────────────────────
 
-type lineMsg    struct{ text string }
+type lineMsg struct{ text string }
 type stepDoneMsg struct {
 	err     error
 	elapsed time.Duration
@@ -124,10 +124,10 @@ type Model struct {
 	width  int
 	height int
 
-	mode     appMode
-	queue    []runner.WorkItem
-	queuePos int
-	runStart time.Time
+	mode      appMode
+	queue     []runner.WorkItem
+	queuePos  int
+	runStart  time.Time
 	stepStart time.Time
 
 	logLines  []logLine
@@ -253,7 +253,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "shift+tab", "left":
 		m.prevTab()
 	case "1", "2", "3", "4":
-		m.tab = int(msg.String()[0]-'1')
+		m.tab = int(msg.String()[0] - '1')
 		m.cursor = 0
 		if m.tabs[m.tab] == "Audit" && !m.auditReady {
 			return m, m.runAudit()
@@ -503,6 +503,7 @@ func (m Model) viewDashboard(w int) string {
 		mgrs = append(mgrs, managerLine("nix-darwin", m.facts.DarwinRebuild))
 	}
 	mgrs = append(mgrs, managerLine("home-manager", m.facts.HomeManager))
+	mgrs = append(mgrs, managerLine("topgrade", m.facts.Topgrade))
 	if m.facts.TailscaleIP != "" {
 		mgrs = append(mgrs, row("tailscale", m.facts.TailscaleIP))
 	}
@@ -698,6 +699,7 @@ func (m Model) viewDoctor(w int) string {
 	for _, check := range []struct{ name, path string }{
 		{"nix         ", f.NixPath},
 		{"home-manager", f.HomeManager},
+		{"topgrade    ", f.Topgrade},
 		{"brew        ", f.BrewPath},
 		{"nix-darwin  ", f.DarwinRebuild},
 	} {

@@ -14,13 +14,18 @@ import (
 // Context holds resolved binary paths and host identity for task execution.
 type Context struct {
 	Repo           string
+	SysBozoRepo    string
+	SysBozoBin     string
 	User           string
 	Hostname       string
 	OS             string
+	GitBin         string
+	GoBin          string
 	NixBin         string
 	BrewBin        string
 	HomeManager    string
 	DarwinRebuild  string
+	Topgrade       string
 	SopsAgeKeyFile string
 }
 
@@ -73,6 +78,11 @@ func Build() Context {
 	if repo == "" {
 		repo = filepath.Join(home, "code", "dotfiles")
 	}
+	sysBozoRepo := os.Getenv("SYS_BOZO_REPO")
+	if sysBozoRepo == "" {
+		sysBozoRepo = filepath.Join(home, "code", "sys-bozo")
+	}
+	sysBozoBin := filepath.Join(home, ".local", "bin", "sys-bozo")
 
 	sopsKey := os.Getenv("SOPS_AGE_KEY_FILE")
 	if sopsKey == "" {
@@ -86,13 +96,18 @@ func Build() Context {
 
 	return Context{
 		Repo:           repo,
+		SysBozoRepo:    sysBozoRepo,
+		SysBozoBin:     sysBozoBin,
 		User:           user,
 		Hostname:       hostname,
 		OS:             runtime.GOOS,
+		GitBin:         findExe("git"),
+		GoBin:          findExe("go"),
 		NixBin:         findExe("nix", "/nix/var/nix/profiles/default/bin/nix"),
 		BrewBin:        findExe("brew", "/opt/homebrew/bin/brew", "/usr/local/bin/brew"),
 		HomeManager:    findExe("home-manager", hmFallbacks...),
 		DarwinRebuild:  findExe("darwin-rebuild", "/run/current-system/sw/bin/darwin-rebuild"),
+		Topgrade:       findExe("topgrade"),
 		SopsAgeKeyFile: sopsKey,
 	}
 }
@@ -100,6 +115,30 @@ func Build() Context {
 // DefaultTasks returns all known tasks, each with platform availability gating.
 func DefaultTasks(ctx Context) []Task {
 	return []Task{
+		{
+			ID:    "sys-bozo-self-update",
+			Label: "sys-bozo self update",
+			Desc:  "Pull sys-bozo source and rebuild ~/.local/bin/sys-bozo",
+			Available: func(c Context) bool {
+				if c.GitBin == "" || c.GoBin == "" || c.SysBozoRepo == "" || c.SysBozoBin == "" {
+					return false
+				}
+				if _, err := os.Stat(filepath.Join(c.SysBozoRepo, "cmd", "sys-bozo")); err != nil {
+					return false
+				}
+				return true
+			},
+			Selected: true,
+			Steps: []Step{
+				{Cmd: func(c Context) (string, []string) {
+					return c.GitBin, []string{"pull", "--ff-only"}
+				}},
+				{Cmd: func(c Context) (string, []string) {
+					return c.GoBin, []string{"build", "-o", c.SysBozoBin, "./cmd/sys-bozo"}
+				}},
+			},
+			Dir: func(c Context) string { return c.SysBozoRepo },
+		},
 		{
 			ID:        "nix-flake-update",
 			Label:     "Nix flake update",
@@ -114,9 +153,9 @@ func DefaultTasks(ctx Context) []Task {
 			Dir: func(c Context) string { return c.Repo },
 		},
 		{
-			ID:    "home-manager-switch",
-			Label: "Home Manager switch",
-			Desc:  "Apply user profile · " + HMConfigKey(ctx.User, ctx.Hostname),
+			ID:        "home-manager-switch",
+			Label:     "Home Manager switch",
+			Desc:      "Apply user profile · " + HMConfigKey(ctx.User, ctx.Hostname),
 			Available: func(c Context) bool { return c.HomeManager != "" },
 			Selected:  true,
 			Steps: []Step{
@@ -153,15 +192,39 @@ func DefaultTasks(ctx Context) []Task {
 			Dir: func(c Context) string { return c.Repo },
 		},
 		{
-			ID:    "brew-update",
-			Label: "Brew update + upgrade",
-			Desc:  "Refresh metadata, upgrade all formulae and casks",
+			ID:        "brew-update",
+			Label:     "Brew update + upgrade",
+			Desc:      "Refresh metadata, upgrade all formulae and casks",
 			Available: func(c Context) bool { return c.BrewBin != "" },
 			Selected:  true,
 			Steps: []Step{
 				{Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"update"} }},
 				{Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"upgrade"} }},
 				{Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"autoremove"} }},
+			},
+		},
+		{
+			ID:        "topgrade",
+			Label:     "Topgrade ecosystem sweep",
+			Desc:      "Update tool ecosystems not already owned by sys-bozo tasks",
+			Available: func(c Context) bool { return c.Topgrade != "" },
+			Selected:  true,
+			Steps: []Step{
+				{Cmd: func(c Context) (string, []string) {
+					return c.Topgrade, []string{
+						"--yes",
+						"--skip-notify",
+						"--no-retry",
+						"--no-self-update",
+						"--disable",
+						"nix",
+						"home_manager",
+						"brew_formula",
+						"brew_cask",
+						"system",
+						"restarts",
+					}
+				}},
 			},
 		},
 	}

@@ -23,6 +23,7 @@ type Facts struct {
 	BrewPath      string
 	HomeManager   string
 	DarwinRebuild string
+	Topgrade      string
 	BrewOutdated  int
 
 	// Dotfiles repo
@@ -49,12 +50,12 @@ func Probe() Facts {
 	}
 
 	facts := Facts{
-		Hostname:    hostname,
-		User:        user,
-		OS:          runtime.GOOS,
-		Arch:        runtime.GOARCH,
-		Shell:       os.Getenv("SHELL"),
-		WorkingDir:  wd,
+		Hostname:     hostname,
+		User:         user,
+		OS:           runtime.GOOS,
+		Arch:         runtime.GOARCH,
+		Shell:        os.Getenv("SHELL"),
+		WorkingDir:   wd,
 		DotfilesRepo: repo,
 	}
 
@@ -62,6 +63,7 @@ func Probe() Facts {
 	facts.BrewPath, _ = exec.LookPath("brew")
 	facts.HomeManager, _ = exec.LookPath("home-manager")
 	facts.DarwinRebuild, _ = exec.LookPath("darwin-rebuild")
+	facts.Topgrade, _ = exec.LookPath("topgrade")
 
 	facts.GitDirtyCount = gitDirtyCount(wd)
 	facts.DotfilesDirty = gitDirtyCount(repo)
@@ -98,6 +100,7 @@ func (f Facts) ManagerStatus() []string {
 		statusLine("nix", f.NixPath),
 		statusLine("brew", f.BrewPath),
 		statusLine("home-manager", f.HomeManager),
+		statusLine("topgrade", f.Topgrade),
 	}
 	if f.OS == "darwin" {
 		status = append(status, statusLine("nix-darwin", f.DarwinRebuild))
