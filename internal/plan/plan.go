@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/snyderb-de/sys-bozo/internal/runner"
 )
 
 type ActionKind string
@@ -184,6 +186,95 @@ func Update(selected []string) Plan {
 	}
 
 	return Plan{Title: "Update plan", Summary: "Selected update actions. Preview only; executor not wired yet.", Actions: actions}
+}
+
+func UpdateForContext(selected []string, ctx runner.Context) Plan {
+	tasks := runner.DefaultTasks(ctx)
+	actions := updateActionsForTasks(selected, tasks, ctx)
+	host := ctx.Hostname
+	if strings.TrimSpace(host) == "" {
+		host = "current host"
+	}
+
+	return Plan{
+		Title:   "Update plan",
+		Summary: fmt.Sprintf("Available update actions for %s. Preview only; run the TUI Updates tab to execute.", host),
+		Actions: actions,
+	}
+}
+
+func updateActionsForTasks(selected []string, tasks []runner.Task, ctx runner.Context) []Action {
+	requested := normalizeKeepOrder(selected)
+	if len(requested) > 0 {
+		var actions []Action
+		for _, id := range requested {
+			task, ok := findTask(tasks, id)
+			if !ok {
+				continue
+			}
+			actions = append(actions, actionsForTask(task, ctx, true)...)
+		}
+		return actions
+	}
+
+	var actions []Action
+	for _, task := range tasks {
+		if !task.Selected {
+			continue
+		}
+		actions = append(actions, actionsForTask(task, ctx, false)...)
+	}
+	return actions
+}
+
+func findTask(tasks []runner.Task, id string) (runner.Task, bool) {
+	for _, task := range tasks {
+		if task.ID == id {
+			return task, true
+		}
+	}
+	return runner.Task{}, false
+}
+
+func actionsForTask(task runner.Task, ctx runner.Context, explicit bool) []Action {
+	if task.Available != nil && !task.Available(ctx) {
+		if !explicit {
+			return nil
+		}
+		return []Action{{
+			Kind:        ActionInspect,
+			Title:       "Skip " + task.Label,
+			Description: "Task is not available on this host.",
+		}}
+	}
+
+	var actions []Action
+	for i, step := range task.Steps {
+		name, args := step.Cmd(ctx)
+		if strings.TrimSpace(name) == "" {
+			continue
+		}
+		title := step.Title
+		if title == "" {
+			title = task.Label
+			if len(task.Steps) > 1 {
+				title = fmt.Sprintf("%s step %d", task.Label, i+1)
+			}
+		}
+		description := step.Description
+		if description == "" {
+			description = task.Desc
+		}
+		actions = append(actions, Action{
+			Kind:        ActionCommand,
+			Title:       title,
+			Description: description,
+			Command:     append([]string{name}, args...),
+			Targets:     step.Targets,
+			Mutates:     true,
+		})
+	}
+	return actions
 }
 
 func PackageSearch(query string) Plan {

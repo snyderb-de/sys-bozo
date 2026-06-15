@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/snyderb-de/sys-bozo/internal/plan"
+	"github.com/snyderb-de/sys-bozo/internal/runner"
 	"github.com/snyderb-de/sys-bozo/internal/system"
 	"github.com/snyderb-de/sys-bozo/internal/tui"
 )
@@ -59,7 +60,7 @@ func runPlan(args []string) error {
 	} else {
 		switch rest[0] {
 		case "update":
-			p = plan.Update(rest[1:])
+			p = plan.UpdateForContext(rest[1:], runner.Build())
 		case "package":
 			p = plan.PackageSearch(strings.Join(rest[1:], " "))
 		case "move":
@@ -89,6 +90,9 @@ func printDoctor() {
 	fmt.Println("host:          ", value(facts.Hostname))
 	fmt.Println("user:          ", value(facts.User))
 	fmt.Println("os:            ", facts.OS+"/"+facts.Arch)
+	if facts.OSID != "" {
+		fmt.Println("os id:         ", facts.OSID)
+	}
 	fmt.Println("dotfiles repo: ", value(facts.DotfilesRepo))
 	fmt.Println("branch:        ", value(facts.DotfilesBranch))
 	fmt.Println("dirty files:   ", facts.DotfilesDirty)

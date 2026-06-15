@@ -3,6 +3,8 @@ package plan
 import (
 	"strings"
 	"testing"
+
+	"github.com/snyderb-de/sys-bozo/internal/runner"
 )
 
 func TestInstallPlanUsesProfileHostAndExclusions(t *testing.T) {
@@ -44,6 +46,42 @@ func TestUpdatePlanDefaultsIncludeTopgradeSweep(t *testing.T) {
 	for _, want := range []string{"Update sys-bozo source", "Rebuild sys-bozo", "topgrade", "--skip-notify", "home_manager", "brew_formula"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("default update plan missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestUpdatePlanForFedoraHostSkipsBrewAndIncludesDnf(t *testing.T) {
+	ctx := runner.Context{
+		Hostname:    "butler",
+		OS:          "linux",
+		OSID:        "fedora",
+		SudoBin:     "sudo",
+		DnfBin:      "dnf",
+		NixBin:      "nix",
+		HomeManager: "home-manager",
+		Topgrade:    "topgrade",
+	}
+
+	p := UpdateForContext(nil, ctx)
+	text := strings.Join(p.Lines(), "\n")
+
+	for _, want := range []string{"butler", "Upgrade Fedora packages", "sudo dnf upgrade --refresh -y", "topgrade"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("host update plan missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "brew update") {
+		t.Fatalf("host update plan should not include brew when brew is unavailable:\n%s", text)
+	}
+}
+
+func TestUpdatePlanForUnavailableExplicitTaskShowsSkip(t *testing.T) {
+	p := UpdateForContext([]string{"brew-update"}, runner.Context{Hostname: "butler", OS: "linux", OSID: "fedora"})
+	text := strings.Join(p.Lines(), "\n")
+
+	for _, want := range []string{"Skip Brew update + upgrade", "not available"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("explicit unavailable task plan missing %q:\n%s", want, text)
 		}
 	}
 }

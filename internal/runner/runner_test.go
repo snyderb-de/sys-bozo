@@ -51,3 +51,38 @@ func TestDefaultTasksIncludeSelfUpdateAndTopgradeSweep(t *testing.T) {
 		}
 	}
 }
+
+func TestDefaultTasksIncludeFedoraSystemUpgrade(t *testing.T) {
+	ctx := Context{
+		OS:      "linux",
+		OSID:    "fedora",
+		SudoBin: "sudo",
+		DnfBin:  "dnf",
+	}
+
+	tasks := DefaultTasks(ctx)
+	var fedora *Task
+	for i := range tasks {
+		if tasks[i].ID == "fedora-system-upgrade" {
+			fedora = &tasks[i]
+			break
+		}
+	}
+	if fedora == nil {
+		t.Fatal("missing fedora system upgrade task")
+	}
+	if !fedora.Available(ctx) || !fedora.Selected {
+		t.Fatal("fedora system upgrade task should be available and selected on Fedora with dnf and sudo")
+	}
+
+	name, args := fedora.Steps[0].Cmd(ctx)
+	text := name + " " + strings.Join(args, " ")
+	for _, want := range []string{"sudo", "dnf", "upgrade", "--refresh", "-y"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("fedora command missing %q: %s", want, text)
+		}
+	}
+	if strings.Contains(text, "-n") {
+		t.Fatalf("fedora command should rely on interactive sudo preflight, got: %s", text)
+	}
+}

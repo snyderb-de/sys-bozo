@@ -6,6 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/snyderb-de/sys-bozo/internal/runner"
 	"github.com/snyderb-de/sys-bozo/internal/system"
 )
 
@@ -65,5 +66,16 @@ func TestAuditViewShowsFailureGuidance(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("audit view missing %q:\n%s", want, out)
 		}
+	}
+}
+
+func TestSudoCommandDetectsQueuedSudoWork(t *testing.T) {
+	queue := []runner.WorkItem{
+		{Name: "nix", Args: []string{"flake", "update"}},
+		{Name: "/usr/bin/sudo", Args: []string{"/usr/bin/dnf", "upgrade"}},
+	}
+
+	if got := sudoCommand(queue); got != "/usr/bin/sudo" {
+		t.Fatalf("expected sudo command, got %q", got)
 	}
 }

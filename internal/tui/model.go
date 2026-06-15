@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -110,6 +111,7 @@ type stepDoneMsg struct {
 	elapsed time.Duration
 }
 type auditReadyMsg struct{ items []system.AuditItem }
+type sudoReadyMsg struct{ err error }
 
 // ── Model ─────────────────────────────────────────────────────────────────
 
@@ -213,6 +215,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.auditItems = msg.items
 		m.auditReady = true
 		return m, nil
+
+	case sudoReadyMsg:
+		if msg.err != nil {
+			m.logLines = append(m.logLines, logLine{kind: logError,
+				text: fmt.Sprintf("  ✗ sudo preflight failed: %s", msg.err)})
+			m.mode = modeDone
+			m.logVP.SetContent(m.renderLog())
+			m.logVP.GotoBottom()
+			return m, nil
+		}
+		m.logLines = append(m.logLines, logLine{kind: logSuccess, text: "  ✓ sudo ready"})
+		m.logVP.SetContent(m.renderLog())
+		m.logVP.GotoBottom()
+		return m, tea.Batch(m.advanceQueue(), m.spinner.Tick)
 
 	case spinner.TickMsg:
 		if m.mode == modeRunning {
@@ -344,7 +360,22 @@ func (m *Model) startRun() tea.Cmd {
 
 	m.logVP = viewport.New(m.logWidth(), m.logHeight())
 
+	if sudoBin := sudoCommand(m.queue); sudoBin != "" {
+		m.logLines = append(m.logLines, logLine{kind: logHeader, text: "  ● sudo preflight"})
+		m.logLines = append(m.logLines, logLine{kind: logCmd, text: "    $ " + sudoBin + " -v"})
+		m.logVP.SetContent(m.renderLog())
+		m.logVP.GotoBottom()
+		return tea.Batch(m.runSudoPreflight(sudoBin), m.spinner.Tick)
+	}
+
 	return tea.Batch(m.advanceQueue(), m.spinner.Tick)
+}
+
+func (m Model) runSudoPreflight(sudoBin string) tea.Cmd {
+	cmd := exec.Command(sudoBin, "-v")
+	return tea.ExecProcess(cmd, func(err error) tea.Msg {
+		return sudoReadyMsg{err: err}
+	})
 }
 
 func (m *Model) advanceQueue() tea.Cmd {
@@ -487,7 +518,7 @@ func (m Model) viewDashboard(w int) string {
 		styleTitle.Render("Host"),
 		row("Name ", m.facts.Hostname),
 		row("User ", m.facts.User),
-		row("OS   ", m.facts.OS+"/"+m.facts.Arch),
+		row("OS   ", osLabel(m.facts)),
 		row("Shell", shortPath(m.facts.Shell)),
 	}, "\n"))
 
@@ -514,6 +545,10 @@ func (m Model) viewDashboard(w int) string {
 	var mgrs []string
 	mgrs = append(mgrs, styleTitle.Render("Managers"))
 	mgrs = append(mgrs, managerLine("nix", m.facts.NixPath))
+	if m.facts.OS == "linux" && m.facts.OSID == "fedora" {
+		mgrs = append(mgrs, managerLine("dnf", m.facts.DnfPath))
+		mgrs = append(mgrs, managerLine("sudo", m.facts.SudoPath))
+	}
 	if m.facts.OS == "darwin" {
 		mgrs = append(mgrs, managerLine("brew", m.facts.BrewPath))
 		mgrs = append(mgrs, managerLine("nix-darwin", m.facts.DarwinRebuild))
@@ -761,17 +796,35 @@ func (m Model) viewDoctor(w int) string {
 		{"nix         ", f.NixPath},
 		{"home-manager", f.HomeManager},
 		{"topgrade    ", f.Topgrade},
-		{"brew        ", f.BrewPath},
-		{"nix-darwin  ", f.DarwinRebuild},
 	} {
-		if check.path == "" && (check.name == "brew        " || check.name == "nix-darwin  ") {
-			rows = append(rows, rowStyled("    "+check.name, styleFaint.Render("n/a")))
-			continue
-		}
 		if check.path == "" {
 			rows = append(rows, rowStyled("    "+check.name, styleErr.Render("missing")))
 		} else {
 			rows = append(rows, rowStyled("    "+check.name, styleGood.Render(shortPath(check.path))))
+		}
+	}
+	if f.OS == "linux" && f.OSID == "fedora" {
+		for _, check := range []struct{ name, path string }{
+			{"dnf         ", f.DnfPath},
+			{"sudo        ", f.SudoPath},
+		} {
+			if check.path == "" {
+				rows = append(rows, rowStyled("    "+check.name, styleErr.Render("missing")))
+			} else {
+				rows = append(rows, rowStyled("    "+check.name, styleGood.Render(shortPath(check.path))))
+			}
+		}
+	}
+	if f.OS == "darwin" {
+		for _, check := range []struct{ name, path string }{
+			{"brew        ", f.BrewPath},
+			{"nix-darwin  ", f.DarwinRebuild},
+		} {
+			if check.path == "" {
+				rows = append(rows, rowStyled("    "+check.name, styleErr.Render("missing")))
+			} else {
+				rows = append(rows, rowStyled("    "+check.name, styleGood.Render(shortPath(check.path))))
+			}
 		}
 	}
 
@@ -902,6 +955,22 @@ func countCompletedTasks(queue []runner.WorkItem, pos int) int {
 		}
 	}
 	return n
+}
+
+func sudoCommand(queue []runner.WorkItem) string {
+	for _, item := range queue {
+		if item.Name == "sudo" || strings.HasSuffix(item.Name, "/sudo") {
+			return item.Name
+		}
+	}
+	return ""
+}
+
+func osLabel(f system.Facts) string {
+	if f.OSID != "" {
+		return f.OS + "/" + f.Arch + " (" + f.OSID + ")"
+	}
+	return f.OS + "/" + f.Arch
 }
 
 func row(label, value string) string {

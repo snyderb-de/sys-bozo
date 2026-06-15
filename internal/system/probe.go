@@ -15,10 +15,13 @@ type Facts struct {
 	Hostname      string
 	User          string
 	OS            string
+	OSID          string
 	Arch          string
 	Shell         string
 	WorkingDir    string
 	GitDirtyCount int
+	SudoPath      string
+	DnfPath       string
 	NixPath       string
 	BrewPath      string
 	HomeManager   string
@@ -53,12 +56,18 @@ func Probe() Facts {
 		Hostname:     hostname,
 		User:         user,
 		OS:           runtime.GOOS,
+		OSID:         osReleaseID(),
 		Arch:         runtime.GOARCH,
 		Shell:        os.Getenv("SHELL"),
 		WorkingDir:   wd,
 		DotfilesRepo: repo,
 	}
 
+	facts.SudoPath, _ = exec.LookPath("sudo")
+	facts.DnfPath, _ = exec.LookPath("dnf")
+	if facts.DnfPath == "" {
+		facts.DnfPath, _ = exec.LookPath("dnf5")
+	}
 	facts.NixPath, _ = exec.LookPath("nix")
 	facts.BrewPath, _ = exec.LookPath("brew")
 	facts.HomeManager, _ = exec.LookPath("home-manager")
@@ -98,11 +107,15 @@ func Probe() Facts {
 func (f Facts) ManagerStatus() []string {
 	status := []string{
 		statusLine("nix", f.NixPath),
-		statusLine("brew", f.BrewPath),
 		statusLine("home-manager", f.HomeManager),
 		statusLine("topgrade", f.Topgrade),
 	}
+	if f.OS == "linux" && f.OSID == "fedora" {
+		status = append(status, statusLine("dnf", f.DnfPath))
+		status = append(status, statusLine("sudo", f.SudoPath))
+	}
 	if f.OS == "darwin" {
+		status = append(status, statusLine("brew", f.BrewPath))
 		status = append(status, statusLine("nix-darwin", f.DarwinRebuild))
 	}
 	return status
@@ -113,6 +126,24 @@ func statusLine(name, path string) string {
 		return name + ": missing"
 	}
 	return name + ": " + path
+}
+
+func osReleaseID() string {
+	if runtime.GOOS != "linux" {
+		return ""
+	}
+	data, err := os.ReadFile("/etc/os-release")
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		key, value, ok := strings.Cut(line, "=")
+		if !ok || key != "ID" {
+			continue
+		}
+		return strings.Trim(strings.TrimSpace(value), `"'`)
+	}
+	return ""
 }
 
 // AuditItem is one local file/tool check result.

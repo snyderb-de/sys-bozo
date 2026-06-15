@@ -19,8 +19,11 @@ type Context struct {
 	User           string
 	Hostname       string
 	OS             string
+	OSID           string
 	GitBin         string
 	GoBin          string
+	SudoBin        string
+	DnfBin         string
 	NixBin         string
 	BrewBin        string
 	HomeManager    string
@@ -31,7 +34,10 @@ type Context struct {
 
 // Step is one command within a Task.
 type Step struct {
-	Cmd func(ctx Context) (name string, args []string)
+	Title       string
+	Description string
+	Targets     []string
+	Cmd         func(ctx Context) (name string, args []string)
 }
 
 // Task is a selectable unit of work shown in the Updates tab.
@@ -73,6 +79,7 @@ func Build() Context {
 	}
 	hostname, _ := os.Hostname()
 	home, _ := os.UserHomeDir()
+	osID := osReleaseID()
 
 	repo := os.Getenv("DOTFILES_REPO")
 	if repo == "" {
@@ -94,6 +101,8 @@ func Build() Context {
 		filepath.Join("/nix/var/nix/profiles/per-user", user, "profile/bin/home-manager"),
 	}
 
+	sudoBin := findExe("sudo")
+
 	return Context{
 		Repo:           repo,
 		SysBozoRepo:    sysBozoRepo,
@@ -101,8 +110,11 @@ func Build() Context {
 		User:           user,
 		Hostname:       hostname,
 		OS:             runtime.GOOS,
+		OSID:           osID,
 		GitBin:         findExe("git"),
 		GoBin:          findExe("go"),
+		SudoBin:        sudoBin,
+		DnfBin:         findExe("dnf", "/usr/bin/dnf5"),
 		NixBin:         findExe("nix", "/nix/var/nix/profiles/default/bin/nix"),
 		BrewBin:        findExe("brew", "/opt/homebrew/bin/brew", "/usr/local/bin/brew"),
 		HomeManager:    findExe("home-manager", hmFallbacks...),
@@ -130,10 +142,10 @@ func DefaultTasks(ctx Context) []Task {
 			},
 			Selected: true,
 			Steps: []Step{
-				{Cmd: func(c Context) (string, []string) {
+				{Title: "Update sys-bozo source", Description: "Fast-forward the sys-bozo source repo before rebuilding the local binary.", Targets: []string{"~/code/sys-bozo"}, Cmd: func(c Context) (string, []string) {
 					return c.GitBin, []string{"pull", "--ff-only"}
 				}},
-				{Cmd: func(c Context) (string, []string) {
+				{Title: "Rebuild sys-bozo", Description: "Install the freshly built binary for the next sys-bozo run.", Targets: []string{"~/.local/bin/sys-bozo"}, Cmd: func(c Context) (string, []string) {
 					return c.GoBin, []string{"build", "-o", c.SysBozoBin, "./cmd/sys-bozo"}
 				}},
 			},
@@ -146,7 +158,7 @@ func DefaultTasks(ctx Context) []Task {
 			Available: func(c Context) bool { return c.NixBin != "" },
 			Selected:  true,
 			Steps: []Step{
-				{Cmd: func(c Context) (string, []string) {
+				{Title: "Update Nix flake inputs", Description: "Nix usually updates by input, not individual package.", Targets: []string{"flake.lock"}, Cmd: func(c Context) (string, []string) {
 					return c.NixBin, []string{"flake", "update"}
 				}},
 			},
@@ -159,7 +171,7 @@ func DefaultTasks(ctx Context) []Task {
 			Available: func(c Context) bool { return c.HomeManager != "" },
 			Selected:  true,
 			Steps: []Step{
-				{Cmd: func(c Context) (string, []string) {
+				{Title: "Apply Home Manager profile", Cmd: func(c Context) (string, []string) {
 					return c.HomeManager, []string{
 						"switch", "--flake", ".#" + HMConfigKey(c.User, c.Hostname),
 					}
@@ -178,12 +190,12 @@ func DefaultTasks(ctx Context) []Task {
 			Label: "nix-darwin switch",
 			Desc:  "Apply macOS host profile",
 			Available: func(c Context) bool {
-				return c.DarwinRebuild != "" && c.OS == "darwin"
+				return c.DarwinRebuild != "" && c.SudoBin != "" && c.OS == "darwin"
 			},
 			Selected: true,
 			Steps: []Step{
-				{Cmd: func(c Context) (string, []string) {
-					return "sudo", []string{
+				{Title: "Apply nix-darwin host", Cmd: func(c Context) (string, []string) {
+					return c.SudoBin, []string{
 						"-H", c.DarwinRebuild, "switch",
 						"--flake", ".#" + c.Hostname, "--impure",
 					}
@@ -192,15 +204,29 @@ func DefaultTasks(ctx Context) []Task {
 			Dir: func(c Context) string { return c.Repo },
 		},
 		{
+			ID:    "fedora-system-upgrade",
+			Label: "Fedora system upgrade",
+			Desc:  "Upgrade RPM packages with DNF after an interactive sudo preflight",
+			Available: func(c Context) bool {
+				return c.OS == "linux" && c.OSID == "fedora" && c.SudoBin != "" && c.DnfBin != ""
+			},
+			Selected: true,
+			Steps: []Step{
+				{Title: "Upgrade Fedora packages", Description: "sys-bozo runs sudo -v before the queue so this command can run without prompting inside the log pane.", Cmd: func(c Context) (string, []string) {
+					return c.SudoBin, []string{c.DnfBin, "upgrade", "--refresh", "-y"}
+				}},
+			},
+		},
+		{
 			ID:        "brew-update",
 			Label:     "Brew update + upgrade",
 			Desc:      "Refresh metadata, upgrade all formulae and casks",
 			Available: func(c Context) bool { return c.BrewBin != "" },
 			Selected:  true,
 			Steps: []Step{
-				{Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"update"} }},
-				{Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"upgrade"} }},
-				{Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"autoremove"} }},
+				{Title: "Refresh Homebrew metadata", Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"update"} }},
+				{Title: "Upgrade Homebrew packages", Description: "Upgrade installed formulae and casks.", Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"upgrade"} }},
+				{Title: "Remove unused Homebrew dependencies", Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"autoremove"} }},
 			},
 		},
 		{
@@ -210,7 +236,7 @@ func DefaultTasks(ctx Context) []Task {
 			Available: func(c Context) bool { return c.Topgrade != "" },
 			Selected:  true,
 			Steps: []Step{
-				{Cmd: func(c Context) (string, []string) {
+				{Title: "Run Topgrade ecosystem sweep", Description: "Skip Nix, Home Manager, Brew, system package upgrades, and restart checks because sys-bozo owns those paths.", Cmd: func(c Context) (string, []string) {
 					return c.Topgrade, []string{
 						"--yes",
 						"--skip-notify",
@@ -307,6 +333,24 @@ func findExe(name string, fallbacks ...string) string {
 		if _, err := os.Stat(p); err == nil {
 			return p
 		}
+	}
+	return ""
+}
+
+func osReleaseID() string {
+	if runtime.GOOS != "linux" {
+		return ""
+	}
+	data, err := os.ReadFile("/etc/os-release")
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		key, value, ok := strings.Cut(line, "=")
+		if !ok || key != "ID" {
+			continue
+		}
+		return strings.Trim(strings.TrimSpace(value), `"'`)
 	}
 	return ""
 }
