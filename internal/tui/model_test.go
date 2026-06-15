@@ -79,3 +79,36 @@ func TestSudoCommandDetectsQueuedSudoWork(t *testing.T) {
 		t.Fatalf("expected sudo command, got %q", got)
 	}
 }
+
+func TestDashboardIsCompact(t *testing.T) {
+	m := Model{
+		facts: system.Facts{
+			Hostname:       "butler",
+			User:           "bag",
+			OS:             "linux",
+			OSID:           "fedora",
+			Arch:           "amd64",
+			Shell:          "/run/current-system/sw/bin/zsh",
+			DotfilesRepo:   "/home/bag/code/dotfiles",
+			DotfilesBranch: "main",
+			HMGeneration:   "gen 32",
+			NixPath:        "/nix/var/nix/profiles/default/bin/nix",
+			HomeManager:    "/home/bag/.nix-profile/bin/home-manager",
+			Topgrade:       "/home/bag/.nix-profile/bin/topgrade",
+			DnfPath:        "/usr/bin/dnf",
+			SudoPath:       "/usr/bin/sudo",
+			TailscaleIP:    "100.80.183.111",
+		},
+	}
+
+	out := m.viewDashboard(92)
+	lines := strings.Count(out, "\n") + 1
+	if lines > 8 {
+		t.Fatalf("dashboard should stay compact, got %d lines:\n%s", lines, out)
+	}
+	for _, want := range []string{"Home", "bag@butler", "fedora", "dnf ok", "tailscale"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("dashboard missing %q:\n%s", want, out)
+		}
+	}
+}

@@ -512,16 +512,6 @@ func (m Model) viewBody(w int) string {
 // ── Dashboard ─────────────────────────────────────────────────────────────
 
 func (m Model) viewDashboard(w int) string {
-	colW := max(26, (w-6)/3)
-
-	host := styleCard.Width(colW).Render(strings.Join([]string{
-		styleTitle.Render("Host"),
-		row("Name ", m.facts.Hostname),
-		row("User ", m.facts.User),
-		row("OS   ", osLabel(m.facts)),
-		row("Shell", shortPath(m.facts.Shell)),
-	}, "\n"))
-
 	dirtyStr := styleGood.Render("clean")
 	if m.facts.DotfilesDirty > 0 {
 		dirtyStr = styleWarn.Render(fmt.Sprintf("%d files", m.facts.DotfilesDirty))
@@ -534,36 +524,37 @@ func (m Model) viewDashboard(w int) string {
 	if hmGen == "" || hmGen == "none" {
 		hmGen = styleMuted.Render("none")
 	}
-	state := styleCard.Width(colW).Render(strings.Join([]string{
-		styleTitle.Render("State"),
-		rowStyled("Branch", branch),
-		rowStyled("Dirty ", dirtyStr),
-		rowStyled("HM    ", hmGen),
-		row("Repo  ", shortPath(m.facts.DotfilesRepo)),
-	}, "\n"))
 
-	var mgrs []string
-	mgrs = append(mgrs, styleTitle.Render("Managers"))
-	mgrs = append(mgrs, managerLine("nix", m.facts.NixPath))
+	managerParts := []string{
+		compactManagerStatus("nix", m.facts.NixPath),
+		compactManagerStatus("home-manager", m.facts.HomeManager),
+		compactManagerStatus("topgrade", m.facts.Topgrade),
+	}
 	if m.facts.OS == "linux" && m.facts.OSID == "fedora" {
-		mgrs = append(mgrs, managerLine("dnf", m.facts.DnfPath))
-		mgrs = append(mgrs, managerLine("sudo", m.facts.SudoPath))
+		managerParts = append(managerParts,
+			compactManagerStatus("dnf", m.facts.DnfPath),
+			compactManagerStatus("sudo", m.facts.SudoPath),
+		)
 	}
 	if m.facts.OS == "darwin" {
-		mgrs = append(mgrs, managerLine("brew", m.facts.BrewPath))
-		mgrs = append(mgrs, managerLine("nix-darwin", m.facts.DarwinRebuild))
+		managerParts = append(managerParts,
+			compactManagerStatus("brew", m.facts.BrewPath),
+			compactManagerStatus("nix-darwin", m.facts.DarwinRebuild),
+		)
 	}
-	mgrs = append(mgrs, managerLine("home-manager", m.facts.HomeManager))
-	mgrs = append(mgrs, managerLine("topgrade", m.facts.Topgrade))
-	if m.facts.TailscaleIP != "" {
-		mgrs = append(mgrs, row("tailscale", m.facts.TailscaleIP))
-	}
-	managers := styleCard.Width(colW).Render(strings.Join(mgrs, "\n"))
 
-	if w < 100 {
-		return lipgloss.JoinVertical(lipgloss.Left, host, "", state, "", managers)
+	rows := []string{
+		styleTitle.Render("Home"),
+		row("Host ", fmt.Sprintf("%s@%s | %s | %s", m.facts.User, m.facts.Hostname, osLabel(m.facts), baseName(m.facts.Shell))),
+		rowStyled("State", fmt.Sprintf("%s | %s | HM %s", branch, dirtyStr, hmGen)),
+		row("Repo ", shortPath(m.facts.DotfilesRepo)),
+		row("Tools", strings.Join(managerParts, " | ")),
 	}
-	return lipgloss.JoinHorizontal(lipgloss.Top, host, "  ", state, "  ", managers)
+	if m.facts.TailscaleIP != "" {
+		rows = append(rows, row("Net  ", "tailscale "+m.facts.TailscaleIP))
+	}
+
+	return styleCard.Padding(0, 1).Width(w).Render(strings.Join(rows, "\n"))
 }
 
 // ── Updates ───────────────────────────────────────────────────────────────
@@ -986,6 +977,24 @@ func managerLine(name, path string) string {
 		return styleFaint.Render(name) + "  " + styleFaint.Render("—")
 	}
 	return styleMuted.Render(name) + "  " + styleGood.Render(shortPath(path))
+}
+
+func compactManagerStatus(name, path string) string {
+	if path == "" {
+		return styleWarn.Render(name + " missing")
+	}
+	return styleGood.Render(name + " ok")
+}
+
+func baseName(path string) string {
+	path = strings.TrimRight(path, "/")
+	if path == "" {
+		return "unknown"
+	}
+	if idx := strings.LastIndex(path, "/"); idx >= 0 {
+		return path[idx+1:]
+	}
+	return path
 }
 
 func shortPath(p string) string {
