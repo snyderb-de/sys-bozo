@@ -637,6 +637,10 @@ func (m Model) viewAudit(w int) string {
 			detail = styleWarn.Render(item.Detail)
 		}
 		rows = append(rows, fmt.Sprintf("%s  %-18s %s", icon, item.Name, detail))
+		if !item.OK {
+			rows = append(rows, auditHelpRows("why", item.Description, cw-8, styleFaint)...)
+			rows = append(rows, auditHelpRows("fix", item.Fix, cw-8, styleMuted)...)
+		}
 		configCount++
 	}
 
@@ -656,6 +660,47 @@ func (m Model) viewAudit(w int) string {
 	rows = append(rows, summary)
 
 	return styleCard.Width(cw).Render(strings.Join(rows, "\n"))
+}
+
+func auditHelpRows(label, text string, width int, style lipgloss.Style) []string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+	prefix := "     " + label + ": "
+	continuation := strings.Repeat(" ", lipgloss.Width(prefix))
+	lineWidth := max(24, width-lipgloss.Width(prefix))
+	wrapped := wrapWords(text, lineWidth)
+
+	rows := make([]string, 0, len(wrapped))
+	for i, line := range wrapped {
+		if i == 0 {
+			rows = append(rows, style.Render(prefix+line))
+		} else {
+			rows = append(rows, style.Render(continuation+line))
+		}
+	}
+	return rows
+}
+
+func wrapWords(text string, width int) []string {
+	words := strings.Fields(text)
+	if len(words) == 0 {
+		return nil
+	}
+
+	var lines []string
+	line := words[0]
+	for _, word := range words[1:] {
+		if lipgloss.Width(line)+1+lipgloss.Width(word) > width {
+			lines = append(lines, line)
+			line = word
+			continue
+		}
+		line += " " + word
+	}
+	lines = append(lines, line)
+	return lines
 }
 
 // ── Doctor ────────────────────────────────────────────────────────────────
