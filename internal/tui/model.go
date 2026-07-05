@@ -19,34 +19,34 @@ import (
 // ── Palette (Tokyo Night Storm) ───────────────────────────────────────────
 
 var (
-	clrBg      = lipgloss.Color("#1e2030")
-	clrPanel   = lipgloss.Color("#222436")
-	clrBorder  = lipgloss.Color("#2d3f6a")
-	clrText    = lipgloss.Color("#c8d3f5")
-	clrMuted   = lipgloss.Color("#636da6")
-	clrFaint   = lipgloss.Color("#444a73")
-	clrGold    = lipgloss.Color("#ffc777")
-	clrCyan    = lipgloss.Color("#86e1fc")
-	clrBlue    = lipgloss.Color("#82aaff")
-	clrGreen   = lipgloss.Color("#c3e88d")
-	clrRed     = lipgloss.Color("#ff757f")
-	clrOrange  = lipgloss.Color("#ff966c")
-	clrPurple  = lipgloss.Color("#c099ff")
+	clrBg     = lipgloss.Color("#1e2030")
+	clrPanel  = lipgloss.Color("#222436")
+	clrBorder = lipgloss.Color("#2d3f6a")
+	clrText   = lipgloss.Color("#c8d3f5")
+	clrMuted  = lipgloss.Color("#636da6")
+	clrFaint  = lipgloss.Color("#444a73")
+	clrGold   = lipgloss.Color("#ffc777")
+	clrCyan   = lipgloss.Color("#86e1fc")
+	clrBlue   = lipgloss.Color("#82aaff")
+	clrGreen  = lipgloss.Color("#c3e88d")
+	clrRed    = lipgloss.Color("#ff757f")
+	clrOrange = lipgloss.Color("#ff966c")
+	clrPurple = lipgloss.Color("#c099ff")
 )
 
 // ── Styles ────────────────────────────────────────────────────────────────
 
 var (
-	styleBold    = lipgloss.NewStyle().Bold(true)
-	styleTitle   = lipgloss.NewStyle().Foreground(clrGold).Bold(true)
-	styleMuted   = lipgloss.NewStyle().Foreground(clrMuted)
-	styleFaint   = lipgloss.NewStyle().Foreground(clrFaint)
-	styleGood    = lipgloss.NewStyle().Foreground(clrGreen).Bold(true)
-	styleWarn    = lipgloss.NewStyle().Foreground(clrOrange).Bold(true)
-	styleErr     = lipgloss.NewStyle().Foreground(clrRed).Bold(true)
-	styleCmd     = lipgloss.NewStyle().Foreground(clrMuted)
-	styleAccent  = lipgloss.NewStyle().Foreground(clrCyan)
-	stylePurple  = lipgloss.NewStyle().Foreground(clrPurple)
+	styleBold   = lipgloss.NewStyle().Bold(true)
+	styleTitle  = lipgloss.NewStyle().Foreground(clrGold).Bold(true)
+	styleMuted  = lipgloss.NewStyle().Foreground(clrMuted)
+	styleFaint  = lipgloss.NewStyle().Foreground(clrFaint)
+	styleGood   = lipgloss.NewStyle().Foreground(clrGreen).Bold(true)
+	styleWarn   = lipgloss.NewStyle().Foreground(clrOrange).Bold(true)
+	styleErr    = lipgloss.NewStyle().Foreground(clrRed).Bold(true)
+	styleCmd    = lipgloss.NewStyle().Foreground(clrMuted)
+	styleAccent = lipgloss.NewStyle().Foreground(clrCyan)
+	stylePurple = lipgloss.NewStyle().Foreground(clrPurple)
 
 	styleCard = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
@@ -73,6 +73,11 @@ var (
 			Background(clrBg).
 			Foreground(clrText).
 			Padding(1, 2)
+
+	styleGroupHeader = lipgloss.NewStyle().Foreground(clrPurple)
+	styleCursor      = lipgloss.NewStyle().Foreground(clrCyan)
+	styleActionLabel = lipgloss.NewStyle().Foreground(clrText).Bold(true)
+	styleActionAvail = lipgloss.NewStyle().Foreground(clrMuted)
 )
 
 // ── Log line types ────────────────────────────────────────────────────────
@@ -80,11 +85,11 @@ var (
 type logKind int
 
 const (
-	logHeader  logKind = iota // task section header
-	logCmd                    // $ command
-	logOutput                 // normal stdout/stderr
-	logSuccess                // line containing success indicators
-	logError                  // line containing error indicators
+	logHeader  logKind = iota
+	logCmd
+	logOutput
+	logSuccess
+	logError
 )
 
 type logLine struct {
@@ -97,14 +102,14 @@ type logLine struct {
 type appMode int
 
 const (
-	modeView    appMode = iota
+	modeView appMode = iota
 	modeRunning
 	modeDone
 )
 
 // ── Tea messages ─────────────────────────────────────────────────────────
 
-type lineMsg    struct{ text string }
+type lineMsg struct{ text string }
 type stepDoneMsg struct {
 	err     error
 	elapsed time.Duration
@@ -124,10 +129,10 @@ type Model struct {
 	width  int
 	height int
 
-	mode     appMode
-	queue    []runner.WorkItem
-	queuePos int
-	runStart time.Time
+	mode      appMode
+	queue     []runner.WorkItem
+	queuePos  int
+	runStart  time.Time
 	stepStart time.Time
 
 	logLines  []logLine
@@ -154,7 +159,7 @@ func New() Model {
 		facts:     system.Probe(),
 		runCtx:    ctx,
 		tasks:     tasks,
-		tabs:      []string{"Dashboard", "Updates", "Audit", "Doctor"},
+		tabs:      []string{"Dashboard", "Actions", "Audit", "Doctor"},
 		logFollow: true,
 		spinner:   sp,
 	}
@@ -223,7 +228,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Forward scroll events to viewport when log is visible
 	if m.mode == modeRunning || m.mode == modeDone {
 		var cmd tea.Cmd
 		m.logVP, cmd = m.logVP.Update(msg)
@@ -283,17 +287,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.logVP.GotoBottom()
 		}
 
-	case " ":
-		if m.tabs[m.tab] == "Updates" && m.mode == modeView {
-			if m.cursor < len(m.tasks) {
-				m.tasks[m.cursor].Selected = !m.tasks[m.cursor].Selected
-			}
+	case "enter", " ":
+		if m.tabs[m.tab] == "Actions" && m.mode == modeView {
+			return m, m.startRunAt(m.cursor)
 		}
 
 	case "r":
-		if m.tabs[m.tab] == "Updates" && m.mode == modeView {
-			return m, m.startRun()
-		}
 		if m.mode == modeView {
 			m.facts = system.Probe()
 			m.runCtx = runner.Build()
@@ -315,20 +314,37 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // ── Run logic ─────────────────────────────────────────────────────────────
 
-func (m *Model) startRun() tea.Cmd {
-	m.queue = runner.BuildQueue(m.tasks, m.runCtx)
-	if len(m.queue) == 0 {
+func (m *Model) startRunAt(idx int) tea.Cmd {
+	avail := m.availableTasks()
+	if idx < 0 || idx >= len(avail) {
 		return nil
 	}
+	task := avail[idx]
+	queue := runner.BuildQueue(task, m.runCtx)
+	if len(queue) == 0 {
+		return nil
+	}
+	m.queue = queue
 	m.queuePos = 0
 	m.mode = modeRunning
 	m.logLines = nil
 	m.logFollow = true
 	m.runStart = time.Now()
-
 	m.logVP = viewport.New(m.logWidth(), m.logHeight())
 
 	return tea.Batch(m.advanceQueue(), m.spinner.Tick)
+}
+
+// availableTasks returns tasks in order, skipping unavailable ones.
+// The cursor indexes into this slice so unavailable tasks are not reachable.
+func (m Model) availableTasks() []runner.Task {
+	var out []runner.Task
+	for _, t := range m.tasks {
+		if t.Available(m.runCtx) {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 func (m *Model) advanceQueue() tea.Cmd {
@@ -345,15 +361,11 @@ func (m *Model) advanceQueue() tea.Cmd {
 
 	item := m.queue[m.queuePos]
 
-	// Task header when first step of a new task
 	if item.TaskFirst {
-		total := countTasks(m.queue)
-		taskNum := countCompletedTasks(m.queue, m.queuePos) + 1
 		m.logLines = append(m.logLines, logLine{kind: logHeader,
-			text: fmt.Sprintf("  ● [%d/%d] %s", taskNum, total, item.TaskLabel)})
+			text: fmt.Sprintf("  ● %s", item.TaskLabel)})
 	}
 
-	// Command line
 	m.logLines = append(m.logLines, logLine{kind: logCmd,
 		text: "    $ " + runner.CmdLabel(item)})
 
@@ -452,8 +464,8 @@ func (m Model) viewBody(w int) string {
 	switch m.tabs[m.tab] {
 	case "Dashboard":
 		return m.viewDashboard(cw)
-	case "Updates":
-		return m.viewUpdates(cw)
+	case "Actions":
+		return m.viewActions(cw)
 	case "Audit":
 		return m.viewAudit(cw)
 	case "Doctor":
@@ -514,56 +526,76 @@ func (m Model) viewDashboard(w int) string {
 	return lipgloss.JoinHorizontal(lipgloss.Top, host, "  ", state, "  ", managers)
 }
 
-// ── Updates ───────────────────────────────────────────────────────────────
+// ── Actions ───────────────────────────────────────────────────────────────
 
-func (m Model) viewUpdates(w int) string {
+func (m Model) viewActions(w int) string {
 	cw := innerWidth(w)
 
 	var rows []string
-	rows = append(rows, styleTitle.Render("Updates")+"  "+styleFaint.Render("space toggle · r run · j/k move"))
+	rows = append(rows, styleTitle.Render("Actions")+"  "+styleFaint.Render("enter run · j/k move · r refresh"))
 	rows = append(rows, "")
 
+	avail := m.availableTasks()
+	cursorIdx := 0
+	lastGroup := ""
+
 	for i, t := range m.tasks {
-		avail := t.Available(m.runCtx)
-		cur := " "
-		if i == m.cursor && m.mode == modeView {
-			cur = styleAccent.Render("▶")
+		_ = i
+		isAvail := t.Available(m.runCtx)
+
+		// group header when group changes
+		if t.Group != lastGroup {
+			if lastGroup != "" {
+				rows = append(rows, "")
+			}
+			rows = append(rows, "  "+styleGroupHeader.Render(t.Group))
+			lastGroup = t.Group
 		}
-		var check string
-		if !avail {
-			check = styleFaint.Render("[-]")
-		} else if t.Selected {
-			check = styleGood.Render("[✓]")
+
+		// find cursor position in avail slice
+		myIdx := -1
+		for ai, at := range avail {
+			if at.ID == t.ID {
+				myIdx = ai
+				break
+			}
+		}
+
+		cur := "  "
+		var labelStyle, descStyle lipgloss.Style
+		if isAvail {
+			if myIdx == m.cursor {
+				cur = styleCursor.Render("▶ ")
+				labelStyle = styleActionLabel
+			} else {
+				labelStyle = styleActionAvail
+			}
+			descStyle = styleFaint
 		} else {
-			check = styleMuted.Render("[ ]")
+			labelStyle = lipgloss.NewStyle().Foreground(clrFaint)
+			descStyle = lipgloss.NewStyle().Foreground(clrFaint)
 		}
-		label := t.Label
-		if !avail {
-			label = styleFaint.Render(label)
-		} else if m.mode == modeRunning || m.mode == modeDone {
-			label = styleMuted.Render(label)
+
+		label := labelStyle.Render(fmt.Sprintf("%-8s", t.Label))
+		desc := descStyle.Render(fmt.Sprintf("%-36s", t.Desc))
+		hint := ""
+		if t.Hint != "" {
+			hint = styleFaint.Render(t.Hint)
 		}
-		desc := t.Desc
-		if !avail {
-			desc = styleFaint.Render("unavailable")
-		} else {
-			desc = styleFaint.Render(desc)
-		}
-		rows = append(rows, fmt.Sprintf("%s %s %-30s %s", cur, check, label, desc))
+		rows = append(rows, cur+label+"  "+desc+"  "+hint)
+		cursorIdx++
 	}
 
-	taskList := styleCard.Width(cw).Render(strings.Join(rows, "\n"))
+	actionList := styleCard.Width(cw).Render(strings.Join(rows, "\n"))
 
 	if m.mode == modeView {
-		return taskList
+		return actionList
 	}
 
 	// Running or done — show log pane below
-	totalTasks := countTasks(m.queue)
-	doneTasks := countCompletedTasks(m.queue, m.queuePos)
 	var logTitle string
 	if m.mode == modeRunning {
-		logTitle = m.spinner.View() + " " + styleAccent.Render(fmt.Sprintf("running %d/%d", doneTasks, totalTasks)) +
+		logTitle = m.spinner.View() + " " + styleAccent.Render("running") +
 			"  " + styleFaint.Render(time.Since(m.runStart).Round(time.Second).String())
 	} else {
 		logTitle = styleGood.Render("✓ complete") + "  " +
@@ -582,9 +614,9 @@ func (m Model) viewUpdates(w int) string {
 		followIndicator+"  ",
 	)
 
-	logContent := styleLogPane.Width(cw).Render(logHeader + "\n" + m.logVP.View())
+	logContent := styleLogPane.Width(cw).Render(logHeader+"\n"+m.logVP.View())
 
-	return lipgloss.JoinVertical(lipgloss.Left, taskList, "", logContent)
+	return lipgloss.JoinVertical(lipgloss.Left, actionList, "", logContent)
 }
 
 // ── Audit ─────────────────────────────────────────────────────────────────
@@ -651,7 +683,6 @@ func (m Model) viewDoctor(w int) string {
 	rows = append(rows, styleTitle.Render("Doctor"))
 	rows = append(rows, "")
 
-	// Dotfiles state
 	rows = append(rows, stylePurple.Render("  Dotfiles"))
 	branch := f.DotfilesBranch
 	if branch == "" {
@@ -665,7 +696,6 @@ func (m Model) viewDoctor(w int) string {
 	}
 	rows = append(rows, "")
 
-	// Home Manager
 	rows = append(rows, stylePurple.Render("  Home Manager"))
 	gen := f.HMGeneration
 	if gen == "" || gen == "none" {
@@ -675,7 +705,6 @@ func (m Model) viewDoctor(w int) string {
 	}
 	rows = append(rows, "")
 
-	// Secrets
 	rows = append(rows, stylePurple.Render("  Secrets"))
 	if f.AgeKeyExists {
 		rows = append(rows, rowStyled("    age key   ", styleGood.Render("present")))
@@ -684,7 +713,6 @@ func (m Model) viewDoctor(w int) string {
 	}
 	rows = append(rows, "")
 
-	// SSH keys
 	rows = append(rows, stylePurple.Render("  SSH"))
 	if f.GitHubKeyExists {
 		rows = append(rows, rowStyled("    github key", styleGood.Render("present")))
@@ -693,7 +721,6 @@ func (m Model) viewDoctor(w int) string {
 	}
 	rows = append(rows, "")
 
-	// Managers
 	rows = append(rows, stylePurple.Render("  Package Managers"))
 	for _, check := range []struct{ name, path string }{
 		{"nix         ", f.NixPath},
@@ -730,8 +757,8 @@ func (m Model) viewFooter(w int) string {
 		hints = "j/k scroll log · f follow · Q force quit"
 	case m.mode == modeDone:
 		hints = "j/k scroll · f follow · q close log · Q quit"
-	case m.tabs[m.tab] == "Updates":
-		hints = "j/k move · space toggle · r run · tab switch tabs · q quit"
+	case m.tabs[m.tab] == "Actions":
+		hints = "j/k move · enter run · tab switch tabs · r refresh · q quit"
 	case m.tabs[m.tab] == "Audit":
 		hints = "a rescan · tab switch tabs · r refresh · q quit"
 	default:
@@ -779,9 +806,8 @@ func classifyLine(text string) logLine {
 // ── Layout helpers ────────────────────────────────────────────────────────
 
 func (m Model) logHeight() int {
-	taskLines := len(m.tasks) + 6
-	bodyH := m.height - 10 // header + tabs + footer + padding
-	h := bodyH - taskLines - 4
+	bodyH := m.height - 10
+	h := bodyH - len(m.tasks) - 10
 	return max(5, h)
 }
 
@@ -809,10 +835,10 @@ func (m *Model) prevTab() {
 }
 
 func (m *Model) moveCursor(delta int) {
-	if m.tabs[m.tab] != "Updates" {
+	if m.tabs[m.tab] != "Actions" {
 		return
 	}
-	n := len(m.tasks)
+	n := len(m.availableTasks())
 	if n == 0 {
 		return
 	}
@@ -820,26 +846,6 @@ func (m *Model) moveCursor(delta int) {
 }
 
 // ── Utility ───────────────────────────────────────────────────────────────
-
-func countTasks(queue []runner.WorkItem) int {
-	n := 0
-	for _, item := range queue {
-		if item.TaskFirst {
-			n++
-		}
-	}
-	return n
-}
-
-func countCompletedTasks(queue []runner.WorkItem, pos int) int {
-	n := 0
-	for i := 0; i < pos && i < len(queue); i++ {
-		if queue[i].TaskFirst {
-			n++
-		}
-	}
-	return n
-}
 
 func row(label, value string) string {
 	return styleMuted.Render(label) + "  " + value

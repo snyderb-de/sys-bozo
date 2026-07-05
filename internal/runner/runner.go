@@ -29,16 +29,26 @@ type Step struct {
 	Cmd func(ctx Context) (name string, args []string)
 }
 
-// Task is a selectable unit of work shown in the Updates tab.
+// Task is a runnable action shown in the Actions tab.
 type Task struct {
 	ID        string
+	Group     string
 	Label     string
 	Desc      string
+	Hint      string // when to run, shown faint alongside Desc
 	Available func(ctx Context) bool
 	Steps     []Step
 	Dir       func(ctx Context) string
 	Env       func(ctx Context) []string
-	Selected  bool
+}
+
+// PrimeCredentials caches sudo credentials before entering the TUI so the
+// password prompt appears on a clean terminal, not mid-render.
+func PrimeCredentials(ctx Context) {
+	if ctx.DarwinRebuild == "" || ctx.OS != "darwin" {
+		return
+	}
+	_ = exec.Command("sudo", "-v").Run()
 }
 
 // WorkItem is a flattened (task, step) pair ready for execution.
@@ -97,36 +107,158 @@ func Build() Context {
 	}
 }
 
-// DefaultTasks returns all known tasks, each with platform availability gating.
+func flakeSwitch(ctx Context) []string { return []string{"switch", "--flake", ".#" + HMConfigKey(ctx.User, ctx.Hostname)} }
+func flakeUpdate() []string            { return []string{"flake", "update"} }
+
+// DefaultTasks returns all known actions in display order.
 func DefaultTasks(ctx Context) []Task {
+	hmEnv := func(c Context) []string {
+		if c.SopsAgeKeyFile != "" {
+			return []string{"SOPS_AGE_KEY_FILE=" + c.SopsAgeKeyFile}
+		}
+		return nil
+	}
+	hmAvail := func(c Context) bool { return c.HomeManager != "" }
+	darwinAvail := func(c Context) bool { return c.DarwinRebuild != "" && c.OS == "darwin" }
+	repo := func(c Context) string { return c.Repo }
+
 	return []Task{
+		// ── nix-darwin (system level — touches packages, services, defaults) ─
 		{
-			ID:        "nix-flake-update",
-			Label:     "Nix flake update",
-			Desc:      "Update all flake inputs (nixpkgs, home-manager, darwin)",
-			Available: func(c Context) bool { return c.NixBin != "" },
-			Selected:  true,
+			ID:        "nds",
+			Group:     "nix-darwin",
+			Label:     "nds",
+			Desc:      "apply system config",
+			Hint:      "after editing flake.nix",
+			Available: darwinAvail,
 			Steps: []Step{
 				{Cmd: func(c Context) (string, []string) {
-					return c.NixBin, []string{"flake", "update"}
+					return "sudo", []string{"-H", c.DarwinRebuild, "switch", "--flake", ".#" + c.Hostname, "--impure"}
 				}},
 			},
-			Dir: func(c Context) string { return c.Repo },
+			Dir: repo,
 		},
 		{
-			ID:    "home-manager-switch",
-			Label: "Home Manager switch",
-			Desc:  "Apply user profile · " + HMConfigKey(ctx.User, ctx.Hostname),
-			Available: func(c Context) bool { return c.HomeManager != "" },
-			Selected:  true,
+			ID:        "ndu",
+			Group:     "nix-darwin",
+			Label:     "ndu",
+			Desc:      "update inputs + apply system",
+			Hint:      "weekly pull or before flake changes",
+			Available: func(c Context) bool { return c.NixBin != "" && c.DarwinRebuild != "" && c.OS == "darwin" },
 			Steps: []Step{
+				{Cmd: func(c Context) (string, []string) { return c.NixBin, flakeUpdate() }},
 				{Cmd: func(c Context) (string, []string) {
-					return c.HomeManager, []string{
-						"switch", "--flake", ".#" + HMConfigKey(c.User, c.Hostname),
-					}
+					return "sudo", []string{"-H", c.DarwinRebuild, "switch", "--flake", ".#" + c.Hostname, "--impure"}
 				}},
 			},
-			Dir: func(c Context) string { return c.Repo },
+			Dir: repo,
+		},
+		{
+			ID:        "ndsd",
+			Group:     "nix-darwin",
+			Label:     "ndsd",
+			Desc:      "dry-run brew pre-flight",
+			Hint:      "preview what nds would change in Homebrew",
+			Available: func(c Context) bool { return c.OS == "darwin" && c.NixBin != "" },
+			Steps: []Step{
+				{Cmd: func(c Context) (string, []string) {
+					return "bash", []string{filepath.Join(c.Repo, "scripts", "nds-dryrun"), c.Hostname}
+				}},
+			},
+			Dir: repo,
+		},
+		{
+			ID:        "ndR",
+			Group:     "nix-darwin",
+			Label:     "ndR",
+			Desc:      "rollback system",
+			Hint:      "undo last nds if it broke something",
+			Available: darwinAvail,
+			Steps: []Step{
+				{Cmd: func(c Context) (string, []string) {
+					return "sudo", []string{"-H", c.DarwinRebuild, "--rollback"}
+				}},
+			},
+		},
+
+		// ── home-manager (user level — dotfiles, user packages, shell) ────
+		{
+			ID:        "hms",
+			Group:     "home-manager",
+			Label:     "hms",
+			Desc:      "apply user profile",
+			Hint:      "after editing home.nix",
+			Available: hmAvail,
+			Steps: []Step{
+				{Cmd: func(c Context) (string, []string) { return c.HomeManager, flakeSwitch(c) }},
+			},
+			Dir: repo,
+			Env: hmEnv,
+		},
+		{
+			ID:        "hmu",
+			Group:     "home-manager",
+			Label:     "hmu",
+			Desc:      "update inputs + apply user profile",
+			Hint:      "weekly pull or before home.nix changes",
+			Available: func(c Context) bool { return c.NixBin != "" && c.HomeManager != "" },
+			Steps: []Step{
+				{Cmd: func(c Context) (string, []string) { return c.NixBin, flakeUpdate() }},
+				{Cmd: func(c Context) (string, []string) { return c.HomeManager, flakeSwitch(c) }},
+			},
+			Dir: repo,
+			Env: hmEnv,
+		},
+		{
+			ID:        "hmr",
+			Group:     "home-manager",
+			Label:     "hmr",
+			Desc:      "rollback user profile",
+			Hint:      "undo last hms if shell/tools broke",
+			Available: hmAvail,
+			Steps: []Step{
+				{Cmd: func(c Context) (string, []string) { return c.HomeManager, []string{"switch", "--rollback"} }},
+			},
+			Dir: repo,
+			Env: hmEnv,
+		},
+
+		// ── brew (GUI apps and packages outside nixpkgs) ─────────────────
+		{
+			ID:        "brew",
+			Group:     "brew",
+			Label:     "brew",
+			Desc:      "update + upgrade + autoremove",
+			Hint:      "sync GUI apps and brew-only packages",
+			Available: func(c Context) bool { return c.BrewBin != "" },
+			Steps: []Step{
+				{Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"update"} }},
+				{Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"upgrade"} }},
+				{Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"autoremove"} }},
+			},
+		},
+
+		// ── combined ──────────────────────────────────────────────────────
+		{
+			ID:    "all",
+			Group: "combined",
+			Label: "all",
+			Desc:  "update inputs → system → profile → brew",
+			Hint:  "full weekly maintenance run",
+			Available: func(c Context) bool {
+				return c.NixBin != "" && c.HomeManager != "" && c.DarwinRebuild != "" && c.OS == "darwin" && c.BrewBin != ""
+			},
+			Steps: []Step{
+				{Cmd: func(c Context) (string, []string) { return c.NixBin, flakeUpdate() }},
+				{Cmd: func(c Context) (string, []string) { return c.HomeManager, flakeSwitch(c) }},
+				{Cmd: func(c Context) (string, []string) {
+					return "sudo", []string{"-H", c.DarwinRebuild, "switch", "--flake", ".#" + c.Hostname, "--impure"}
+				}},
+				{Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"update"} }},
+				{Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"upgrade"} }},
+				{Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"autoremove"} }},
+			},
+			Dir: repo,
 			Env: func(c Context) []string {
 				if c.SopsAgeKeyFile != "" {
 					return []string{"SOPS_AGE_KEY_FILE=" + c.SopsAgeKeyFile}
@@ -134,64 +266,32 @@ func DefaultTasks(ctx Context) []Task {
 				return nil
 			},
 		},
-		{
-			ID:    "darwin-rebuild-switch",
-			Label: "nix-darwin switch",
-			Desc:  "Apply macOS host profile",
-			Available: func(c Context) bool {
-				return c.DarwinRebuild != "" && c.OS == "darwin"
-			},
-			Selected: true,
-			Steps: []Step{
-				{Cmd: func(c Context) (string, []string) {
-					return "sudo", []string{
-						"-H", c.DarwinRebuild, "switch",
-						"--flake", ".#" + c.Hostname, "--impure",
-					}
-				}},
-			},
-			Dir: func(c Context) string { return c.Repo },
-		},
-		{
-			ID:    "brew-update",
-			Label: "Brew update + upgrade",
-			Desc:  "Refresh metadata, upgrade all formulae and casks",
-			Available: func(c Context) bool { return c.BrewBin != "" },
-			Selected:  true,
-			Steps: []Step{
-				{Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"update"} }},
-				{Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"upgrade"} }},
-				{Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"autoremove"} }},
-			},
-		},
 	}
 }
 
-// BuildQueue expands selected, available tasks into a flat WorkItem slice.
-func BuildQueue(tasks []Task, ctx Context) []WorkItem {
-	var items []WorkItem
-	for _, t := range tasks {
-		if !t.Selected || !t.Available(ctx) {
-			continue
-		}
-		var dir string
-		if t.Dir != nil {
-			dir = t.Dir(ctx)
-		}
-		var env []string
-		if t.Env != nil {
-			env = t.Env(ctx)
-		}
-		for j, step := range t.Steps {
-			name, args := step.Cmd(ctx)
-			items = append(items, WorkItem{
-				TaskLabel: t.Label,
-				TaskFirst: j == 0,
-				Name:      name,
-				Args:      args,
-				Dir:       dir,
-				EnvExtra:  env,
-			})
+// BuildQueue expands a single task into a flat WorkItem slice.
+func BuildQueue(task Task, ctx Context) []WorkItem {
+	if !task.Available(ctx) {
+		return nil
+	}
+	var dir string
+	if task.Dir != nil {
+		dir = task.Dir(ctx)
+	}
+	var env []string
+	if task.Env != nil {
+		env = task.Env(ctx)
+	}
+	items := make([]WorkItem, len(task.Steps))
+	for j, step := range task.Steps {
+		name, args := step.Cmd(ctx)
+		items[j] = WorkItem{
+			TaskLabel: task.Label,
+			TaskFirst: j == 0,
+			Name:      name,
+			Args:      args,
+			Dir:       dir,
+			EnvExtra:  env,
 		}
 	}
 	return items

@@ -75,7 +75,7 @@
 - [x] Document the control-center target in `docs/control-center.html`.
 - [x] Use Go with Bubble Tea, Bubbles, and Lip Gloss.
 - [x] Add `sys-bozo` default TUI entrypoint.
-- [ ] Add non-interactive command parity for every TUI action.
+- [x] Add non-interactive command parity for every TUI action — `sys-bozo run <action>`.
 - [ ] Build dashboard stats:
   - host facts
   - repo dirty state

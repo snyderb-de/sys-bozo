@@ -3,12 +3,14 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/snyderb-de/sys-bozo/internal/plan"
+	"github.com/snyderb-de/sys-bozo/internal/runner"
 	"github.com/snyderb-de/sys-bozo/internal/system"
 	"github.com/snyderb-de/sys-bozo/internal/tui"
 )
@@ -22,6 +24,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
+		runner.PrimeCredentials(runner.Build())
 		_, err := tea.NewProgram(tui.New(), tea.WithAltScreen()).Run()
 		return err
 	}
@@ -33,6 +36,8 @@ func run(args []string) error {
 		printDoctor()
 	case "plan":
 		return runPlan(args[1:])
+	case "run":
+		return runAction(args[1:])
 	case "version":
 		fmt.Println("sys-bozo dev")
 	default:
@@ -83,6 +88,64 @@ func runPlan(args []string) error {
 	return nil
 }
 
+func runAction(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: sys-bozo run <action>")
+	}
+	id := args[0]
+	ctx := runner.Build()
+	tasks := runner.DefaultTasks(ctx)
+
+	var found *runner.Task
+	for i := range tasks {
+		if tasks[i].ID == id {
+			found = &tasks[i]
+			break
+		}
+	}
+	if found == nil {
+		var ids []string
+		for _, t := range tasks {
+			ids = append(ids, t.ID)
+		}
+		return fmt.Errorf("unknown action %q — available: %s", id, strings.Join(ids, ", "))
+	}
+	if !found.Available(ctx) {
+		return fmt.Errorf("action %q is not available on this host", id)
+	}
+
+	queue := runner.BuildQueue(*found, ctx)
+	for _, item := range queue {
+		fmt.Fprintf(os.Stderr, "$ %s\n", runner.CmdLabel(item))
+		sc, wait, err := runner.StartWork(item)
+		if err != nil {
+			return err
+		}
+		for sc.Scan() {
+			fmt.Fprintln(os.Stdout, sc.Text())
+		}
+		if err := wait(); err != nil {
+			return fmt.Errorf("%s: %w", item.Name, err)
+		}
+	}
+	return nil
+}
+
+func runActionList(w io.Writer, tasks []runner.Task, ctx runner.Context) {
+	lastGroup := ""
+	for _, t := range tasks {
+		if t.Group != lastGroup {
+			fmt.Fprintf(w, "\n  %s\n", t.Group)
+			lastGroup = t.Group
+		}
+		avail := ""
+		if !t.Available(ctx) {
+			avail = "  (unavailable)"
+		}
+		fmt.Fprintf(w, "    %-8s  %s%s\n", t.ID, t.Desc, avail)
+	}
+}
+
 func printDoctor() {
 	facts := system.Probe()
 	fmt.Println("sys-bozo doctor")
@@ -105,24 +168,21 @@ func printDoctor() {
 }
 
 func printHelp() {
-	fmt.Println(`sys-bozo
+	ctx := runner.Build()
+	tasks := runner.DefaultTasks(ctx)
+	var sb strings.Builder
+	fmt.Fprintf(&sb, `sys-bozo
 
 Usage:
   sys-bozo                         launch TUI
+  sys-bozo run <action>            run an action non-interactively
   sys-bozo doctor                  inspect host facts
   sys-bozo plan [flags]            preview install/profile actions
-  sys-bozo plan update [tasks...]  preview update actions
-  sys-bozo plan package <name>     preview package search/catalog flow
-  sys-bozo plan move <name> [from] [to]
-  sys-bozo plan tarball <name> <version> [target]
-  sys-bozo plan config <name> [path]
+  sys-bozo version
 
-Flags:
-  --profile <name>                 docs, shell-lite, cli-nix, home-manager, brew-apps, darwin-full, linux-home
-  --host <name>                    canonical host name
-  --exclude <list>                 comma-separated tools/groups
-
-Nothing mutates yet. Plans first. Apply comes later.`)
+Actions:`)
+	runActionList(&sb, tasks, ctx)
+	fmt.Println(sb.String())
 }
 
 func splitCSV(value string) []string {
