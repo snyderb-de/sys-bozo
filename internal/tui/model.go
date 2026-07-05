@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -12,6 +14,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/snyderb-de/sys-bozo/internal/history"
 	"github.com/snyderb-de/sys-bozo/internal/runner"
 	"github.com/snyderb-de/sys-bozo/internal/system"
 )
@@ -85,7 +88,7 @@ var (
 type logKind int
 
 const (
-	logHeader  logKind = iota
+	logHeader logKind = iota
 	logCmd
 	logOutput
 	logSuccess
@@ -107,6 +110,14 @@ const (
 	modeDone
 )
 
+// ── Config file entry ─────────────────────────────────────────────────────
+
+type configFile struct {
+	label string
+	path  string // absolute
+	hint  string
+}
+
 // ── Tea messages ─────────────────────────────────────────────────────────
 
 type lineMsg struct{ text string }
@@ -115,6 +126,12 @@ type stepDoneMsg struct {
 	elapsed time.Duration
 }
 type auditReadyMsg struct{ items []system.AuditItem }
+type sudoKeepaliveMsg struct{}
+type editorDoneMsg struct {
+	path string
+	err  error
+}
+type applyChoiceMsg struct{ key string }
 
 // ── Model ─────────────────────────────────────────────────────────────────
 
@@ -134,6 +151,7 @@ type Model struct {
 	queuePos  int
 	runStart  time.Time
 	stepStart time.Time
+	runAction string // ID of the running action, for history
 
 	logLines  []logLine
 	logVP     viewport.Model
@@ -145,6 +163,12 @@ type Model struct {
 
 	auditItems []system.AuditItem
 	auditReady bool
+
+	// Config tab
+	configFiles   []configFile
+	configCursor  int
+	applyPrompt   bool  // show apply-after-edit prompt
+	applyEditPath string
 }
 
 func New() Model {
@@ -156,13 +180,59 @@ func New() Model {
 	sp.Style = lipgloss.NewStyle().Foreground(clrCyan)
 
 	return Model{
-		facts:     system.Probe(),
-		runCtx:    ctx,
-		tasks:     tasks,
-		tabs:      []string{"Dashboard", "Actions", "Audit", "Doctor"},
-		logFollow: true,
-		spinner:   sp,
+		facts:       system.Probe(),
+		runCtx:      ctx,
+		tasks:       tasks,
+		tabs:        []string{"Dashboard", "Actions", "Config", "Audit", "Doctor"},
+		logFollow:   true,
+		spinner:     sp,
+		configFiles: buildConfigFiles(ctx),
 	}
+}
+
+func buildConfigFiles(ctx runner.Context) []configFile {
+	repo := ctx.Repo
+	files := []configFile{
+		{"flake.nix", filepath.Join(repo, "flake.nix"), "system inputs, hosts, Homebrew lists"},
+		{"home/common/home.nix", filepath.Join(repo, "home/common/home.nix"), "shared imports"},
+		{"home/modules/packages.nix", filepath.Join(repo, "home/modules/packages.nix"), "user packages"},
+		{"home/modules/shell.nix", filepath.Join(repo, "home/modules/shell.nix"), "zsh, aliases, env"},
+		{"home/modules/git.nix", filepath.Join(repo, "home/modules/git.nix"), "git config"},
+	}
+	if ctx.OS == "darwin" {
+		files = append(files, configFile{
+			"home/darwin/default.nix",
+			filepath.Join(repo, "home/darwin/default.nix"),
+			"darwin user extras",
+		})
+		hostFile := filepath.Join(repo, "hosts", ctx.Hostname, "darwin.nix")
+		if _, err := os.Stat(hostFile); err == nil {
+			files = append(files, configFile{
+				fmt.Sprintf("hosts/%s/darwin.nix", ctx.Hostname),
+				hostFile,
+				"this host's system config",
+			})
+		}
+	} else {
+		files = append(files, configFile{
+			"home/linux/default.nix",
+			filepath.Join(repo, "home/linux/default.nix"),
+			"linux user extras",
+		})
+		hostFile := filepath.Join(repo, "hosts", ctx.Hostname, "home.nix")
+		if _, err := os.Stat(hostFile); err == nil {
+			files = append(files, configFile{
+				fmt.Sprintf("hosts/%s/home.nix", ctx.Hostname),
+				hostFile,
+				"this host's user config",
+			})
+		}
+	}
+	homebrew := filepath.Join(repo, "homebrew.nix")
+	if _, err := os.Stat(homebrew); err == nil {
+		files = append(files, configFile{"homebrew.nix", homebrew, "shared Homebrew declarations"})
+	}
+	return files
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────
@@ -205,6 +275,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.mode = modeDone
 			m.logVP.SetContent(m.renderLog())
 			m.logVP.GotoBottom()
+			history.Append(history.Entry{
+				Ts:     time.Now(),
+				Action: m.runAction,
+				Secs:   time.Since(m.runStart).Seconds(),
+				OK:     false,
+			})
 			return m, nil
 		}
 		m.logLines = append(m.logLines, logLine{kind: logSuccess,
@@ -217,6 +293,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case auditReadyMsg:
 		m.auditItems = msg.items
 		m.auditReady = true
+		return m, nil
+
+	case sudoKeepaliveMsg:
+		if m.mode == modeRunning {
+			_ = exec.Command("sudo", "-n", "-v").Run()
+			return m, sudoKeepalive()
+		}
+		return m, nil
+
+	case editorDoneMsg:
+		if msg.err == nil {
+			m.applyPrompt = true
+			m.applyEditPath = msg.path
+		}
 		return m, nil
 
 	case spinner.TickMsg:
@@ -238,6 +328,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Apply prompt intercepts all keys
+	if m.applyPrompt {
+		switch strings.ToLower(msg.String()) {
+		case "h":
+			m.applyPrompt = false
+			return m, m.startRunByID("hms")
+		case "n":
+			m.applyPrompt = false
+			return m, m.startRunByID("nds")
+		case "b":
+			m.applyPrompt = false
+			return m, tea.Batch(m.startRunByID("hms"), m.startRunByID("nds"))
+		default:
+			m.applyPrompt = false
+		}
+		return m, nil
+	}
+
 	switch msg.String() {
 	case "ctrl+c", "q":
 		if m.mode == modeDone {
@@ -256,7 +364,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.nextTab()
 	case "shift+tab", "left":
 		m.prevTab()
-	case "1", "2", "3", "4":
+	case "1", "2", "3", "4", "5":
 		m.tab = int(msg.String()[0]-'1')
 		m.cursor = 0
 		if m.tabs[m.tab] == "Audit" && !m.auditReady {
@@ -288,8 +396,15 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "enter", " ":
-		if m.tabs[m.tab] == "Actions" && m.mode == modeView {
-			return m, m.startRunAt(m.cursor)
+		switch m.tabs[m.tab] {
+		case "Actions":
+			if m.mode == modeView {
+				return m, m.startRunAt(m.cursor)
+			}
+		case "Config":
+			if m.mode == modeView && m.configCursor < len(m.configFiles) {
+				return m, m.openEditor(m.configFiles[m.configCursor].path)
+			}
 		}
 
 	case "r":
@@ -297,6 +412,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.facts = system.Probe()
 			m.runCtx = runner.Build()
 			m.tasks = runner.DefaultTasks(m.runCtx)
+			m.configFiles = buildConfigFiles(m.runCtx)
 			m.auditReady = false
 			m.auditItems = nil
 		}
@@ -319,7 +435,19 @@ func (m *Model) startRunAt(idx int) tea.Cmd {
 	if idx < 0 || idx >= len(avail) {
 		return nil
 	}
-	task := avail[idx]
+	return m.startTask(avail[idx])
+}
+
+func (m *Model) startRunByID(id string) tea.Cmd {
+	for _, t := range m.tasks {
+		if t.ID == id && t.Available(m.runCtx) {
+			return m.startTask(t)
+		}
+	}
+	return nil
+}
+
+func (m *Model) startTask(task runner.Task) tea.Cmd {
 	queue := runner.BuildQueue(task, m.runCtx)
 	if len(queue) == 0 {
 		return nil
@@ -330,13 +458,29 @@ func (m *Model) startRunAt(idx int) tea.Cmd {
 	m.logLines = nil
 	m.logFollow = true
 	m.runStart = time.Now()
+	m.runAction = task.ID
 	m.logVP = viewport.New(m.logWidth(), m.logHeight())
 
-	return tea.Batch(m.advanceQueue(), m.spinner.Tick)
+	return tea.Batch(m.advanceQueue(), m.spinner.Tick, sudoKeepalive())
 }
 
-// availableTasks returns tasks in order, skipping unavailable ones.
-// The cursor indexes into this slice so unavailable tasks are not reachable.
+func sudoKeepalive() tea.Cmd {
+	return tea.Tick(60*time.Second, func(_ time.Time) tea.Msg {
+		return sudoKeepaliveMsg{}
+	})
+}
+
+func (m Model) openEditor(path string) tea.Cmd {
+	editor := os.Getenv("EDITOR")
+	if editor == "" {
+		editor = "vi"
+	}
+	cmd := exec.Command(editor, path)
+	return tea.ExecProcess(cmd, func(err error) tea.Msg {
+		return editorDoneMsg{path: path, err: err}
+	})
+}
+
 func (m Model) availableTasks() []runner.Task {
 	var out []runner.Task
 	for _, t := range m.tasks {
@@ -356,6 +500,12 @@ func (m *Model) advanceQueue() tea.Cmd {
 			text: fmt.Sprintf("  ✓ all done · %s", elapsed)})
 		m.logVP.SetContent(m.renderLog())
 		m.logVP.GotoBottom()
+		history.Append(history.Entry{
+			Ts:     time.Now(),
+			Action: m.runAction,
+			Secs:   elapsed.Seconds(),
+			OK:     true,
+		})
 		return nil
 	}
 
@@ -466,6 +616,8 @@ func (m Model) viewBody(w int) string {
 		return m.viewDashboard(cw)
 	case "Actions":
 		return m.viewActions(cw)
+	case "Config":
+		return m.viewConfig(cw)
 	case "Audit":
 		return m.viewAudit(cw)
 	case "Doctor":
@@ -499,11 +651,16 @@ func (m Model) viewDashboard(w int) string {
 	if hmGen == "" || hmGen == "none" {
 		hmGen = styleMuted.Render("none")
 	}
+	brewStr := styleGood.Render("up to date")
+	if m.facts.BrewOutdated > 0 {
+		brewStr = styleWarn.Render(fmt.Sprintf("%d outdated", m.facts.BrewOutdated))
+	}
 	state := styleCard.Width(colW).Render(strings.Join([]string{
 		styleTitle.Render("State"),
 		rowStyled("Branch", branch),
 		rowStyled("Dirty ", dirtyStr),
 		rowStyled("HM    ", hmGen),
+		rowStyled("Brew  ", brewStr),
 		row("Repo  ", shortPath(m.facts.DotfilesRepo)),
 	}, "\n"))
 
@@ -536,14 +693,11 @@ func (m Model) viewActions(w int) string {
 	rows = append(rows, "")
 
 	avail := m.availableTasks()
-	cursorIdx := 0
 	lastGroup := ""
 
-	for i, t := range m.tasks {
-		_ = i
+	for _, t := range m.tasks {
 		isAvail := t.Available(m.runCtx)
 
-		// group header when group changes
 		if t.Group != lastGroup {
 			if lastGroup != "" {
 				rows = append(rows, "")
@@ -552,7 +706,6 @@ func (m Model) viewActions(w int) string {
 			lastGroup = t.Group
 		}
 
-		// find cursor position in avail slice
 		myIdx := -1
 		for ai, at := range avail {
 			if at.ID == t.ID {
@@ -583,7 +736,6 @@ func (m Model) viewActions(w int) string {
 			hint = styleFaint.Render(t.Hint)
 		}
 		rows = append(rows, cur+label+"  "+desc+"  "+hint)
-		cursorIdx++
 	}
 
 	actionList := styleCard.Width(cw).Render(strings.Join(rows, "\n"))
@@ -592,7 +744,6 @@ func (m Model) viewActions(w int) string {
 		return actionList
 	}
 
-	// Running or done — show log pane below
 	var logTitle string
 	if m.mode == modeRunning {
 		logTitle = m.spinner.View() + " " + styleAccent.Render("running") +
@@ -617,6 +768,38 @@ func (m Model) viewActions(w int) string {
 	logContent := styleLogPane.Width(cw).Render(logHeader+"\n"+m.logVP.View())
 
 	return lipgloss.JoinVertical(lipgloss.Left, actionList, "", logContent)
+}
+
+// ── Config ────────────────────────────────────────────────────────────────
+
+func (m Model) viewConfig(w int) string {
+	cw := innerWidth(w)
+
+	var rows []string
+	rows = append(rows, styleTitle.Render("Config")+"  "+styleFaint.Render("enter edit · j/k move"))
+	rows = append(rows, "")
+
+	for i, f := range m.configFiles {
+		cur := "  "
+		var labelStyle lipgloss.Style
+		if i == m.configCursor {
+			cur = styleCursor.Render("▶ ")
+			labelStyle = styleActionLabel
+		} else {
+			labelStyle = styleActionAvail
+		}
+		label := labelStyle.Render(fmt.Sprintf("%-42s", f.label))
+		hint := styleFaint.Render(f.hint)
+		rows = append(rows, cur+label+"  "+hint)
+	}
+
+	if m.applyPrompt {
+		rows = append(rows, "")
+		rows = append(rows, styleWarn.Render("  apply changes?")+"  "+
+			styleFaint.Render("[h]ms  [n]ds  [b]oth  any other key = skip"))
+	}
+
+	return styleCard.Width(cw).Render(strings.Join(rows, "\n"))
 }
 
 // ── Audit ─────────────────────────────────────────────────────────────────
@@ -753,16 +936,20 @@ func (m Model) viewDoctor(w int) string {
 func (m Model) viewFooter(w int) string {
 	var hints string
 	switch {
+	case m.applyPrompt:
+		hints = "h hms · n nds · b both · any other key skip"
 	case m.mode == modeRunning:
 		hints = "j/k scroll log · f follow · Q force quit"
 	case m.mode == modeDone:
 		hints = "j/k scroll · f follow · q close log · Q quit"
 	case m.tabs[m.tab] == "Actions":
 		hints = "j/k move · enter run · tab switch tabs · r refresh · q quit"
+	case m.tabs[m.tab] == "Config":
+		hints = "j/k move · enter edit in $EDITOR · r refresh · q quit"
 	case m.tabs[m.tab] == "Audit":
 		hints = "a rescan · tab switch tabs · r refresh · q quit"
 	default:
-		hints = "1-4 tabs · tab/shift+tab switch · r refresh · q quit"
+		hints = "1-5 tabs · tab/shift+tab switch · r refresh · q quit"
 	}
 	return styleFaint.Render(hints)
 }
@@ -835,14 +1022,20 @@ func (m *Model) prevTab() {
 }
 
 func (m *Model) moveCursor(delta int) {
-	if m.tabs[m.tab] != "Actions" {
-		return
+	switch m.tabs[m.tab] {
+	case "Actions":
+		n := len(m.availableTasks())
+		if n == 0 {
+			return
+		}
+		m.cursor = (m.cursor + delta + n) % n
+	case "Config":
+		n := len(m.configFiles)
+		if n == 0 {
+			return
+		}
+		m.configCursor = (m.configCursor + delta + n) % n
 	}
-	n := len(m.availableTasks())
-	if n == 0 {
-		return
-	}
-	m.cursor = (m.cursor + delta + n) % n
 }
 
 // ── Utility ───────────────────────────────────────────────────────────────

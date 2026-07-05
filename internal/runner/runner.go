@@ -239,32 +239,52 @@ func DefaultTasks(ctx Context) []Task {
 		},
 
 		// ── combined ──────────────────────────────────────────────────────
-		{
-			ID:    "all",
-			Group: "combined",
-			Label: "all",
-			Desc:  "update inputs → system → profile → brew",
-			Hint:  "full weekly maintenance run",
-			Available: func(c Context) bool {
-				return c.NixBin != "" && c.HomeManager != "" && c.DarwinRebuild != "" && c.OS == "darwin" && c.BrewBin != ""
-			},
-			Steps: []Step{
-				{Cmd: func(c Context) (string, []string) { return c.NixBin, flakeUpdate() }},
-				{Cmd: func(c Context) (string, []string) { return c.HomeManager, flakeSwitch(c) }},
-				{Cmd: func(c Context) (string, []string) {
-					return "sudo", []string{"-H", c.DarwinRebuild, "switch", "--flake", ".#" + c.Hostname, "--impure"}
-				}},
-				{Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"update"} }},
-				{Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"upgrade"} }},
-				{Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"autoremove"} }},
-			},
-			Dir: repo,
-			Env: func(c Context) []string {
-				if c.SopsAgeKeyFile != "" {
-					return []string{"SOPS_AGE_KEY_FILE=" + c.SopsAgeKeyFile}
-				}
-				return nil
-			},
+		buildAllTask(ctx),
+	}
+}
+
+// buildAllTask constructs the "all" task with steps for every available manager.
+// This runs at DefaultTasks time so the step list matches the current host.
+func buildAllTask(ctx Context) Task {
+	var steps []Step
+	desc := "update inputs"
+
+	if ctx.NixBin != "" {
+		steps = append(steps, Step{Cmd: func(c Context) (string, []string) { return c.NixBin, flakeUpdate() }})
+	}
+	if ctx.HomeManager != "" {
+		steps = append(steps, Step{Cmd: func(c Context) (string, []string) { return c.HomeManager, flakeSwitch(c) }})
+		desc += " → hms"
+	}
+	if ctx.DarwinRebuild != "" && ctx.OS == "darwin" {
+		steps = append(steps, Step{Cmd: func(c Context) (string, []string) {
+			return "sudo", []string{"-H", c.DarwinRebuild, "switch", "--flake", ".#" + c.Hostname, "--impure"}
+		}})
+		desc += " → nds"
+	}
+	if ctx.BrewBin != "" {
+		steps = append(steps,
+			Step{Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"update"} }},
+			Step{Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"upgrade"} }},
+			Step{Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"autoremove"} }},
+		)
+		desc += " → brew"
+	}
+
+	return Task{
+		ID:        "all",
+		Group:     "combined",
+		Label:     "all",
+		Desc:      desc,
+		Hint:      "full weekly maintenance run",
+		Available: func(c Context) bool { return c.NixBin != "" },
+		Steps:     steps,
+		Dir:       func(c Context) string { return c.Repo },
+		Env: func(c Context) []string {
+			if ctx.SopsAgeKeyFile != "" {
+				return []string{"SOPS_AGE_KEY_FILE=" + ctx.SopsAgeKeyFile}
+			}
+			return nil
 		},
 	}
 }
