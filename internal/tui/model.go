@@ -127,6 +127,7 @@ type stepDoneMsg struct {
 }
 type auditReadyMsg struct{ items []system.AuditItem }
 type sudoKeepaliveMsg struct{}
+type sudoReadyMsg struct{ err error }
 type editorDoneMsg struct {
 	path string
 	err  error
@@ -309,6 +310,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case sudoReadyMsg:
+		// unused: PrimeCredentials runs before TUI; kept for runSudoPreflight compatibility
+		_ = msg
+		return m, nil
+
 	case spinner.TickMsg:
 		if m.mode == modeRunning {
 			var cmd tea.Cmd
@@ -362,13 +368,16 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "tab", "right":
 		m.nextTab()
+		if cmd := m.auditCmdIfNeeded(); cmd != nil {
+			return m, cmd
+		}
 	case "shift+tab", "left":
 		m.prevTab()
 	case "1", "2", "3", "4", "5":
-		m.tab = int(msg.String()[0]-'1')
+		m.tab = int(msg.String()[0] - '1')
 		m.cursor = 0
-		if m.tabs[m.tab] == "Audit" && !m.auditReady {
-			return m, m.runAudit()
+		if cmd := m.auditCmdIfNeeded(); cmd != nil {
+			return m, cmd
 		}
 
 	case "j", "down":
@@ -415,6 +424,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.configFiles = buildConfigFiles(m.runCtx)
 			m.auditReady = false
 			m.auditItems = nil
+			if m.tabs[m.tab] == "Audit" {
+				return m, m.runAudit()
+			}
 		}
 
 	case "a":
@@ -426,6 +438,13 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+func (m Model) auditCmdIfNeeded() tea.Cmd {
+	if m.tabs[m.tab] == "Audit" && !m.auditReady {
+		return m.runAudit()
+	}
+	return nil
 }
 
 // ── Run logic ─────────────────────────────────────────────────────────────
@@ -489,6 +508,13 @@ func (m Model) availableTasks() []runner.Task {
 		}
 	}
 	return out
+}
+
+func (m Model) runSudoPreflight(sudoBin string) tea.Cmd {
+	cmd := exec.Command(sudoBin, "-v")
+	return tea.ExecProcess(cmd, func(err error) tea.Msg {
+		return sudoReadyMsg{err: err}
+	})
 }
 
 func (m *Model) advanceQueue() tea.Cmd {
@@ -629,16 +655,6 @@ func (m Model) viewBody(w int) string {
 // ── Dashboard ─────────────────────────────────────────────────────────────
 
 func (m Model) viewDashboard(w int) string {
-	colW := max(26, (w-6)/3)
-
-	host := styleCard.Width(colW).Render(strings.Join([]string{
-		styleTitle.Render("Host"),
-		row("Name ", m.facts.Hostname),
-		row("User ", m.facts.User),
-		row("OS   ", m.facts.OS+"/"+m.facts.Arch),
-		row("Shell", shortPath(m.facts.Shell)),
-	}, "\n"))
-
 	dirtyStr := styleGood.Render("clean")
 	if m.facts.DotfilesDirty > 0 {
 		dirtyStr = styleWarn.Render(fmt.Sprintf("%d files", m.facts.DotfilesDirty))
@@ -655,32 +671,37 @@ func (m Model) viewDashboard(w int) string {
 	if m.facts.BrewOutdated > 0 {
 		brewStr = styleWarn.Render(fmt.Sprintf("%d outdated", m.facts.BrewOutdated))
 	}
-	state := styleCard.Width(colW).Render(strings.Join([]string{
-		styleTitle.Render("State"),
-		rowStyled("Branch", branch),
-		rowStyled("Dirty ", dirtyStr),
-		rowStyled("HM    ", hmGen),
-		rowStyled("Brew  ", brewStr),
-		row("Repo  ", shortPath(m.facts.DotfilesRepo)),
-	}, "\n"))
 
-	var mgrs []string
-	mgrs = append(mgrs, styleTitle.Render("Managers"))
-	mgrs = append(mgrs, managerLine("nix", m.facts.NixPath))
+	managerParts := []string{
+		compactManagerStatus("nix", m.facts.NixPath),
+		compactManagerStatus("home-manager", m.facts.HomeManager),
+		compactManagerStatus("topgrade", m.facts.Topgrade),
+	}
+	if m.facts.OS == "linux" && m.facts.OSID == "fedora" {
+		managerParts = append(managerParts,
+			compactManagerStatus("dnf", m.facts.DnfPath),
+			compactManagerStatus("sudo", m.facts.SudoPath),
+		)
+	}
 	if m.facts.OS == "darwin" {
-		mgrs = append(mgrs, managerLine("brew", m.facts.BrewPath))
-		mgrs = append(mgrs, managerLine("nix-darwin", m.facts.DarwinRebuild))
+		managerParts = append(managerParts,
+			compactManagerStatus("brew", m.facts.BrewPath),
+			compactManagerStatus("nix-darwin", m.facts.DarwinRebuild),
+		)
 	}
-	mgrs = append(mgrs, managerLine("home-manager", m.facts.HomeManager))
-	if m.facts.TailscaleIP != "" {
-		mgrs = append(mgrs, row("tailscale", m.facts.TailscaleIP))
-	}
-	managers := styleCard.Width(colW).Render(strings.Join(mgrs, "\n"))
 
-	if w < 100 {
-		return lipgloss.JoinVertical(lipgloss.Left, host, "", state, "", managers)
+	rows := []string{
+		styleTitle.Render("Home"),
+		row("Host ", fmt.Sprintf("%s@%s | %s | %s", m.facts.User, m.facts.Hostname, osLabel(m.facts), baseName(m.facts.Shell))),
+		rowStyled("State", fmt.Sprintf("%s | %s | HM %s | brew %s", branch, dirtyStr, hmGen, brewStr)),
+		row("Repo ", shortPath(m.facts.DotfilesRepo)),
+		row("Tools", strings.Join(managerParts, " | ")),
 	}
-	return lipgloss.JoinHorizontal(lipgloss.Top, host, "  ", state, "  ", managers)
+	if m.facts.TailscaleIP != "" {
+		rows = append(rows, row("Net  ", "tailscale "+m.facts.TailscaleIP))
+	}
+
+	return styleCard.Padding(0, 1).Width(w).Render(strings.Join(rows, "\n"))
 }
 
 // ── Actions ───────────────────────────────────────────────────────────────
@@ -835,6 +856,10 @@ func (m Model) viewAudit(w int) string {
 			detail = styleWarn.Render(item.Detail)
 		}
 		rows = append(rows, fmt.Sprintf("%s  %-18s %s", icon, item.Name, detail))
+		if !item.OK {
+			rows = append(rows, auditHelpRows("why", item.Description, cw-8, styleFaint)...)
+			rows = append(rows, auditHelpRows("fix", item.Fix, cw-8, styleMuted)...)
+		}
 		configCount++
 	}
 
@@ -854,6 +879,47 @@ func (m Model) viewAudit(w int) string {
 	rows = append(rows, summary)
 
 	return styleCard.Width(cw).Render(strings.Join(rows, "\n"))
+}
+
+func auditHelpRows(label, text string, width int, style lipgloss.Style) []string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+	prefix := "     " + label + ": "
+	continuation := strings.Repeat(" ", lipgloss.Width(prefix))
+	lineWidth := max(24, width-lipgloss.Width(prefix))
+	wrapped := wrapWords(text, lineWidth)
+
+	rows := make([]string, 0, len(wrapped))
+	for i, line := range wrapped {
+		if i == 0 {
+			rows = append(rows, style.Render(prefix+line))
+		} else {
+			rows = append(rows, style.Render(continuation+line))
+		}
+	}
+	return rows
+}
+
+func wrapWords(text string, width int) []string {
+	words := strings.Fields(text)
+	if len(words) == 0 {
+		return nil
+	}
+
+	var lines []string
+	line := words[0]
+	for _, word := range words[1:] {
+		if lipgloss.Width(line)+1+lipgloss.Width(word) > width {
+			lines = append(lines, line)
+			line = word
+			continue
+		}
+		line += " " + word
+	}
+	lines = append(lines, line)
+	return lines
 }
 
 // ── Doctor ────────────────────────────────────────────────────────────────
@@ -908,17 +974,36 @@ func (m Model) viewDoctor(w int) string {
 	for _, check := range []struct{ name, path string }{
 		{"nix         ", f.NixPath},
 		{"home-manager", f.HomeManager},
-		{"brew        ", f.BrewPath},
-		{"nix-darwin  ", f.DarwinRebuild},
+		{"topgrade    ", f.Topgrade},
 	} {
-		if check.path == "" && (check.name == "brew        " || check.name == "nix-darwin  ") {
-			rows = append(rows, rowStyled("    "+check.name, styleFaint.Render("n/a")))
-			continue
-		}
 		if check.path == "" {
 			rows = append(rows, rowStyled("    "+check.name, styleErr.Render("missing")))
 		} else {
 			rows = append(rows, rowStyled("    "+check.name, styleGood.Render(shortPath(check.path))))
+		}
+	}
+	if f.OS == "linux" && f.OSID == "fedora" {
+		for _, check := range []struct{ name, path string }{
+			{"dnf         ", f.DnfPath},
+			{"sudo        ", f.SudoPath},
+		} {
+			if check.path == "" {
+				rows = append(rows, rowStyled("    "+check.name, styleErr.Render("missing")))
+			} else {
+				rows = append(rows, rowStyled("    "+check.name, styleGood.Render(shortPath(check.path))))
+			}
+		}
+	}
+	if f.OS == "darwin" {
+		for _, check := range []struct{ name, path string }{
+			{"brew        ", f.BrewPath},
+			{"nix-darwin  ", f.DarwinRebuild},
+		} {
+			if check.path == "" {
+				rows = append(rows, rowStyled("    "+check.name, styleErr.Render("missing")))
+			} else {
+				rows = append(rows, rowStyled("    "+check.name, styleGood.Render(shortPath(check.path))))
+			}
 		}
 	}
 
@@ -1040,6 +1125,42 @@ func (m *Model) moveCursor(delta int) {
 
 // ── Utility ───────────────────────────────────────────────────────────────
 
+func countTasks(queue []runner.WorkItem) int {
+	n := 0
+	for _, item := range queue {
+		if item.TaskFirst {
+			n++
+		}
+	}
+	return n
+}
+
+func countCompletedTasks(queue []runner.WorkItem, pos int) int {
+	n := 0
+	for i := 0; i < pos && i < len(queue); i++ {
+		if queue[i].TaskFirst {
+			n++
+		}
+	}
+	return n
+}
+
+func sudoCommand(queue []runner.WorkItem) string {
+	for _, item := range queue {
+		if item.Name == "sudo" || strings.HasSuffix(item.Name, "/sudo") {
+			return item.Name
+		}
+	}
+	return ""
+}
+
+func osLabel(f system.Facts) string {
+	if f.OSID != "" {
+		return f.OS + "/" + f.Arch + " (" + f.OSID + ")"
+	}
+	return f.OS + "/" + f.Arch
+}
+
 func row(label, value string) string {
 	return styleMuted.Render(label) + "  " + value
 }
@@ -1053,6 +1174,24 @@ func managerLine(name, path string) string {
 		return styleFaint.Render(name) + "  " + styleFaint.Render("—")
 	}
 	return styleMuted.Render(name) + "  " + styleGood.Render(shortPath(path))
+}
+
+func compactManagerStatus(name, path string) string {
+	if path == "" {
+		return styleWarn.Render(name + " missing")
+	}
+	return styleGood.Render(name + " ok")
+}
+
+func baseName(path string) string {
+	path = strings.TrimRight(path, "/")
+	if path == "" {
+		return "unknown"
+	}
+	if idx := strings.LastIndex(path, "/"); idx >= 0 {
+		return path[idx+1:]
+	}
+	return path
 }
 
 func shortPath(p string) string {

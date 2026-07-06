@@ -15,14 +15,18 @@ type Facts struct {
 	Hostname      string
 	User          string
 	OS            string
+	OSID          string
 	Arch          string
 	Shell         string
 	WorkingDir    string
 	GitDirtyCount int
+	SudoPath      string
+	DnfPath       string
 	NixPath       string
 	BrewPath      string
 	HomeManager   string
 	DarwinRebuild string
+	Topgrade      string
 	BrewOutdated  int
 
 	// Dotfiles repo
@@ -49,19 +53,26 @@ func Probe() Facts {
 	}
 
 	facts := Facts{
-		Hostname:    hostname,
-		User:        user,
-		OS:          runtime.GOOS,
-		Arch:        runtime.GOARCH,
-		Shell:       os.Getenv("SHELL"),
-		WorkingDir:  wd,
+		Hostname:     hostname,
+		User:         user,
+		OS:           runtime.GOOS,
+		OSID:         osReleaseID(),
+		Arch:         runtime.GOARCH,
+		Shell:        os.Getenv("SHELL"),
+		WorkingDir:   wd,
 		DotfilesRepo: repo,
 	}
 
+	facts.SudoPath, _ = exec.LookPath("sudo")
+	facts.DnfPath, _ = exec.LookPath("dnf")
+	if facts.DnfPath == "" {
+		facts.DnfPath, _ = exec.LookPath("dnf5")
+	}
 	facts.NixPath, _ = exec.LookPath("nix")
 	facts.BrewPath, _ = exec.LookPath("brew")
 	facts.HomeManager, _ = exec.LookPath("home-manager")
 	facts.DarwinRebuild, _ = exec.LookPath("darwin-rebuild")
+	facts.Topgrade, _ = exec.LookPath("topgrade")
 
 	facts.GitDirtyCount = gitDirtyCount(wd)
 	facts.DotfilesDirty = gitDirtyCount(repo)
@@ -96,10 +107,15 @@ func Probe() Facts {
 func (f Facts) ManagerStatus() []string {
 	status := []string{
 		statusLine("nix", f.NixPath),
-		statusLine("brew", f.BrewPath),
 		statusLine("home-manager", f.HomeManager),
+		statusLine("topgrade", f.Topgrade),
+	}
+	if f.OS == "linux" && f.OSID == "fedora" {
+		status = append(status, statusLine("dnf", f.DnfPath))
+		status = append(status, statusLine("sudo", f.SudoPath))
 	}
 	if f.OS == "darwin" {
+		status = append(status, statusLine("brew", f.BrewPath))
 		status = append(status, statusLine("nix-darwin", f.DarwinRebuild))
 	}
 	return status
@@ -112,11 +128,31 @@ func statusLine(name, path string) string {
 	return name + ": " + path
 }
 
+func osReleaseID() string {
+	if runtime.GOOS != "linux" {
+		return ""
+	}
+	data, err := os.ReadFile("/etc/os-release")
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		key, value, ok := strings.Cut(line, "=")
+		if !ok || key != "ID" {
+			continue
+		}
+		return strings.Trim(strings.TrimSpace(value), `"'`)
+	}
+	return ""
+}
+
 // AuditItem is one local file/tool check result.
 type AuditItem struct {
-	Name   string
-	OK     bool
-	Detail string
+	Name        string
+	OK          bool
+	Detail      string
+	Description string
+	Fix         string
 }
 
 // LocalAudit checks key HM-managed files and tools are properly linked.
@@ -125,16 +161,51 @@ func LocalAudit() []AuditItem {
 	var items []AuditItem
 
 	// Key config symlinks
-	configs := []struct{ name, path string }{
-		{"ghostty config", filepath.Join(home, ".config", "ghostty", "config")},
-		{"kitty config", filepath.Join(home, ".config", "kitty", "kitty.conf")},
-		{"ssh config", filepath.Join(home, ".ssh", "config")},
-		{"starship.toml", filepath.Join(home, ".config", "starship.toml")},
-		{"nvim config", filepath.Join(home, ".config", "nvim")},
-		{"atuin config", filepath.Join(home, ".config", "atuin", "config.toml")},
+	configs := []struct {
+		name        string
+		path        string
+		description string
+		fix         string
+	}{
+		{
+			name:        "ghostty config",
+			path:        filepath.Join(home, ".config", "ghostty", "config"),
+			description: "Terminal defaults should come from dotfiles so every host gets the same Ghostty behavior.",
+			fix:         "Move local edits into configs/ghostty/config, then run home-manager switch.",
+		},
+		{
+			name:        "kitty config",
+			path:        filepath.Join(home, ".config", "kitty", "kitty.conf"),
+			description: "Terminal defaults should come from dotfiles so every host gets the same Kitty behavior.",
+			fix:         "Move local edits into configs/kitty/kitty.conf, then run home-manager switch.",
+		},
+		{
+			name:        "ssh config",
+			path:        filepath.Join(home, ".ssh", "config"),
+			description: "SSH aliases and encrypted host includes should be managed by dotfiles/SOPS, not hand-edited per host.",
+			fix:         "Compare with configs/ssh/config, move host entries into secrets/ssh-config.yaml or configs/ssh/config, then run home-manager switch.",
+		},
+		{
+			name:        "starship.toml",
+			path:        filepath.Join(home, ".config", "starship.toml"),
+			description: "Prompt styling should come from dotfiles so shell behavior is consistent across machines.",
+			fix:         "Move local edits into configs/starship/starship.toml, then run home-manager switch.",
+		},
+		{
+			name:        "nvim config",
+			path:        filepath.Join(home, ".config", "nvim"),
+			description: "Editor config should be linked from dotfiles so plugin and keymap drift is visible in git.",
+			fix:         "Move local edits into configs/nvim, remove the unmanaged path, then run home-manager switch.",
+		},
+		{
+			name:        "atuin config",
+			path:        filepath.Join(home, ".config", "atuin", "config.toml"),
+			description: "Shell history sync settings should be explicitly managed instead of silently changed by the app.",
+			fix:         "Move local edits into home/common/home.nix, then run home-manager switch.",
+		},
 	}
 	for _, c := range configs {
-		item := AuditItem{Name: c.name}
+		item := AuditItem{Name: c.name, Description: c.description, Fix: c.fix}
 		info, err := os.Lstat(c.path)
 		if err != nil {
 			item.Detail = "missing"
@@ -146,6 +217,8 @@ func LocalAudit() []AuditItem {
 			} else {
 				item.Detail = "→ " + target + " (not nix)"
 			}
+		} else if c.name == "ssh config" {
+			item.OK, item.Detail = sshConfigCopyStatus(home, c.path, info)
 		} else {
 			item.Detail = "unmanaged file"
 		}
@@ -160,7 +233,11 @@ func LocalAudit() []AuditItem {
 	// for cases where LookPath returns the linked path directly.
 	tools := []string{"bat", "jq", "gh", "lazygit", "starship", "atuin"}
 	for _, t := range tools {
-		item := AuditItem{Name: t}
+		item := AuditItem{
+			Name:        t,
+			Description: "Command should resolve through the Nix/Home Manager profile so package ownership is reproducible.",
+			Fix:         "Add or keep the package in home/common/home.nix, run home-manager switch, then remove any earlier PATH entry shadowing it.",
+		}
 		p, err := exec.LookPath(t)
 		if err != nil {
 			item.Detail = "not in PATH"
@@ -174,6 +251,38 @@ func LocalAudit() []AuditItem {
 	}
 
 	return items
+}
+
+func sshConfigCopyStatus(home, path string, info os.FileInfo) (bool, string) {
+	if info.Mode().Perm()&0o077 != 0 {
+		return false, "regular file but permissions are too open"
+	}
+
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return false, "regular file but unreadable"
+	}
+
+	source := filepath.Join(dotfilesRepo(home), "configs", "ssh", "config")
+	if expected, err := os.ReadFile(source); err == nil {
+		if string(content) == string(expected) {
+			return true, "activation-managed copy"
+		}
+		return false, "regular file differs from dotfiles source"
+	}
+
+	text := string(content)
+	if strings.Contains(text, "Include ~/.config/ssh/config.d/private.conf") {
+		return true, "regular file with expected private include"
+	}
+	return false, "regular file missing expected private include"
+}
+
+func dotfilesRepo(home string) string {
+	if repo := os.Getenv("DOTFILES_REPO"); repo != "" {
+		return repo
+	}
+	return filepath.Join(home, "code", "dotfiles")
 }
 
 // isNixManagedPath returns true when p resolves to anything Nix owns. Covers:

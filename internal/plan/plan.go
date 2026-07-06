@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/snyderb-de/sys-bozo/internal/runner"
 )
 
 type ActionKind string
@@ -122,12 +124,31 @@ func Install(opts InstallOptions) Plan {
 func Update(selected []string) Plan {
 	tasks := normalizeKeepOrder(selected)
 	if len(tasks) == 0 {
-		tasks = []string{"brew-update", "brew-upgrade", "nix-flake-update", "home-manager-apply"}
+		tasks = []string{"sys-bozo-self-update", "brew-update", "brew-upgrade", "nix-flake-update", "home-manager-apply", "topgrade"}
 	}
 
 	actions := []Action{}
 	for _, task := range tasks {
 		switch task {
+		case "sys-bozo-self-update":
+			actions = append(actions,
+				Action{
+					Kind:        ActionCommand,
+					Title:       "Update sys-bozo source",
+					Description: "Fast-forward the sys-bozo source repo before rebuilding the local binary.",
+					Command:     []string{"git", "pull", "--ff-only"},
+					Targets:     []string{"~/code/sys-bozo"},
+					Mutates:     true,
+				},
+				Action{
+					Kind:        ActionCommand,
+					Title:       "Rebuild sys-bozo",
+					Description: "Install the freshly built binary for the next sys-bozo run.",
+					Command:     []string{"go", "build", "-o", "~/.local/bin/sys-bozo", "./cmd/sys-bozo"},
+					Targets:     []string{"~/.local/bin/sys-bozo"},
+					Mutates:     true,
+				},
+			)
 		case "brew-update":
 			actions = append(actions, Action{Kind: ActionCommand, Title: "Refresh Homebrew metadata", Command: []string{"brew", "update"}, Mutates: true})
 		case "brew-upgrade":
@@ -140,10 +161,120 @@ func Update(selected []string) Plan {
 			actions = append(actions, Action{Kind: ActionCommand, Title: "Apply Home Manager profile", Command: []string{"home-manager", "switch", "--flake", "."}, Mutates: true})
 		case "darwin-apply":
 			actions = append(actions, Action{Kind: ActionCommand, Title: "Apply nix-darwin host", Command: []string{"darwin-rebuild", "switch", "--flake", "."}, Mutates: true})
+		case "topgrade":
+			actions = append(actions, Action{
+				Kind:        ActionCommand,
+				Title:       "Run Topgrade ecosystem sweep",
+				Description: "Skip Nix, Home Manager, Brew, system package upgrades, and restart checks because sys-bozo owns those paths.",
+				Command: []string{
+					"topgrade",
+					"--yes",
+					"--skip-notify",
+					"--no-retry",
+					"--no-self-update",
+					"--disable",
+					"nix",
+					"home_manager",
+					"brew_formula",
+					"brew_cask",
+					"system",
+					"restarts",
+				},
+				Mutates: true,
+			})
 		}
 	}
 
 	return Plan{Title: "Update plan", Summary: "Selected update actions. Preview only; executor not wired yet.", Actions: actions}
+}
+
+func UpdateForContext(selected []string, ctx runner.Context) Plan {
+	tasks := runner.DefaultTasks(ctx)
+	actions := updateActionsForTasks(selected, tasks, ctx)
+	host := ctx.Hostname
+	if strings.TrimSpace(host) == "" {
+		host = "current host"
+	}
+
+	return Plan{
+		Title:   "Update plan",
+		Summary: fmt.Sprintf("Available update actions for %s. Preview only; run the TUI Updates tab to execute.", host),
+		Actions: actions,
+	}
+}
+
+func updateActionsForTasks(selected []string, tasks []runner.Task, ctx runner.Context) []Action {
+	requested := normalizeKeepOrder(selected)
+	if len(requested) > 0 {
+		var actions []Action
+		for _, id := range requested {
+			task, ok := findTask(tasks, id)
+			if !ok {
+				continue
+			}
+			actions = append(actions, actionsForTask(task, ctx, true)...)
+		}
+		return actions
+	}
+
+	var actions []Action
+	for _, task := range tasks {
+		if !task.Available(ctx) {
+			continue
+		}
+		actions = append(actions, actionsForTask(task, ctx, false)...)
+	}
+	return actions
+}
+
+func findTask(tasks []runner.Task, id string) (runner.Task, bool) {
+	for _, task := range tasks {
+		if task.ID == id {
+			return task, true
+		}
+	}
+	return runner.Task{}, false
+}
+
+func actionsForTask(task runner.Task, ctx runner.Context, explicit bool) []Action {
+	if task.Available != nil && !task.Available(ctx) {
+		if !explicit {
+			return nil
+		}
+		return []Action{{
+			Kind:        ActionInspect,
+			Title:       "Skip " + task.Label,
+			Description: "Task is not available on this host.",
+		}}
+	}
+
+	var actions []Action
+	for i, step := range task.Steps {
+		name, args := step.Cmd(ctx)
+		if strings.TrimSpace(name) == "" {
+			continue
+		}
+		title := step.Title
+		if title == "" {
+			title = task.Label
+			if len(task.Steps) > 1 {
+				title = fmt.Sprintf("%s step %d", task.Label, i+1)
+			}
+		}
+		description := step.Description
+		if description == "" {
+			description = task.Desc
+		}
+		actions = append(actions, Action{
+			Kind:        ActionCommand,
+			Title:       title,
+			Description: description,
+			Command:     append([]string{name}, args...),
+			Targets:     step.Targets,
+			Mutates:     true,
+		})
+	}
+	return actions
 }
 
 func PackageSearch(query string) Plan {
