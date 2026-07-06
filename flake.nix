@@ -1,7 +1,7 @@
 {
   description = "sys-bozo — workstation control-center TUI";
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-24.11-darwin";
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
 
   outputs = { self, nixpkgs }:
     let
