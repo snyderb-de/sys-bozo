@@ -26,8 +26,8 @@ var (
 	clrPanel  = lipgloss.Color("#222436")
 	clrBorder = lipgloss.Color("#2d3f6a")
 	clrText   = lipgloss.Color("#c8d3f5")
-	clrMuted  = lipgloss.Color("#636da6")
-	clrFaint  = lipgloss.Color("#444a73")
+	clrMuted  = lipgloss.Color("#a9b4e6") // secondary text — readable on the dark bg
+	clrFaint  = lipgloss.Color("#7e8ac0") // de-emphasized, still legible (was #444a73, unreadable)
 	clrGold   = lipgloss.Color("#ffc777")
 	clrCyan   = lipgloss.Color("#86e1fc")
 	clrBlue   = lipgloss.Color("#82aaff")
@@ -710,7 +710,7 @@ func (m Model) viewActions(w int) string {
 	cw := innerWidth(w)
 
 	var rows []string
-	rows = append(rows, styleTitle.Render("Actions")+"  "+styleFaint.Render("enter run · j/k move · r refresh"))
+	rows = append(rows, styleTitle.Render("Actions")+"  "+styleMuted.Render("enter run · j/k move · r refresh"))
 	rows = append(rows, "")
 
 	avail := m.availableTasks()
@@ -744,7 +744,7 @@ func (m Model) viewActions(w int) string {
 			} else {
 				labelStyle = styleActionAvail
 			}
-			descStyle = styleFaint
+			descStyle = styleMuted
 		} else {
 			labelStyle = lipgloss.NewStyle().Foreground(clrFaint)
 			descStyle = lipgloss.NewStyle().Foreground(clrFaint)
@@ -754,7 +754,7 @@ func (m Model) viewActions(w int) string {
 		desc := descStyle.Render(fmt.Sprintf("%-36s", t.Desc))
 		hint := ""
 		if t.Hint != "" {
-			hint = styleFaint.Render(t.Hint)
+			hint = styleMuted.Render(t.Hint)
 		}
 		rows = append(rows, cur+label+"  "+desc+"  "+hint)
 	}
