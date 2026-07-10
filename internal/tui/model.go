@@ -146,7 +146,6 @@ type stepDoneMsg struct {
 	elapsed time.Duration
 }
 type auditReadyMsg struct{ items []system.AuditItem }
-type sudoKeepaliveMsg struct{}
 type sudoReadyMsg struct{ err error }
 type editorDoneMsg struct {
 	path string
@@ -391,13 +390,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.auditReady = true
 		return m, nil
 
-	case sudoKeepaliveMsg:
-		if m.mode == modeRunning {
-			_ = exec.Command("sudo", "-n", "-v").Run()
-			return m, sudoKeepalive()
-		}
-		return m, nil
-
 	case editorDoneMsg:
 		if msg.err == nil {
 			m.applyPrompt = true
@@ -460,9 +452,31 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
+	if m.screen == screenReview || m.screen == screenRunning {
+		switch msg.String() {
+		case "tab", "right", "shift+tab", "left", "1", "2", "3", "4", "5":
+			return m, nil
+		}
+	}
 	if msg.String() == "enter" || msg.String() == " " {
 		switch m.screen {
 		case screenMaintenance:
+			hasSelection := false
+			for _, selected := range m.selected {
+				if selected {
+					hasSelection = true
+					break
+				}
+			}
+			if !hasSelection {
+				available := m.availableTasks()
+				if m.cursor >= 0 && m.cursor < len(available) {
+					if m.selected == nil {
+						m.selected = map[string]bool{}
+					}
+					m.selected[available[m.cursor].ID] = true
+				}
+			}
 			m.reviewSelection()
 			return m, nil
 		case screenReview:
@@ -573,12 +587,6 @@ func (m Model) auditCmdIfNeeded() tea.Cmd {
 }
 
 // ── Run logic ─────────────────────────────────────────────────────────────
-
-func sudoKeepalive() tea.Cmd {
-	return tea.Tick(60*time.Second, func(_ time.Time) tea.Msg {
-		return sudoKeepaliveMsg{}
-	})
-}
 
 func (m Model) openEditor(path string) tea.Cmd {
 	editor := os.Getenv("EDITOR")

@@ -137,6 +137,65 @@ func TestShortcutPreselectsWithoutExecuting(t *testing.T) {
 	}
 }
 
+func TestActionsEnterReviewsCurrentAvailableTaskWithoutRunning(t *testing.T) {
+	m := testGuidedModel()
+	next, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
+	m = next.(Model)
+	available := m.availableTasks()
+	if len(available) < 2 || available[1].ID == "hms" || available[1].ID == "nds" {
+		t.Fatalf("need deterministic non-shortcut task, available=%v", available)
+	}
+	m.cursor = 1
+	wantTask := available[m.cursor]
+	wantItems := runner.BuildQueue(wantTask, m.runCtx)
+
+	next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(Model)
+	if cmd != nil || got.screen != screenReview || got.reviewed.Action != wantTask.ID {
+		t.Fatalf("cmd=%v screen=%v action=%q", cmd, got.screen, got.reviewed.Action)
+	}
+	if !got.selected[wantTask.ID] {
+		t.Fatalf("current task %q was not selected: %v", wantTask.ID, got.selected)
+	}
+	if diff := cmpWorkItems(got.reviewed.Items, wantItems); diff != "" {
+		t.Fatal(diff)
+	}
+	if got.mode == modeRunning || len(got.queue) != 0 {
+		t.Fatal("Actions Enter must review without executing")
+	}
+}
+
+func TestWorkflowScreensIgnoreTabNavigation(t *testing.T) {
+	workflows := []struct {
+		name   string
+		screen screen
+		mode   appMode
+	}{
+		{name: "review", screen: screenReview, mode: modeView},
+		{name: "running", screen: screenRunning, mode: modeRunning},
+	}
+	keys := []tea.KeyMsg{
+		{Type: tea.KeyTab},
+		{Type: tea.KeyRunes, Runes: []rune{'3'}},
+	}
+	for _, workflow := range workflows {
+		for _, key := range keys {
+			t.Run(workflow.name+"/"+key.String(), func(t *testing.T) {
+				m := testGuidedModel()
+				m.screen = workflow.screen
+				m.mode = workflow.mode
+				m.tab = 1
+
+				next, cmd := m.handleKey(key)
+				got := next.(Model)
+				if cmd != nil || got.screen != workflow.screen || got.tab != 1 {
+					t.Fatalf("cmd=%v screen=%v tab=%d", cmd, got.screen, got.tab)
+				}
+			})
+		}
+	}
+}
+
 func TestShortcutsOnlyOpenMaintenanceFromHome(t *testing.T) {
 	tests := []struct {
 		key        rune
