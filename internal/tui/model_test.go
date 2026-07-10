@@ -3,6 +3,7 @@ package tui
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -431,11 +432,22 @@ func TestAdvanceQueueUsesTerminalHandoffForInteractiveWork(t *testing.T) {
 }
 
 func TestInteractiveFailureStopsQueueAndRestoresDoneState(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	resolvedHome, err := os.UserHomeDir()
+	if err != nil || resolvedHome != home {
+		t.Fatalf("isolated HOME not active: home=%q err=%v", resolvedHome, err)
+	}
+
 	m := Model{mode: modeRunning, screen: screenRunning, runAction: "brew", runStart: time.Now()}
 	next, _ := m.Update(stepDoneMsg{err: errors.New("exit status 1"), elapsed: time.Second})
 	got := next.(Model)
 	if got.mode != modeDone || got.screen != screenResult || !strings.Contains(got.renderLog(), "exit status 1") {
 		t.Fatalf("mode=%v screen=%v log=%q", got.mode, got.screen, got.renderLog())
+	}
+	historyPath := filepath.Join(home, ".local", "state", "sys-bozo", "history.jsonl")
+	if _, err := os.Stat(historyPath); err != nil {
+		t.Fatalf("history was not isolated under temp HOME %q: %v", historyPath, err)
 	}
 }
 
