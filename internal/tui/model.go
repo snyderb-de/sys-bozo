@@ -223,6 +223,13 @@ func New() Model {
 
 func (m *Model) openMaintenance(ids ...string) {
 	m.screen = screenMaintenance
+	for i, tab := range m.tabs {
+		if tab == "Actions" {
+			m.tab = i
+			m.cursor = 0
+			break
+		}
+	}
 	m.selected = map[string]bool{}
 	for _, id := range ids {
 		m.selected[id] = true
@@ -244,7 +251,7 @@ func (m *Model) reviewSelection() {
 	}
 	m.reviewed = reviewedPlan{
 		Action: strings.Join(ids, "+"),
-		Items:  append([]runner.WorkItem(nil), items...),
+		Items:  cloneWorkItems(items),
 	}
 	m.screen = screenReview
 }
@@ -253,7 +260,7 @@ func (m *Model) confirmReviewedPlan() tea.Cmd {
 	if len(m.reviewed.Items) == 0 {
 		return nil
 	}
-	m.queue = append([]runner.WorkItem(nil), m.reviewed.Items...)
+	m.queue = cloneWorkItems(m.reviewed.Items)
 	m.queuePos = 0
 	m.mode = modeRunning
 	m.screen = screenRunning
@@ -263,6 +270,19 @@ func (m *Model) confirmReviewedPlan() tea.Cmd {
 	m.logFollow = true
 	m.logVP = viewport.New(m.logWidth(), m.logHeight())
 	return tea.Batch(m.advanceQueue(), m.spinner.Tick)
+}
+
+func cloneWorkItems(items []runner.WorkItem) []runner.WorkItem {
+	if items == nil {
+		return nil
+	}
+	cloned := make([]runner.WorkItem, len(items))
+	copy(cloned, items)
+	for i := range cloned {
+		cloned[i].Args = append([]string(nil), items[i].Args...)
+		cloned[i].EnvExtra = append([]string(nil), items[i].EnvExtra...)
+	}
+	return cloned
 }
 
 func buildConfigFiles(ctx runner.Context) []configFile {
@@ -348,6 +368,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.logLines = append(m.logLines, logLine{kind: logError,
 				text: fmt.Sprintf("  ✗ failed: %s", msg.err)})
 			m.mode = modeDone
+			m.screen = screenResult
 			m.logVP.SetContent(m.renderLog())
 			m.logVP.GotoBottom()
 			history.Append(history.Entry{
@@ -456,6 +477,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.logLines = nil
 			m.queue = nil
 			m.queuePos = 0
+			m.syncScreenToTab()
 			return m, nil
 		}
 		return m, tea.Quit
@@ -473,6 +495,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "1", "2", "3", "4", "5":
 		m.tab = int(msg.String()[0] - '1')
 		m.cursor = 0
+		m.syncScreenToTab()
 		if cmd := m.auditCmdIfNeeded(); cmd != nil {
 			return m, cmd
 		}
@@ -551,40 +574,6 @@ func (m Model) auditCmdIfNeeded() tea.Cmd {
 
 // ── Run logic ─────────────────────────────────────────────────────────────
 
-func (m *Model) startRunAt(idx int) tea.Cmd {
-	avail := m.availableTasks()
-	if idx < 0 || idx >= len(avail) {
-		return nil
-	}
-	return m.startTask(avail[idx])
-}
-
-func (m *Model) startRunByID(id string) tea.Cmd {
-	for _, t := range m.tasks {
-		if t.ID == id && t.Available(m.runCtx) {
-			return m.startTask(t)
-		}
-	}
-	return nil
-}
-
-func (m *Model) startTask(task runner.Task) tea.Cmd {
-	queue := runner.BuildQueue(task, m.runCtx)
-	if len(queue) == 0 {
-		return nil
-	}
-	m.queue = queue
-	m.queuePos = 0
-	m.mode = modeRunning
-	m.logLines = nil
-	m.logFollow = true
-	m.runStart = time.Now()
-	m.runAction = task.ID
-	m.logVP = viewport.New(m.logWidth(), m.logHeight())
-
-	return tea.Batch(m.advanceQueue(), m.spinner.Tick, sudoKeepalive())
-}
-
 func sudoKeepalive() tea.Cmd {
 	return tea.Tick(60*time.Second, func(_ time.Time) tea.Msg {
 		return sudoKeepaliveMsg{}
@@ -628,6 +617,7 @@ func (m Model) runSudoPreflight(sudoBin string) tea.Cmd {
 func (m *Model) advanceQueue() tea.Cmd {
 	if m.queuePos >= len(m.queue) {
 		m.mode = modeDone
+		m.screen = screenResult
 		elapsed := time.Since(m.runStart).Round(time.Second)
 		m.logLines = append(m.logLines, logLine{kind: logHeader, text: ""})
 		m.logLines = append(m.logLines, logLine{kind: logSuccess,
@@ -673,6 +663,7 @@ func (m *Model) advanceQueue() tea.Cmd {
 		m.logLines = append(m.logLines, logLine{kind: logError,
 			text: "  ✗ " + err.Error()})
 		m.mode = modeDone
+		m.screen = screenResult
 		m.logVP.SetContent(m.renderLog())
 		m.logVP.GotoBottom()
 		return nil
@@ -1218,6 +1209,7 @@ func (m Model) logWidth() int {
 func (m *Model) nextTab() {
 	m.tab = (m.tab + 1) % len(m.tabs)
 	m.cursor = 0
+	m.syncScreenToTab()
 }
 
 func (m *Model) prevTab() {
@@ -1226,6 +1218,26 @@ func (m *Model) prevTab() {
 		m.tab = len(m.tabs) - 1
 	}
 	m.cursor = 0
+	m.syncScreenToTab()
+}
+
+func (m *Model) syncScreenToTab() {
+	if m.tab < 0 || m.tab >= len(m.tabs) {
+		m.screen = screenHome
+		return
+	}
+	switch m.tabs[m.tab] {
+	case "Actions":
+		m.screen = screenMaintenance
+	case "Config":
+		m.screen = screenConfig
+	case "Audit":
+		m.screen = screenAudit
+	case "Doctor":
+		m.screen = screenDoctor
+	default:
+		m.screen = screenHome
+	}
 }
 
 func (m *Model) moveCursor(delta int) {

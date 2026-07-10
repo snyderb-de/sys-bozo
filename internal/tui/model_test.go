@@ -21,6 +21,7 @@ func testGuidedModel() Model {
 		screen:   screenHome,
 		runCtx:   ctx,
 		tasks:    runner.DefaultTasks(ctx),
+		tabs:     []string{"Dashboard", "Actions", "Config", "Audit", "Doctor"},
 		selected: map[string]bool{},
 		terminalExec: func(runner.WorkItem, time.Time) tea.Cmd {
 			return nil
@@ -53,10 +54,18 @@ func TestMaintenanceSelectionBuildsReviewWithoutRunning(t *testing.T) {
 
 func TestConfirmRunsExactReviewedItems(t *testing.T) {
 	m := testGuidedModel()
-	want := runner.WorkItem{Name: "home-manager", Args: []string{"switch"}}
+	want := runner.WorkItem{
+		Name: "test-interactive-sentinel",
+		Args: []string{"never-executed"},
+		Mode: runner.ExecutionInteractive,
+	}
 	m.screen = screenReview
 	m.reviewed = reviewedPlan{Action: "hms", Items: []runner.WorkItem{want}}
-	m.terminalExec = func(runner.WorkItem, time.Time) tea.Cmd {
+	var executed runner.WorkItem
+	called := false
+	m.terminalExec = func(item runner.WorkItem, _ time.Time) tea.Cmd {
+		called = true
+		executed = item
 		return func() tea.Msg { return stepDoneMsg{} }
 	}
 
@@ -67,14 +76,105 @@ func TestConfirmRunsExactReviewedItems(t *testing.T) {
 	if diff := cmpWorkItems(m.queue, []runner.WorkItem{want}); diff != "" {
 		t.Fatal(diff)
 	}
+	if !called {
+		t.Fatal("reviewed interactive work did not use injected terminal executor")
+	}
+	if diff := cmpWorkItems([]runner.WorkItem{executed}, []runner.WorkItem{want}); diff != "" {
+		t.Fatal(diff)
+	}
+	if m.activeScanner != nil {
+		t.Fatal("injected interactive work must not create captured scanner")
+	}
+}
+
+func TestReviewedAndQueuedWorkItemsDoNotAlias(t *testing.T) {
+	args := []string{"original-arg"}
+	env := []string{"TEST_VALUE=original"}
+	task := runner.Task{
+		ID:        "safe-test-task",
+		Available: func(runner.Context) bool { return true },
+		Steps: []runner.Step{{
+			Mode: runner.ExecutionInteractive,
+			Cmd: func(runner.Context) (string, []string) {
+				return "test-interactive-sentinel", args
+			},
+		}},
+		Env: func(runner.Context) []string { return env },
+	}
+	m := Model{
+		runCtx:   runner.Context{},
+		tasks:    []runner.Task{task},
+		selected: map[string]bool{"safe-test-task": true},
+		terminalExec: func(runner.WorkItem, time.Time) tea.Cmd {
+			return func() tea.Msg { return stepDoneMsg{} }
+		},
+	}
+
+	m.reviewSelection()
+	args[0] = "mutated-source-arg"
+	env[0] = "TEST_VALUE=mutated-source"
+	if got := m.reviewed.Items[0]; got.Args[0] != "original-arg" || got.EnvExtra[0] != "TEST_VALUE=original" {
+		t.Fatalf("review aliases source work item: %#v", got)
+	}
+
+	m.confirmReviewedPlan()
+	m.reviewed.Items[0].Args[0] = "mutated-review-arg"
+	m.queue[0].EnvExtra[0] = "TEST_VALUE=mutated-queue"
+	if got := m.queue[0].Args[0]; got != "original-arg" {
+		t.Fatalf("queue args alias review: %q", got)
+	}
+	if got := m.reviewed.Items[0].EnvExtra[0]; got != "TEST_VALUE=original" {
+		t.Fatalf("review env aliases queue: %q", got)
+	}
 }
 
 func TestShortcutPreselectsWithoutExecuting(t *testing.T) {
 	m := testGuidedModel()
 	next, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
 	got := next.(Model)
-	if got.screen != screenMaintenance || !got.selected["hms"] || got.mode == modeRunning {
-		t.Fatalf("screen=%v selected=%v mode=%v", got.screen, got.selected, got.mode)
+	if got.screen != screenMaintenance || got.tabs[got.tab] != "Actions" || !got.selected["hms"] || got.mode == modeRunning {
+		t.Fatalf("screen=%v tab=%q selected=%v mode=%v", got.screen, got.tabs[got.tab], got.selected, got.mode)
+	}
+}
+
+func TestShortcutsOnlyOpenMaintenanceFromHome(t *testing.T) {
+	tests := []struct {
+		key        rune
+		wantScreen screen
+	}{
+		{key: '2', wantScreen: screenMaintenance},
+		{key: '3', wantScreen: screenConfig},
+		{key: '4', wantScreen: screenAudit},
+		{key: '5', wantScreen: screenDoctor},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.key), func(t *testing.T) {
+			m := testGuidedModel()
+			next, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{tt.key}})
+			got := next.(Model)
+			if got.screen != tt.wantScreen {
+				t.Fatalf("screen=%v, want %v", got.screen, tt.wantScreen)
+			}
+
+			next, _ = got.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
+			got = next.(Model)
+			if got.screen != tt.wantScreen || len(got.selected) != 0 {
+				t.Fatalf("shortcut escaped screen: screen=%v selected=%v", got.screen, got.selected)
+			}
+		})
+	}
+}
+
+func TestClosingCompletedRunRestoresActiveTabScreen(t *testing.T) {
+	m := testGuidedModel()
+	m.tab = 1
+	m.screen = screenResult
+	m.mode = modeDone
+
+	next, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	got := next.(Model)
+	if got.mode != modeView || got.screen != screenMaintenance {
+		t.Fatalf("mode=%v screen=%v", got.mode, got.screen)
 	}
 }
 
@@ -202,11 +302,11 @@ func TestAdvanceQueueUsesTerminalHandoffForInteractiveWork(t *testing.T) {
 }
 
 func TestInteractiveFailureStopsQueueAndRestoresDoneState(t *testing.T) {
-	m := Model{mode: modeRunning, runAction: "brew", runStart: time.Now()}
+	m := Model{mode: modeRunning, screen: screenRunning, runAction: "brew", runStart: time.Now()}
 	next, _ := m.Update(stepDoneMsg{err: errors.New("exit status 1"), elapsed: time.Second})
 	got := next.(Model)
-	if got.mode != modeDone || !strings.Contains(got.renderLog(), "exit status 1") {
-		t.Fatalf("mode=%v log=%q", got.mode, got.renderLog())
+	if got.mode != modeDone || got.screen != screenResult || !strings.Contains(got.renderLog(), "exit status 1") {
+		t.Fatalf("mode=%v screen=%v log=%q", got.mode, got.screen, got.renderLog())
 	}
 }
 
