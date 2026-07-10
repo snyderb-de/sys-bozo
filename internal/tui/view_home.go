@@ -26,6 +26,8 @@ func (m Model) View() string {
 		return m.viewMaintenance()
 	case screenReview:
 		return m.viewReview()
+	case screenInspect:
+		return m.viewInspect()
 	}
 	return m.viewLegacy()
 }

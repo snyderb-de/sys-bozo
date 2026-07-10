@@ -25,13 +25,13 @@ func (m Model) viewMaintenance() string {
 
 	lastGroup := ""
 	availableIndex := 0
-	compact := m.height > 0 && m.height <= 30
+	compact := m.height > 0 && m.height <= 24
 	for _, task := range m.tasks {
 		available := task.Available(m.runCtx)
 		if compact && !available {
 			continue
 		}
-		if task.Group != lastGroup {
+		if !compact && task.Group != lastGroup {
 			if lastGroup != "" {
 				rows = append(rows, "")
 			}
@@ -59,7 +59,11 @@ func (m Model) viewMaintenance() string {
 			status = statusText(s, "SELECTED", statusActive)
 		}
 
-		left := marker + labelStyle.Render(checkbox+" "+task.Label) + "  " + s.muted.Render(task.Desc)
+		label := task.Label
+		if compact {
+			label = task.Group + "/" + task.Label
+		}
+		left := marker + labelStyle.Render(checkbox+" "+label) + "  " + s.muted.Render(task.Desc)
 		gap := max(1, contentWidth-lipgloss.Width(left)-lipgloss.Width(status))
 		rows = append(rows, left+strings.Repeat(" ", gap)+status)
 		if available {

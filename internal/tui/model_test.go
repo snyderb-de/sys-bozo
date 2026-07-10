@@ -277,6 +277,42 @@ func TestMaintenanceRemainsUsableAt80By24(t *testing.T) {
 	}
 }
 
+func TestFullyProvisionedDarwinMaintenanceFits80By24(t *testing.T) {
+	ctx := runner.Context{
+		Repo:          "/repo",
+		User:          "bag",
+		Hostname:      "mini",
+		OS:            "darwin",
+		NixBin:        "nix",
+		BrewBin:       "brew",
+		HomeManager:   "home-manager",
+		DarwinRebuild: "darwin-rebuild",
+		Topgrade:      "topgrade",
+	}
+	m := testGuidedModel()
+	m.runCtx = ctx
+	m.tasks = runner.DefaultTasks(ctx)
+	m.width, m.height = 80, 24
+	m.styles = newUIStyles(true)
+	m.openMaintenance("hms")
+
+	if available := m.availableTasks(); len(available) != 10 {
+		t.Fatalf("fully provisioned Darwin fixture has %d available tasks, want 10", len(available))
+	}
+	out := m.View()
+	if lines := strings.Count(out, "\n") + 1; lines > 24 {
+		t.Fatalf("rendered height=%d want <=24:\n%s", lines, out)
+	}
+	for _, want := range []string{
+		"> [ ] nix-darwin/nds", "[x] home-manager/hms", "brew/brew", "misc/topgrade", "combined/all",
+		"ESCAPE BACK", "SPACE TOGGLE", "ENTER REVIEW",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestHomeNavigationSkipsLockedPackageAndRoutesAvailableEntries(t *testing.T) {
 	m := testGuidedModel()
 
@@ -302,6 +338,43 @@ func TestHomeNavigationSkipsLockedPackageAndRoutesAvailableEntries(t *testing.T)
 	got = next.(Model)
 	if cmd != nil || got.screen != screenInspect {
 		t.Fatalf("inspect shortcut: cmd=%v screen=%v", cmd, got.screen)
+	}
+}
+
+func TestInspectRenderingDoesNotUseStaleMaintenanceTab(t *testing.T) {
+	m := testGuidedModel()
+	m.width, m.height = 100, 30
+	m.styles = newUIStyles(true)
+	m.configFiles = []configFile{{label: "flake.nix", path: "/repo/flake.nix", hint: "system configuration"}}
+
+	next, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'1'}})
+	m = next.(Model)
+	if m.screen != screenMaintenance || m.tabs[m.tab] != "Actions" {
+		t.Fatalf("maintenance: screen=%v tab=%q", m.screen, m.tabs[m.tab])
+	}
+	next, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
+	m = next.(Model)
+	if m.screen != screenHome || m.tabs[m.tab] != "Actions" {
+		t.Fatalf("home with retained tab: screen=%v tab=%q", m.screen, m.tabs[m.tab])
+	}
+	next, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'3'}})
+	m = next.(Model)
+	if m.screen != screenInspect {
+		t.Fatalf("inspect: screen=%v", m.screen)
+	}
+	if m.tabs[m.tab] != "Config" {
+		t.Fatalf("inspect entry did not align legacy tab: %q", m.tabs[m.tab])
+	}
+	m.tab = 1 // rendering must remain stable even if legacy state becomes stale
+
+	out := m.View()
+	for _, want := range []string{"Config", "flake.nix"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("inspection output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "enter run") {
+		t.Fatalf("inspection output leaked stale Actions content:\n%s", out)
 	}
 }
 
@@ -336,6 +409,54 @@ func TestMaintenanceSpaceTogglesAndReviewEscapeReturnsWithoutRunning(t *testing.
 	m = next.(Model)
 	if cmd != nil || m.screen != screenMaintenance || m.mode == modeRunning || !m.selected[wantID] {
 		t.Fatalf("back: cmd=%v screen=%v mode=%v selected=%v", cmd, m.screen, m.mode, m.selected)
+	}
+}
+
+func TestMaintenanceIgnoresLegacyTabNavigation(t *testing.T) {
+	keys := []tea.KeyMsg{
+		{Type: tea.KeyTab},
+		{Type: tea.KeyRight},
+		{Type: tea.KeyLeft},
+		{Type: tea.KeyShiftTab},
+		{Type: tea.KeyRunes, Runes: []rune{'1'}},
+		{Type: tea.KeyRunes, Runes: []rune{'2'}},
+		{Type: tea.KeyRunes, Runes: []rune{'3'}},
+		{Type: tea.KeyRunes, Runes: []rune{'4'}},
+		{Type: tea.KeyRunes, Runes: []rune{'5'}},
+	}
+	for _, key := range keys {
+		t.Run(key.String(), func(t *testing.T) {
+			m := testGuidedModel()
+			m.openMaintenance()
+			wantTab := m.tab
+
+			next, cmd := m.handleKey(key)
+			got := next.(Model)
+			if cmd != nil || got.screen != screenMaintenance || got.tab != wantTab {
+				t.Fatalf("key=%q cmd=%v screen=%v tab=%d want screen=%v tab=%d", key.String(), cmd, got.screen, got.tab, screenMaintenance, wantTab)
+			}
+		})
+	}
+}
+
+func TestMaintenanceStillAllowsQuitKeys(t *testing.T) {
+	keys := []tea.KeyMsg{
+		{Type: tea.KeyRunes, Runes: []rune{'q'}},
+		{Type: tea.KeyCtrlC},
+	}
+	for _, key := range keys {
+		t.Run(key.String(), func(t *testing.T) {
+			m := testGuidedModel()
+			m.openMaintenance()
+
+			_, cmd := m.handleKey(key)
+			if cmd == nil {
+				t.Fatalf("key=%q returned nil quit command", key.String())
+			}
+			if _, ok := cmd().(tea.QuitMsg); !ok {
+				t.Fatalf("key=%q command did not return tea.QuitMsg", key.String())
+			}
+		})
 	}
 }
 

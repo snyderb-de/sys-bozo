@@ -154,7 +154,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
-	if m.screen == screenReview || m.screen == screenRunning {
+	if m.screen == screenMaintenance || m.screen == screenReview || m.screen == screenRunning {
 		switch msg.String() {
 		case "tab", "right", "shift+tab", "left", "1", "2", "3", "4", "5":
 			return m, nil
@@ -332,6 +332,12 @@ func (m *Model) openHomeEntry(index int) {
 	case screenMaintenance:
 		m.openMaintenance()
 	case screenInspect:
+		for i, tab := range m.tabs {
+			if tab == "Config" {
+				m.tab = i
+				break
+			}
+		}
 		m.screen = screenInspect
 	}
 }

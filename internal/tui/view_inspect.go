@@ -7,6 +7,13 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+// viewInspect keeps the guided Inspect route stable until its Task 5 redesign.
+// Config is the existing read-mostly inspection surface and does not depend on
+// whichever legacy tab was active before the route opened.
+func (m Model) viewInspect() string {
+	return m.viewConfig(layoutWidth(m.width))
+}
+
 // ── Config ────────────────────────────────────────────────────────────────
 
 func (m Model) viewConfig(w int) string {
