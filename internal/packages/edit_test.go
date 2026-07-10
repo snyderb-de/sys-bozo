@@ -295,6 +295,60 @@ func TestProposeAddIgnoresAssignmentTextInsideStringsAndComments(t *testing.T) {
 	}
 }
 
+func TestProposeAddKeepsIndentedStringEscapesLexicallyIsolated(t *testing.T) {
+	escapes := []struct {
+		name string
+		line string
+	}{
+		{name: "escaped apostrophe", line: "  ''' escaped apostrophe"},
+		{name: "escaped dollar", line: "  ''$ escaped dollar"},
+		{name: "escaped backslash", line: "  ''\\[ escaped bracket"},
+	}
+
+	for _, tt := range escapes {
+		t.Run(tt.name, func(t *testing.T) {
+			original := []byte("text = ''\n" + tt.line + "\nhome.packages = [\n  # Fake\n  fake\n];\n'';\nhome.packages = [\n  # Misc\n  yazi\n];\n")
+
+			sections, err := Sections(original, Target{Assignment: "home.packages"})
+			if err != nil || len(sections) != 1 || sections[0] != "Misc" {
+				t.Fatalf("sections=%#v err=%v", sections, err)
+			}
+			proposal, err := ProposeAdd(original, Target{Assignment: "home.packages"}, "Misc", "lazydocker")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Contains(proposal.Proposed, []byte("  # Misc\n  yazi\n  lazydocker\n];\n")) {
+				t.Fatalf("proposal=%q", proposal.Proposed)
+			}
+			if strings.Count(string(proposal.Proposed), "lazydocker") != 1 || !bytes.Contains(proposal.Proposed, []byte("  # Fake\n  fake\n];\n")) {
+				t.Fatalf("fake target was changed: %q", proposal.Proposed)
+			}
+		})
+	}
+}
+
+func TestProposeAddRejectsFakeTargetAfterIndentedStringEscape(t *testing.T) {
+	original := []byte("text = ''\n  ''$ escaped dollar\nhome.packages = [\n  # Fake\n  fake\n];\n'';\n")
+
+	_, err := ProposeAdd(original, Target{Assignment: "home.packages"}, "Fake", "lazydocker")
+	if !errors.Is(err, ErrAmbiguousTarget) {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestProposeAddIgnoresDuplicateTextInsideEscapedIndentedString(t *testing.T) {
+	original := []byte("home.packages = [\n  # Misc\n  ''\n  ''$ escaped dollar\n  yazi\n  ''\n];\n")
+
+	proposal, err := ProposeAdd(original, Target{Assignment: "home.packages"}, "Misc", "yazi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantTail := "  yazi\n  ''\n  yazi\n];\n"
+	if !bytes.Contains(proposal.Proposed, []byte(wantTail)) {
+		t.Fatalf("proposal=%q", proposal.Proposed)
+	}
+}
+
 func TestProposeAddFailsClosedOnMalformedOrMissingTarget(t *testing.T) {
 	tests := []struct {
 		name     string

@@ -309,6 +309,16 @@ func (l parsedList) tokens() []string {
 				}
 				continue
 			}
+			if state.indentedQuote {
+				if char == '\'' && i+1 < end && line[i+1] == '\'' {
+					var closed bool
+					i, closed = consumeIndentedQuoteSequence(line, end, i)
+					if closed {
+						state.indentedQuote = false
+					}
+				}
+				continue
+			}
 			if state.quote != 0 {
 				token.WriteByte(char)
 				if state.escaped {
@@ -331,6 +341,10 @@ func (l parsedList) tokens() []string {
 			case char == '/' && i+1 < end && line[i+1] == '*':
 				flush()
 				state.blockComment = true
+				i++
+			case char == '\'' && i+1 < end && line[i+1] == '\'':
+				flush()
+				state.indentedQuote = true
 				i++
 			case char == '"':
 				token.WriteByte(char)
@@ -358,8 +372,11 @@ func scanCode(line []byte, start int, state *lexicalState, visit func(int, byte)
 		}
 		if state.indentedQuote {
 			if char == '\'' && i+1 < len(line) && line[i+1] == '\'' {
-				state.indentedQuote = false
-				i++
+				var closed bool
+				i, closed = consumeIndentedQuoteSequence(line, len(line), i)
+				if closed {
+					state.indentedQuote = false
+				}
 			}
 			continue
 		}
@@ -392,6 +409,23 @@ func scanCode(line []byte, start int, state *lexicalState, visit func(int, byte)
 		case !visit(i, char):
 			return
 		}
+	}
+}
+
+func consumeIndentedQuoteSequence(line []byte, end, start int) (int, bool) {
+	if start+2 >= end {
+		return start + 1, true
+	}
+	switch line[start+2] {
+	case '\'', '$':
+		return start + 2, false
+	case '\\':
+		if start+3 < end {
+			return start + 3, false
+		}
+		return start + 2, false
+	default:
+		return start + 1, true
 	}
 }
 
