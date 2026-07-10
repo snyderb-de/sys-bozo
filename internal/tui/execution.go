@@ -64,7 +64,7 @@ func (m Model) hasAvailableSelection() bool {
 func (m *Model) confirmReviewedPlan() tea.Cmd {
 	if m.reviewed.Package != nil {
 		m.beginReviewedRun()
-		if m.reviewed.Package.Applied != nil && !m.reviewed.Package.Revert {
+		if m.reviewed.Package.EditApplied {
 			return m.advanceQueue()
 		}
 		return m.applyPackageCmd(m.reviewed.Package.Proposal)
@@ -165,7 +165,7 @@ func (m Model) runSudoPreflight(sudoBin string) tea.Cmd {
 
 func (m *Model) advanceQueue() tea.Cmd {
 	if m.queuePos >= len(m.queue) {
-		if m.reviewed.Package != nil && m.reviewed.Package.Applied != nil && !m.reviewed.Package.verificationStarted {
+		if m.reviewed.Package != nil && m.reviewed.Package.EditApplied && !m.reviewed.Package.verificationStarted {
 			m.reviewed.Package = clonePackageReview(m.reviewed.Package)
 			if m.reviewed.Package.Revert {
 				elapsed := time.Since(m.runStart)

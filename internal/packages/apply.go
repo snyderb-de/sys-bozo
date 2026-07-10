@@ -116,16 +116,20 @@ func ProposeRevert(applied AppliedEdit) (Proposal, error) {
 		return Proposal{}, ErrStaleFile
 	}
 
-	original := bytes.Clone(current)
-	proposed := bytes.Clone(applied.Before)
+	return ProposeReplacement(Target{Path: applied.Path}, current, applied.Before), nil
+}
+
+func ProposeReplacement(target Target, original, proposed []byte) Proposal {
+	original = bytes.Clone(original)
+	proposed = bytes.Clone(proposed)
 	return Proposal{
-		Target:       Target{Path: applied.Path},
+		Target:       target,
 		Original:     original,
 		Proposed:     proposed,
-		OriginalHash: currentHash,
+		OriginalHash: sha256.Sum256(original),
 		ProposedHash: sha256.Sum256(proposed),
 		Diff:         unifiedReplacementDiff(original, proposed),
-	}, nil
+	}
 }
 
 func unifiedReplacementDiff(original, proposed []byte) string {

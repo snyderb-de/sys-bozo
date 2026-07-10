@@ -91,6 +91,39 @@ func TestResolveTargetMapsOnlySupportedDestinations(t *testing.T) {
 	}
 }
 
+func TestResolveEditorTargetOwnsExplicitFallbackPolicy(t *testing.T) {
+	repo := t.TempDir()
+	tests := []struct {
+		name     string
+		goos     string
+		hostname string
+		provider Provider
+		kind     Kind
+		scope    Scope
+		want     Target
+	}{
+		{"known shared nix", "darwin", "mac", ProviderNix, KindPackage, ScopeShared, Target{Path: filepath.Join(repo, "home/modules/packages.nix"), Assignment: "home.packages", ApplyAction: "hms"}},
+		{"darwin host nix", "darwin", "mac", ProviderNix, KindPackage, ScopeHost, Target{Path: filepath.Join(repo, "hosts/mac/darwin.nix"), Assignment: "home.packages", ApplyAction: "nds"}},
+		{"linux host nix", "linux", "box", ProviderNix, KindPackage, ScopeHost, Target{Path: filepath.Join(repo, "hosts/box/home.nix"), Assignment: "home.packages", ApplyAction: "hms"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ResolveEditorTarget(repo, tt.goos, tt.hostname, tt.provider, tt.kind, tt.scope)
+			if err != nil || got != tt.want {
+				t.Fatalf("target=%#v err=%v want=%#v", got, err, tt.want)
+			}
+		})
+	}
+	for _, scope := range []Scope{ScopePlatform, ScopeHost} {
+		for _, kind := range []Kind{KindFormula, KindCask} {
+			got, err := ResolveEditorTarget(repo, "darwin", "mac", ProviderBrew, kind, scope)
+			if !errors.Is(err, ErrUnsupportedTarget) || got != (Target{}) {
+				t.Fatalf("brew scope=%q kind=%q target=%#v err=%v", scope, kind, got, err)
+			}
+		}
+	}
+}
+
 func TestSectionsReturnsOrderedUniqueNames(t *testing.T) {
 	original := []byte("{\n  home.packages = with pkgs; [\n    # Git tooling\n    gh\n\n    # Misc\n    sqlite\n  ];\n}\n")
 

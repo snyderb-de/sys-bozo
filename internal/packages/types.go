@@ -55,10 +55,11 @@ type AppliedEdit struct {
 }
 
 var (
-	ErrAlreadyDeclared = errors.New("package already declared")
-	ErrAmbiguousTarget = errors.New("declaration target is missing or ambiguous")
-	ErrSectionNotFound = errors.New("declaration section not found")
-	ErrStaleFile       = errors.New("declaration file changed after review")
+	ErrAlreadyDeclared   = errors.New("package already declared")
+	ErrAmbiguousTarget   = errors.New("declaration target is missing or ambiguous")
+	ErrUnsupportedTarget = errors.New("package target is unsupported")
+	ErrSectionNotFound   = errors.New("declaration section not found")
+	ErrStaleFile         = errors.New("declaration file changed after review")
 )
 
 type Candidate struct {

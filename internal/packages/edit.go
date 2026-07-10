@@ -50,6 +50,23 @@ func ResolveTarget(repo, goos string, provider Provider, kind Kind, scope Scope)
 	}
 }
 
+func ResolveEditorTarget(repo, goos, hostname string, provider Provider, kind Kind, scope Scope) (Target, error) {
+	if target, err := ResolveTarget(repo, goos, provider, kind, scope); err == nil {
+		return target, nil
+	}
+	if provider != ProviderNix || kind != KindPackage || scope != ScopeHost || hostname == "" {
+		return Target{}, ErrUnsupportedTarget
+	}
+	switch goos {
+	case "darwin":
+		return Target{Path: filepath.Join(repo, "hosts", hostname, "darwin.nix"), Assignment: "home.packages", ApplyAction: "nds"}, nil
+	case "linux":
+		return Target{Path: filepath.Join(repo, "hosts", hostname, "home.nix"), Assignment: "home.packages", ApplyAction: "hms"}, nil
+	default:
+		return Target{}, ErrUnsupportedTarget
+	}
+}
+
 func Sections(original []byte, target Target) ([]Section, error) {
 	list, err := parseList(original, target)
 	if err != nil {

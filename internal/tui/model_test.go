@@ -321,8 +321,9 @@ func TestPackageRebuildFailureOffersHashGatedRevertReviewWithoutWriting(t *testi
 		Action: "hms",
 		Items:  []runner.WorkItem{{Name: "fixture-hms", Retryable: true}},
 		Package: &packageReview{
-			Proposal: packages.Proposal{Target: packages.Target{Path: path, ApplyAction: "hms"}},
-			Applied:  &applied,
+			Proposal:    packages.Proposal{Target: packages.Target{Path: path, ApplyAction: "hms"}},
+			Applied:     &applied,
+			EditApplied: true,
 		},
 	}
 	m.queue = cloneWorkItems(m.reviewed.Items)
@@ -359,7 +360,7 @@ func TestPackageRevertReviewRejectsStaleDeclaration(t *testing.T) {
 	m.proposePackageRevert = packages.ProposeRevert
 	m.screen, m.mode = screenResult, modeDone
 	m.runErr = errors.New("fixture rebuild failed")
-	m.reviewed = reviewedPlan{Package: &packageReview{Proposal: packages.Proposal{Target: packages.Target{ApplyAction: "hms"}}, Applied: &applied}}
+	m.reviewed = reviewedPlan{Package: &packageReview{Proposal: packages.Proposal{Target: packages.Target{ApplyAction: "hms"}}, Applied: &applied, EditApplied: true}}
 
 	next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'v'}})
 	got := next.(Model)
@@ -381,6 +382,9 @@ func TestAmbiguousPackageTargetUsesInjectedEditorAndResumesReviewWithoutWriting(
 	editorCalled := false
 	m.packageEditor = func(request packageEditorRequest) tea.Cmd {
 		editorCalled = true
+		if request.target.ApplyAction != "hms" {
+			t.Fatalf("shared malformed apply action=%q", request.target.ApplyAction)
+		}
 		if request.target.Path != path || !reflect.DeepEqual(request.original, original) {
 			t.Fatalf("editor request=%#v", request)
 		}
@@ -419,6 +423,121 @@ func TestAmbiguousPackageTargetUsesInjectedEditorAndResumesReviewWithoutWriting(
 	}
 }
 
+func TestNixHostEditorHandoffUsesEngineTargetOnDarwinAndLinux(t *testing.T) {
+	for _, tc := range []struct {
+		goos, hostname, file, action string
+	}{
+		{"darwin", "mac", "darwin.nix", "nds"},
+		{"linux", "box", "home.nix", "hms"},
+	} {
+		t.Run(tc.goos, func(t *testing.T) {
+			m := testPackageModel(t)
+			m.runCtx.OS, m.runCtx.Hostname = tc.goos, tc.hostname
+			path := filepath.Join(m.runCtx.Repo, "hosts", tc.hostname, tc.file)
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			original := []byte("{ home.packages = []; }\n")
+			if err := os.WriteFile(path, original, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			editorCalled := false
+			m.packageEditor = func(request packageEditorRequest) tea.Cmd {
+				editorCalled = true
+				if request.target.Path != path || request.target.ApplyAction != tc.action || !reflect.DeepEqual(request.original, original) {
+					t.Fatalf("editor request=%#v", request)
+				}
+				return func() tea.Msg { return packageEditorDoneMsg{err: errors.New("fixture editor stopped")} }
+			}
+			m.screen = screenPackage
+			m.packageFlow = packageFlow{stage: packagePlacement, scope: packages.ScopeHost, result: packages.SearchResult{Candidates: []packages.Candidate{{
+				Provider: packages.ProviderNix, Kind: packages.KindPackage, ID: "fixture", Name: "fixture",
+			}}, Selected: 0}}
+
+			next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+			got := next.(Model)
+			if cmd == nil || !editorCalled || got.packageFlow.scope != packages.ScopeHost {
+				t.Fatalf("cmd=%v editor=%v scope=%q err=%v", cmd, editorCalled, got.packageFlow.scope, got.packageFlow.err)
+			}
+		})
+	}
+}
+
+func TestNixHostEditorHandoffRequiresExistingFile(t *testing.T) {
+	m := testPackageModel(t)
+	m.runCtx.OS, m.runCtx.Hostname = "darwin", "missing-host"
+	editorCalled := false
+	m.packageEditor = func(packageEditorRequest) tea.Cmd { editorCalled = true; return nil }
+	m.screen = screenPackage
+	m.packageFlow = packageFlow{stage: packagePlacement, scope: packages.ScopeHost, result: packages.SearchResult{Candidates: []packages.Candidate{{
+		Provider: packages.ProviderNix, Kind: packages.KindPackage, ID: "fixture", Name: "fixture",
+	}}, Selected: 0}}
+
+	next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(Model)
+	if cmd != nil || editorCalled || got.packageFlow.scope != packages.ScopeHost || got.packageFlow.err == nil {
+		t.Fatalf("cmd=%v editor=%v scope=%q err=%v", cmd, editorCalled, got.packageFlow.scope, got.packageFlow.err)
+	}
+}
+
+func TestUnsupportedBrewScopeStaysSelectedAndDoesNotOpenEditor(t *testing.T) {
+	for _, scope := range []packages.Scope{packages.ScopePlatform, packages.ScopeHost} {
+		t.Run(string(scope), func(t *testing.T) {
+			m := testPackageModel(t)
+			m.runCtx.OS, m.runCtx.Hostname = "darwin", "fixture-host"
+			if err := os.WriteFile(filepath.Join(m.runCtx.Repo, "homebrew.nix"), []byte("{ brews = []; casks = []; }\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			editorCalled := false
+			m.packageEditor = func(packageEditorRequest) tea.Cmd { editorCalled = true; return nil }
+			m.screen = screenPackage
+			m.packageFlow = packageFlow{stage: packagePlacement, scope: scope, result: packages.SearchResult{Candidates: []packages.Candidate{{
+				Provider: packages.ProviderBrew, Kind: packages.KindFormula, ID: "fixture", Name: "fixture",
+			}}, Selected: 0}}
+
+			next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+			got := next.(Model)
+			if cmd != nil || editorCalled || got.packageFlow.scope != scope || !errors.Is(got.packageFlow.err, packages.ErrUnsupportedTarget) {
+				t.Fatalf("cmd=%v editor=%v scope=%q err=%v", cmd, editorCalled, got.packageFlow.scope, got.packageFlow.err)
+			}
+		})
+	}
+}
+
+func TestProposeAddFailureUsesSameKnownTargetEditorFallback(t *testing.T) {
+	m := testPackageModel(t)
+	path := filepath.Join(m.runCtx.Repo, "home", "modules", "packages.nix")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original := []byte("{ home.packages = [\n  # Other\n  yazi\n]; }\n")
+	if err := os.WriteFile(path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	editorCalled := false
+	m.packageEditor = func(request packageEditorRequest) tea.Cmd {
+		editorCalled = true
+		if request.target.Path != path || request.target.ApplyAction != "hms" {
+			t.Fatalf("editor target=%#v", request.target)
+		}
+		return func() tea.Msg { return packageEditorDoneMsg{err: errors.New("fixture editor stopped")} }
+	}
+	m.screen = screenPackage
+	m.packageFlow = packageFlow{
+		stage: packagePlacement, placingSection: true, scope: packages.ScopeShared,
+		target:   packages.Target{Path: path, Assignment: "home.packages", ApplyAction: "hms"},
+		sections: []string{"Missing"}, result: packages.SearchResult{Candidates: []packages.Candidate{{
+			Provider: packages.ProviderNix, Kind: packages.KindPackage, ID: "fixture", Name: "fixture",
+		}}, Selected: 0},
+	}
+
+	next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(Model)
+	if cmd == nil || !editorCalled || got.packageFlow.scope != packages.ScopeShared {
+		t.Fatalf("cmd=%v editor=%v scope=%q err=%v", cmd, editorCalled, got.packageFlow.scope, got.packageFlow.err)
+	}
+}
+
 func TestUnsupportedPackageScopeAlwaysUsesEditorHandoff(t *testing.T) {
 	m := testPackageModel(t)
 	m.runCtx.OS = "darwin"
@@ -434,6 +553,9 @@ func TestUnsupportedPackageScopeAlwaysUsesEditorHandoff(t *testing.T) {
 	editorCalled := false
 	m.packageEditor = func(request packageEditorRequest) tea.Cmd {
 		editorCalled = true
+		if request.target.ApplyAction != "nds" {
+			t.Fatalf("darwin host apply action=%q", request.target.ApplyAction)
+		}
 		return func() tea.Msg {
 			return packageEditorDoneMsg{target: request.target, original: request.original, proposed: append(request.original, []byte("# editor fixture\n")...), candidate: request.candidate}
 		}
@@ -515,10 +637,82 @@ func TestPackageWorkflowViewsFit80x24AndPreserveNoColorSemantics(t *testing.T) {
 					t.Fatalf("missing %q:\n%s", want, out)
 				}
 			}
-			if tc.name == "review" && strings.Index(out, "@@ -1,5 +1,6 @@") > strings.Index(out, "+  lazydocker") {
-				t.Fatalf("compact diff reordered hunk and addition:\n%s", out)
+			if tc.name == "review" {
+				hunkAt, additionAt := strings.Index(out, "@@ -1,5 +1,6 @@"), strings.Index(out, "+  lazydocker")
+				if hunkAt >= 0 && additionAt >= 0 && hunkAt > additionAt {
+					t.Fatalf("diff viewport reordered hunk and addition:\n%s", out)
+				}
+				if !strings.Contains(out, "DIFF  01-") {
+					t.Fatalf("diff viewport missing position:\n%s", out)
+				}
 			}
 		})
+	}
+}
+
+func TestPackageReviewDiffViewportPreservesAndScrollsFullDiffAt80x24(t *testing.T) {
+	m := testPackageModel(t)
+	m.width, m.height = 80, 24
+	m.styles = newUIStyles(true)
+	m.tasks = []runner.Task{{ID: "hms", Available: func(runner.Context) bool { return true }, Steps: []runner.Step{{
+		Cmd: func(runner.Context) (string, []string) { return "home-manager", []string{"switch"} },
+	}}}}
+	var original, proposed strings.Builder
+	for i := 0; i < 12; i++ {
+		fmt.Fprintf(&original, "ORIGINAL-%02d\n", i)
+	}
+	for i := 0; i < 15; i++ {
+		fmt.Fprintf(&proposed, "REPLACEMENT-%02d\n", i)
+	}
+	target := packages.Target{Path: "/fixture/packages.nix", ApplyAction: "hms"}
+	next, cmd := m.Update(packageEditorDoneMsg{
+		target: target, original: []byte(original.String()), proposed: []byte(proposed.String()),
+		candidate: packages.Candidate{Provider: packages.ProviderNix, Kind: packages.KindPackage, ID: "fixture", Name: "fixture"},
+	})
+	if cmd != nil {
+		t.Fatalf("editor return command=%v", cmd)
+	}
+	m = next.(Model)
+	const wantLines = 3 + 12 + 15
+	if m.screen != screenReview || m.reviewed.Package == nil {
+		t.Fatalf("screen=%v review=%#v", m.screen, m.reviewed.Package)
+	}
+	if got := m.reviewed.Package.DiffVP.TotalLineCount(); got != wantLines {
+		t.Fatalf("viewport lines=%d want %d", got, wantLines)
+	}
+
+	assertFrame := func(want string) string {
+		t.Helper()
+		out := m.View()
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q at offset %d:\n%s", want, m.reviewed.Package.DiffVP.YOffset, out)
+		}
+		if lipgloss.Width(out) > 80 || strings.Count(out, "\n")+1 > 24 {
+			t.Fatalf("review exceeds 80x24:\n%s", out)
+		}
+		return out
+	}
+	assertFrame("ORIGINAL-00")
+
+	middleSeen := false
+	for i := 0; i < 10 && !m.reviewed.Package.DiffVP.AtBottom(); i++ {
+		next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyPgDown})
+		if cmd != nil {
+			t.Fatalf("page down command=%v", cmd)
+		}
+		m = next.(Model)
+		out := m.View()
+		middleSeen = middleSeen || strings.Contains(out, "ORIGINAL-11")
+	}
+	if !middleSeen {
+		t.Fatal("middle diff line never became visible")
+	}
+	assertFrame("REPLACEMENT-14")
+
+	next, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyUp})
+	m = next.(Model)
+	if m.reviewed.Package.DiffVP.AtBottom() {
+		t.Fatal("up key did not scroll diff viewport")
 	}
 }
 
@@ -645,9 +839,10 @@ func TestPackageRetryReviewsFailedTailWithoutReapplyingDeclaration(t *testing.T)
 		Action: "hms",
 		Items:  cloneWorkItems(items),
 		Package: &packageReview{
-			Proposal: packages.Proposal{Target: packages.Target{ApplyAction: "hms"}},
-			Applied:  &applied,
-			Verify:   packages.VerifySpec{Executable: "fixture"},
+			Proposal:    packages.Proposal{Target: packages.Target{ApplyAction: "hms"}},
+			Applied:     &applied,
+			EditApplied: true,
+			Verify:      packages.VerifySpec{Executable: "fixture"},
 		},
 	}
 	m.stepResults = []stepResult{
@@ -674,6 +869,61 @@ func TestPackageRetryReviewsFailedTailWithoutReapplyingDeclaration(t *testing.T)
 	confirmed := next.(Model)
 	if cmd == nil || !rebuildCalled || applyCalled || confirmed.screen != screenRunning || confirmed.mode != modeRunning {
 		t.Fatalf("cmd=%v rebuild=%v apply=%v screen=%v mode=%v", cmd, rebuildCalled, applyCalled, confirmed.screen, confirmed.mode)
+	}
+}
+
+func TestReversePackageRebuildRetrySkipsAppliedReverseEdit(t *testing.T) {
+	m := testPackageModel(t)
+	m.tasks = []runner.Task{{ID: "hms", Available: func(runner.Context) bool { return true }, Steps: []runner.Step{{
+		Mode: runner.ExecutionInteractive, Retryable: true,
+		Cmd: func(runner.Context) (string, []string) { return "fixture-hms", []string{"--safe"} },
+	}}}}
+	applyCalls := 0
+	m.applyPackage = func(packages.Proposal) (packages.AppliedEdit, error) {
+		applyCalls++
+		return packages.AppliedEdit{Path: "/fixture/packages.nix", Before: []byte("new"), After: []byte("old")}, nil
+	}
+	rebuildCalls := 0
+	m.terminalExec = func(runner.WorkItem, time.Time) tea.Cmd {
+		rebuildCalls++
+		if rebuildCalls == 1 {
+			return func() tea.Msg {
+				return stepDoneMsg{err: errors.New("fixture reverse rebuild failed"), elapsed: time.Second}
+			}
+		}
+		return func() tea.Msg { return stepDoneMsg{elapsed: time.Second} }
+	}
+	proposal := packages.Proposal{Target: packages.Target{Path: "/fixture/packages.nix", ApplyAction: "hms"}}
+	if !m.buildPackageReview(proposal, packages.VerifySpec{}) {
+		t.Fatal("reverse review not built")
+	}
+	m.reviewed.Package.Revert = true
+
+	cmd := m.confirmReviewedPlan()
+	next, cmd := m.Update(cmd())
+	m = next.(Model)
+	if cmd == nil || applyCalls != 1 || rebuildCalls != 1 {
+		t.Fatalf("first reverse run cmd=%v apply=%d rebuild=%d", cmd, applyCalls, rebuildCalls)
+	}
+	next, _ = m.Update(cmd())
+	m = next.(Model)
+	if m.screen != screenResult || m.runErr == nil {
+		t.Fatalf("screen=%v err=%v", m.screen, m.runErr)
+	}
+	next, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	m = next.(Model)
+	if m.screen != screenReview || m.reviewed.Package == nil || !m.reviewed.Package.Revert {
+		t.Fatalf("retry review=%#v screen=%v", m.reviewed.Package, m.screen)
+	}
+
+	cmd = m.confirmReviewedPlan()
+	if cmd == nil || applyCalls != 1 || rebuildCalls != 2 {
+		t.Fatalf("retry scheduled reverse apply: cmd=%v apply=%d rebuild=%d", cmd, applyCalls, rebuildCalls)
+	}
+	next, nextCmd := m.Update(cmd())
+	got := next.(Model)
+	if nextCmd != nil || got.screen != screenResult || got.runErr != nil || applyCalls != 1 {
+		t.Fatalf("retry result cmd=%v screen=%v err=%v apply=%d", nextCmd, got.screen, got.runErr, applyCalls)
 	}
 }
 

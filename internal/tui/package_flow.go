@@ -1,14 +1,13 @@
 package tui
 
 import (
-	"crypto/sha256"
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/snyderb-de/sys-bozo/internal/packages"
@@ -32,7 +31,6 @@ type packageFlow struct {
 	sections       []string
 	section        int
 	target         packages.Target
-	proposal       packages.Proposal
 	placingSection bool
 	err            error
 }
@@ -41,9 +39,11 @@ type packageReview struct {
 	Proposal            packages.Proposal
 	Verify              packages.VerifySpec
 	Applied             *packages.AppliedEdit
+	EditApplied         bool
 	Result              *packages.VerifyResult
 	verificationStarted bool
 	Revert              bool
+	DiffVP              viewport.Model
 }
 
 type packageSearchMsg struct{ result packages.SearchResult }
@@ -195,10 +195,9 @@ func (m Model) handlePackagePlacementKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		proposal, err := packages.ProposeAdd(original, m.packageFlow.target, m.packageFlow.sections[m.packageFlow.section], candidate.ID)
 		if err != nil {
-			m.packageFlow.err = err
-			return m, nil
+			m.packageFlow.err = nil
+			return m, m.openPackageEditor(packageEditorRequest{target: m.packageFlow.target, original: original, candidate: candidate})
 		}
-		m.packageFlow.proposal = clonePackageProposal(proposal)
 		m.buildPackageReview(proposal, packageVerifySpec(candidate, m.runCtx.BrewBin))
 	}
 	return m, nil
@@ -220,7 +219,10 @@ func (m *Model) preparePackageTarget() (tea.Cmd, error) {
 	}
 	target, err := packages.ResolveTarget(m.runCtx.Repo, m.runCtx.OS, candidate.Provider, candidate.Kind, m.packageFlow.scope)
 	if err != nil {
-		target = m.packageManualTarget(candidate)
+		target, err = packages.ResolveEditorTarget(m.runCtx.Repo, m.runCtx.OS, m.runCtx.Hostname, candidate.Provider, candidate.Kind, m.packageFlow.scope)
+		if err != nil {
+			return nil, fmt.Errorf("scope %q: %w", m.packageFlow.scope, err)
+		}
 		original, readErr := os.ReadFile(target.Path)
 		if readErr != nil {
 			return nil, fmt.Errorf("read declaration file for editor handoff: %w", readErr)
@@ -253,27 +255,6 @@ func (m *Model) preparePackageTarget() (tea.Cmd, error) {
 	m.packageFlow.placingSection = true
 	m.packageFlow.err = nil
 	return nil, nil
-}
-
-func (m Model) packageManualTarget(candidate packages.Candidate) packages.Target {
-	if candidate.Provider == packages.ProviderBrew {
-		assignment := "brews"
-		if candidate.Kind == packages.KindCask {
-			assignment = "casks"
-		}
-		return packages.Target{Path: filepath.Join(m.runCtx.Repo, "homebrew.nix"), Assignment: assignment, Quoted: true, ApplyAction: "nds"}
-	}
-	path := filepath.Join(m.runCtx.Repo, "home", "modules", "packages.nix")
-	if m.packageFlow.scope == packages.ScopePlatform {
-		path = filepath.Join(m.runCtx.Repo, "home", m.runCtx.OS, "default.nix")
-	} else if m.packageFlow.scope == packages.ScopeHost {
-		name := "home.nix"
-		if m.runCtx.OS == "darwin" {
-			name = "darwin.nix"
-		}
-		path = filepath.Join(m.runCtx.Repo, "hosts", m.runCtx.Hostname, name)
-	}
-	return packages.Target{Path: path, Assignment: "home.packages", ApplyAction: "hms"}
 }
 
 func (m Model) openPackageEditor(request packageEditorRequest) tea.Cmd {
@@ -311,35 +292,6 @@ func (m Model) openPackageEditor(request packageEditorRequest) tea.Cmd {
 			candidate: request.candidate, err: readErr,
 		}
 	})
-}
-
-func packageReplacementProposal(target packages.Target, original, proposed []byte) packages.Proposal {
-	original = append([]byte(nil), original...)
-	proposed = append([]byte(nil), proposed...)
-	return packages.Proposal{
-		Target: target, Original: original, Proposed: proposed,
-		OriginalHash: sha256.Sum256(original), ProposedHash: sha256.Sum256(proposed),
-		Diff: packageReplacementDiff(original, proposed),
-	}
-}
-
-func packageReplacementDiff(original, proposed []byte) string {
-	originalLines := strings.Split(strings.TrimSuffix(string(original), "\n"), "\n")
-	proposedLines := strings.Split(strings.TrimSuffix(string(proposed), "\n"), "\n")
-	var diff strings.Builder
-	diff.WriteString("--- original\n+++ proposed\n")
-	fmt.Fprintf(&diff, "@@ -1,%d +1,%d @@\n", len(originalLines), len(proposedLines))
-	for _, line := range originalLines {
-		diff.WriteString("-")
-		diff.WriteString(line)
-		diff.WriteByte('\n')
-	}
-	for _, line := range proposedLines {
-		diff.WriteString("+")
-		diff.WriteString(line)
-		diff.WriteByte('\n')
-	}
-	return diff.String()
 }
 
 func (m Model) selectedPackageCandidate() (packages.Candidate, bool) {
@@ -399,6 +351,7 @@ func (m *Model) buildPackageReview(proposal packages.Proposal, verify packages.V
 		Items:   cloneWorkItems(items),
 		Package: clonePackageReview(&packageReview{Proposal: proposal, Verify: verify}),
 	}
+	m.initPackageDiffViewport()
 	m.screen = screenReview
 	return true
 }
@@ -462,7 +415,7 @@ func cloneAppliedEdit(edit packages.AppliedEdit) packages.AppliedEdit {
 }
 
 func (m Model) packageCanRevert() bool {
-	return m.runErr != nil && m.reviewed.Package != nil && m.reviewed.Package.Applied != nil &&
+	return m.runErr != nil && m.reviewed.Package != nil && m.reviewed.Package.EditApplied && m.reviewed.Package.Applied != nil &&
 		!m.reviewed.Package.Revert && m.reviewed.Package.Result == nil
 }
 
@@ -484,6 +437,7 @@ func (m *Model) reviewPackageRevert() {
 		return
 	}
 	m.reviewed.Package.Revert = true
+	m.initPackageDiffViewport()
 	m.mode = modeView
 	m.queue = nil
 	m.queuePos = 0

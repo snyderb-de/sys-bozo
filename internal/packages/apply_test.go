@@ -137,6 +137,25 @@ func TestProposeRevertChecksPostHashAndRestoresExactBytes(t *testing.T) {
 	assertNoApplyTemps(t, dir)
 }
 
+func TestProposeReplacementOwnsHashesUnifiedDiffAndBytes(t *testing.T) {
+	original := []byte("first\nsecond\n")
+	proposed := []byte("first\nreplacement\nlast\n")
+	target := Target{Path: "/fixture/packages.nix", ApplyAction: "hms"}
+	proposal := ProposeReplacement(target, original, proposed)
+	if proposal.Target != target || proposal.OriginalHash != sha256.Sum256(original) || proposal.ProposedHash != sha256.Sum256(proposed) {
+		t.Fatalf("proposal=%#v", proposal)
+	}
+	for _, want := range []string{"--- original", "+++ proposed", "@@ -1,2 +1,3 @@", "-second", "+replacement", "+last"} {
+		if !strings.Contains(proposal.Diff, want) {
+			t.Fatalf("diff missing %q: %q", want, proposal.Diff)
+		}
+	}
+	original[0], proposed[0] = 'X', 'Y'
+	if string(proposal.Original) != "first\nsecond\n" || string(proposal.Proposed) != "first\nreplacement\nlast\n" {
+		t.Fatalf("proposal aliases caller bytes: original=%q proposed=%q", proposal.Original, proposal.Proposed)
+	}
+}
+
 func TestApplyCleansTemporaryFileOnEveryPreRenameFailure(t *testing.T) {
 	failure := errors.New("injected apply failure")
 	stages := []string{"chmod", "write", "sync", "close", "rename"}

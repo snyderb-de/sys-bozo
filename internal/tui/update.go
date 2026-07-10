@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/snyderb-de/sys-bozo/internal/history"
+	"github.com/snyderb-de/sys-bozo/internal/packages"
 	"github.com/snyderb-de/sys-bozo/internal/runner"
 	"github.com/snyderb-de/sys-bozo/internal/system"
 )
@@ -33,6 +34,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.logFollow {
 			m.logVP.GotoBottom()
 		}
+		m.resizePackageDiffViewport()
 		return m, nil
 
 	case tea.KeyMsg:
@@ -55,6 +57,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.reviewed.Package = clonePackageReview(m.reviewed.Package)
 		edit := cloneAppliedEdit(msg.edit)
 		m.reviewed.Package.Applied = &edit
+		m.reviewed.Package.EditApplied = true
 		return m, m.advanceQueue()
 
 	case packageVerifiedMsg:
@@ -86,8 +89,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.packageFlow.err = fmt.Errorf("package editor made no changes")
 			return m, nil
 		}
-		proposal := packageReplacementProposal(msg.target, msg.original, msg.proposed)
-		m.packageFlow.proposal = clonePackageProposal(proposal)
+		proposal := packages.ProposeReplacement(msg.target, msg.original, msg.proposed)
 		m.buildPackageReview(proposal, packageVerifySpec(msg.candidate, m.runCtx.BrewBin))
 		return m, nil
 
@@ -295,6 +297,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	case screenReview:
+		if m.reviewed.Package != nil && m.scrollPackageDiff(msg.String()) {
+			return m, nil
+		}
 		switch msg.String() {
 		case "enter":
 			return m, m.confirmReviewedPlan()
@@ -568,6 +573,7 @@ func (m *Model) prepareResultRetry() {
 	m.mode = modeView
 	m.screen = screenReview
 	m.reviewed = reviewedPlan{Action: action, Items: retryItems, Package: packagePlan}
+	m.initPackageDiffViewport()
 	m.queue = nil
 	m.queuePos = 0
 	m.runErr = nil

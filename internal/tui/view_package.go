@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/viewport"
+	"github.com/charmbracelet/lipgloss"
+
 	"github.com/snyderb-de/sys-bozo/internal/packages"
 	"github.com/snyderb-de/sys-bozo/internal/runner"
 )
@@ -149,6 +152,13 @@ func (m Model) viewPackageReview() string {
 	for i, item := range m.reviewed.Items {
 		commandRows = append(commandRows, reviewCommandRows(s, fmt.Sprintf("%02d", i+1), runner.CmdLabel(item), statusText(s, "READY", statusMuted), contentWidth)...)
 	}
+	diffVP := packagePlan.DiffVP
+	if diffVP.Width <= 0 || diffVP.Height <= 0 {
+		diffVP = m.newPackageDiffViewport(packagePlan, 0)
+	}
+	diffTop := min(diffVP.TotalLineCount(), diffVP.YOffset+1)
+	diffBottom := min(diffVP.TotalLineCount(), diffVP.YOffset+diffVP.VisibleLineCount())
+	diffPosition := fmt.Sprintf("DIFF  %02d-%02d/%02d", diffTop, diffBottom, diffVP.TotalLineCount())
 	rows := []string{
 		s.major.Render("REVIEW/PACKAGE"),
 		s.label.Render("DECLARATIVE INSTALL"),
@@ -156,38 +166,117 @@ func (m Model) viewPackageReview() string {
 		"",
 	}
 	rows = append(rows, fileRows...)
-	rows = append(rows, "", s.label.Render("DIFF"))
-	diffLines := strings.Split(strings.TrimSuffix(packagePlan.Proposal.Diff, "\n"), "\n")
-	compact := m.height > 0 && m.height <= 24
-	if compact {
-		limit := max(3, 6-(len(fileRows)-1)-(len(verifyRows)-1)-(len(commandRows)-len(m.reviewed.Items)))
-		if len(diffLines) > limit {
-			diffLines = compactPackageDiff(diffLines, limit)
-		}
-	}
-	for _, line := range diffLines {
-		style := s.muted
-		if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++") {
-			style = s.active
-		} else if strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---") {
-			style = s.danger
-		}
-		if compact {
-			rows = append(rows, style.Render(truncateVisible(line, contentWidth)))
-			continue
-		}
-		for _, wrapped := range wrapText(line, contentWidth) {
-			rows = append(rows, style.Render(wrapped))
-		}
-	}
+	rows = append(rows, "", s.label.Render(diffPosition), diffVP.View())
 	rows = append(rows, "", s.label.Render("APPLY"))
 	rows = append(rows, commandRows...)
 	rows = append(rows,
 		"",
 	)
 	rows = append(rows, verifyRows...)
-	rows = append(rows, "", majorRule(s, contentWidth, false), "", s.muted.Render("ESCAPE BACK")+"   "+s.active.Render("ENTER CONFIRM"))
+	rows = append(rows, "", majorRule(s, contentWidth, false), "", s.muted.Render("J/K SCROLL   PGUP/PGDN PAGE   ESCAPE BACK")+"   "+s.active.Render("ENTER CONFIRM"))
 	return primaryFrame(s, m.width, strings.Join(rows, "\n"))
+}
+
+func (m Model) newPackageDiffViewport(review *packageReview, offset int) viewport.Model {
+	width := primaryContentWidth(m.width)
+	vp := viewport.New(width, m.packageDiffViewportHeight(review))
+	vp.SetContent(renderPackageDiffContent(m.styles, review.Proposal.Diff, width))
+	vp.SetYOffset(offset)
+	return vp
+}
+
+func (m Model) packageDiffViewportHeight(review *packageReview) int {
+	if m.height <= 0 {
+		return 8
+	}
+	contentWidth := primaryContentWidth(m.width)
+	fileRows := packageLabeledValueRows(m.styles, "FILE", review.Proposal.Target.Path, contentWidth)
+	verification := packageVerificationLabel(review.Verify)
+	if review.Revert {
+		verification = "previous declaration restored after apply"
+	}
+	verifyRows := packageLabeledValueRows(m.styles, "VERIFY", verification, contentWidth)
+	commandRows := 0
+	for i, item := range m.reviewed.Items {
+		commandRows += len(reviewCommandRows(m.styles, fmt.Sprintf("%02d", i+1), runner.CmdLabel(item), statusText(m.styles, "READY", statusMuted), contentWidth))
+	}
+	const fixedRows = 18
+	extras := len(fileRows) - 1 + len(verifyRows) - 1 + commandRows - len(m.reviewed.Items)
+	return max(1, m.height-fixedRows-extras)
+}
+
+func renderPackageDiffContent(s uiStyles, diff string, width int) string {
+	lines := strings.Split(strings.TrimSuffix(diff, "\n"), "\n")
+	rendered := make([]string, 0, len(lines))
+	for _, line := range lines {
+		style := s.muted
+		if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++") {
+			style = s.active
+		} else if strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---") {
+			style = s.danger
+		}
+		for _, wrapped := range wrapExactText(line, width) {
+			rendered = append(rendered, style.Render(wrapped))
+		}
+	}
+	return strings.Join(rendered, "\n")
+}
+
+func wrapExactText(text string, width int) []string {
+	if width < 1 || lipgloss.Width(text) <= width {
+		return []string{text}
+	}
+	runes := []rune(text)
+	var lines []string
+	for len(runes) > 0 {
+		cut := 1
+		for cut < len(runes) && lipgloss.Width(string(runes[:cut+1])) <= width {
+			cut++
+		}
+		lines = append(lines, string(runes[:cut]))
+		runes = runes[cut:]
+	}
+	return lines
+}
+
+func (m *Model) initPackageDiffViewport() {
+	if m.reviewed.Package == nil {
+		return
+	}
+	m.reviewed.Package = clonePackageReview(m.reviewed.Package)
+	m.reviewed.Package.DiffVP = m.newPackageDiffViewport(m.reviewed.Package, 0)
+}
+
+func (m *Model) resizePackageDiffViewport() {
+	if m.reviewed.Package == nil {
+		return
+	}
+	offset := m.reviewed.Package.DiffVP.YOffset
+	m.reviewed.Package = clonePackageReview(m.reviewed.Package)
+	m.reviewed.Package.DiffVP = m.newPackageDiffViewport(m.reviewed.Package, offset)
+}
+
+func (m *Model) scrollPackageDiff(key string) bool {
+	if m.reviewed.Package == nil {
+		return false
+	}
+	m.reviewed.Package = clonePackageReview(m.reviewed.Package)
+	if m.reviewed.Package.DiffVP.Width <= 0 {
+		m.reviewed.Package.DiffVP = m.newPackageDiffViewport(m.reviewed.Package, 0)
+	}
+	switch key {
+	case "j", "down":
+		m.reviewed.Package.DiffVP.ScrollDown(1)
+	case "k", "up":
+		m.reviewed.Package.DiffVP.ScrollUp(1)
+	case "pgdown":
+		m.reviewed.Package.DiffVP.PageDown()
+	case "pgup":
+		m.reviewed.Package.DiffVP.PageUp()
+	default:
+		return false
+	}
+	return true
 }
 
 func packageLabeledValueRows(s uiStyles, label, value string, width int) []string {
@@ -200,54 +289,4 @@ func packageLabeledValueRows(s uiStyles, label, value string, width int) []strin
 		rows = append(rows, indent+s.text.Render(line))
 	}
 	return rows
-}
-
-func compactPackageDiff(lines []string, limit int) []string {
-	if len(lines) <= limit {
-		return lines
-	}
-	selected := make([]bool, len(lines))
-	count := 0
-	selectLine := func(index int) {
-		if index >= 0 && index < len(lines) && !selected[index] && count < limit {
-			selected[index] = true
-			count++
-		}
-	}
-	selectLine(0)
-	selectLine(1)
-	changed := -1
-	for i := 2; i < len(lines); i++ {
-		if (strings.HasPrefix(lines[i], "+") && !strings.HasPrefix(lines[i], "+++")) ||
-			(strings.HasPrefix(lines[i], "-") && !strings.HasPrefix(lines[i], "---")) {
-			changed = i
-			break
-		}
-	}
-	if changed >= 0 {
-		for i := changed; i >= 2; i-- {
-			if strings.HasPrefix(lines[i], "@@") {
-				selectLine(i)
-				break
-			}
-		}
-		selectLine(changed)
-		for distance := 1; count < limit; distance++ {
-			if changed-distance < 2 && changed+distance >= len(lines) {
-				break
-			}
-			selectLine(changed - distance)
-			selectLine(changed + distance)
-		}
-	}
-	for i := range lines {
-		selectLine(i)
-	}
-	out := make([]string, 0, limit)
-	for i, line := range lines {
-		if selected[i] {
-			out = append(out, line)
-		}
-	}
-	return out
 }
