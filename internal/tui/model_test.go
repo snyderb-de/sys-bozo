@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -141,5 +142,28 @@ func TestInteractiveFailureStopsQueueAndRestoresDoneState(t *testing.T) {
 	got := next.(Model)
 	if got.mode != modeDone || !strings.Contains(got.renderLog(), "exit status 1") {
 		t.Fatalf("mode=%v log=%q", got.mode, got.renderLog())
+	}
+}
+
+func TestStreamedStartFailureLogHasSingleCommandPrefix(t *testing.T) {
+	item := runner.WorkItem{
+		Name: filepath.Join(t.TempDir(), "missing-command"),
+		Mode: runner.ExecutionStreamed,
+	}
+	m := Model{mode: modeRunning, queue: []runner.WorkItem{item}}
+
+	if cmd := m.advanceQueue(); cmd != nil {
+		t.Fatal("streamed start failure returned a command")
+	}
+	if m.mode != modeDone {
+		t.Fatalf("mode = %v, want %v", m.mode, modeDone)
+	}
+	got := m.logLines[len(m.logLines)-1].text
+	prefix := "  ✗ " + item.Name + ": "
+	if !strings.HasPrefix(got, prefix) {
+		t.Fatalf("log = %q, want prefix %q", got, prefix)
+	}
+	if strings.HasPrefix(strings.TrimPrefix(got, prefix), item.Name+": ") {
+		t.Fatalf("log = %q, duplicate command prefix %q", got, item.Name+": ")
 	}
 }

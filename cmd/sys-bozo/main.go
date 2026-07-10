@@ -54,7 +54,10 @@ var startStreamed = runner.StartWork
 
 func runWorkItem(item runner.WorkItem) error {
 	if item.Mode == runner.ExecutionInteractive {
-		return runInteractive(item)
+		if err := runInteractive(item); err != nil {
+			return fmt.Errorf("%s: %w", item.Name, err)
+		}
+		return nil
 	}
 	scanner, wait, err := startStreamed(item)
 	if err != nil {
@@ -63,7 +66,10 @@ func runWorkItem(item runner.WorkItem) error {
 	for scanner.Scan() {
 		fmt.Fprintln(os.Stdout, scanner.Text())
 	}
-	return wait()
+	if err := wait(); err != nil {
+		return fmt.Errorf("%s: %w", item.Name, err)
+	}
+	return nil
 }
 
 func runPlan(args []string) error {
@@ -137,7 +143,7 @@ func runAction(args []string) error {
 	for _, item := range queue {
 		fmt.Fprintf(os.Stderr, "$ %s\n", runner.CmdLabel(item))
 		if err := runWorkItem(item); err != nil {
-			return fmt.Errorf("%s: %w", item.Name, err)
+			return err
 		}
 	}
 	return nil

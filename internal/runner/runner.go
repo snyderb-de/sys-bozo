@@ -2,6 +2,7 @@ package runner
 
 import (
 	"bufio"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -420,7 +421,7 @@ func StartWork(w WorkItem) (*bufio.Scanner, func() error, error) {
 	if err := cmd.Start(); err != nil {
 		pw.Close()
 		pr.Close()
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("%s: %w", w.Name, err)
 	}
 
 	done := make(chan error, 1)

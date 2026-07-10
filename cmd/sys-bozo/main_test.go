@@ -2,7 +2,7 @@ package main
 
 import (
 	"bufio"
-	"fmt"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -60,9 +60,26 @@ func TestRunWorkItemStreamedStartErrorHasSingleCommandPrefix(t *testing.T) {
 		t.Fatal("runWorkItem returned nil error")
 	}
 
-	got := fmt.Errorf("%s: %w", item.Name, err).Error()
-	duplicatePrefix := item.Name + ": " + item.Name + ":"
-	if strings.HasPrefix(got, duplicatePrefix) {
-		t.Fatalf("error = %q, duplicate command prefix %q", got, duplicatePrefix)
+	got := err.Error()
+	prefix := item.Name + ": "
+	if !strings.HasPrefix(got, prefix) {
+		t.Fatalf("error = %q, want prefix %q", got, prefix)
+	}
+	if strings.HasPrefix(strings.TrimPrefix(got, prefix), prefix) {
+		t.Fatalf("error = %q, duplicate command prefix %q", got, prefix)
+	}
+}
+
+func TestRunWorkItemInteractiveErrorHasSingleCommandPrefix(t *testing.T) {
+	oldInteractive := runInteractive
+	t.Cleanup(func() { runInteractive = oldInteractive })
+	runInteractive = func(runner.WorkItem) error { return errors.New("exit status 1") }
+
+	err := runWorkItem(runner.WorkItem{Name: "sudo", Mode: runner.ExecutionInteractive})
+	if err == nil {
+		t.Fatal("runWorkItem returned nil error")
+	}
+	if got, want := err.Error(), "sudo: exit status 1"; got != want {
+		t.Fatalf("error = %q, want %q", got, want)
 	}
 }
