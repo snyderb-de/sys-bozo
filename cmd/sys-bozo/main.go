@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -63,10 +64,13 @@ func runWorkItem(item runner.WorkItem) error {
 	if err != nil {
 		return err
 	}
+	var writeErr error
 	for scanner.Scan() {
-		fmt.Fprintln(os.Stdout, scanner.Text())
+		if writeErr == nil {
+			_, writeErr = os.Stdout.Write(scanner.Bytes())
+		}
 	}
-	if err := wait(); err != nil {
+	if err := errors.Join(scanner.Err(), writeErr, wait()); err != nil {
 		return fmt.Errorf("%s: %w", item.Name, err)
 	}
 	return nil

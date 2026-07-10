@@ -275,7 +275,9 @@ func (m Model) readNextLine() tea.Cmd {
 
 	return func() tea.Msg {
 		if scanner.Scan() {
-			return lineMsg{text: scanner.Text()}
+			text := strings.TrimSuffix(scanner.Text(), "\n")
+			text = strings.TrimSuffix(text, "\r")
+			return lineMsg{text: text}
 		}
 		err := errors.Join(scanner.Err(), wait())
 		return stepDoneMsg{err: err, elapsed: time.Since(start)}

@@ -58,7 +58,7 @@ func TestStartWorkDrainsSingleLineLargerThanScannerLimit(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("large output line deadlocked")
 	}
-	if scanErr != nil || waitErr != nil || total != 131072 {
+	if scanErr != nil || waitErr != nil || total != 131073 {
 		t.Fatalf("total=%d scanErr=%v waitErr=%v", total, scanErr, waitErr)
 	}
 }

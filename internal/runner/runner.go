@@ -451,7 +451,7 @@ const streamedOutputChunk = 32 * 1024
 
 func splitLinesOrChunks(data []byte, atEOF bool) (advance int, token []byte, err error) {
 	if i := bytes.IndexByte(data, '\n'); i >= 0 {
-		return i + 1, data[:i], nil
+		return i + 1, data[:i+1], nil
 	}
 	if len(data) >= streamedOutputChunk {
 		return streamedOutputChunk, data[:streamedOutputChunk], nil
