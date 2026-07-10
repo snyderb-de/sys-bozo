@@ -255,6 +255,15 @@ func (m *Model) reviewSelection() {
 	m.screen = screenReview
 }
 
+func (m Model) hasAvailableSelection() bool {
+	for _, task := range m.tasks {
+		if m.selected[task.ID] && task.Available(m.runCtx) {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *Model) confirmReviewedPlan() tea.Cmd {
 	if len(m.reviewed.Items) == 0 {
 		return nil
@@ -461,20 +470,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.String() == "enter" || msg.String() == " " {
 		switch m.screen {
 		case screenMaintenance:
-			hasSelection := false
-			for _, selected := range m.selected {
-				if selected {
-					hasSelection = true
-					break
-				}
-			}
-			if !hasSelection {
+			if !m.hasAvailableSelection() {
 				available := m.availableTasks()
 				if m.cursor >= 0 && m.cursor < len(available) {
-					if m.selected == nil {
-						m.selected = map[string]bool{}
-					}
-					m.selected[available[m.cursor].ID] = true
+					m.selected = map[string]bool{available[m.cursor].ID: true}
 				}
 			}
 			m.reviewSelection()
@@ -491,6 +490,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.logLines = nil
 			m.queue = nil
 			m.queuePos = 0
+			m.selected = map[string]bool{}
+			m.reviewed = reviewedPlan{}
 			m.syncScreenToTab()
 			return m, nil
 		}

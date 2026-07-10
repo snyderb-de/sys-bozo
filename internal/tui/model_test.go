@@ -165,6 +165,76 @@ func TestActionsEnterReviewsCurrentAvailableTaskWithoutRunning(t *testing.T) {
 	}
 }
 
+func TestResultCloseClearsStaleWorkflowBeforeReviewingNewCursor(t *testing.T) {
+	m := testGuidedModel()
+	available := m.availableTasks()
+	if len(available) < 2 {
+		t.Fatalf("need two available tasks, got %v", available)
+	}
+	m.tab = 1
+	m.cursor = 0
+	m.screen = screenResult
+	m.mode = modeDone
+	m.selected = map[string]bool{available[0].ID: true}
+	m.reviewed = reviewedPlan{Action: available[0].ID, Items: runner.BuildQueue(available[0], m.runCtx)}
+
+	next, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	m = next.(Model)
+	if len(m.selected) != 0 || m.reviewed.Action != "" || len(m.reviewed.Items) != 0 {
+		t.Fatalf("stale workflow survived result close: selected=%v reviewed=%#v", m.selected, m.reviewed)
+	}
+
+	next, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyDown})
+	m = next.(Model)
+	wantTask := available[m.cursor]
+	if wantTask.ID == available[0].ID {
+		t.Fatalf("cursor did not move: cursor=%d task=%q", m.cursor, wantTask.ID)
+	}
+	next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(Model)
+	if cmd != nil || got.screen != screenReview || got.reviewed.Action != wantTask.ID {
+		t.Fatalf("cmd=%v screen=%v action=%q", cmd, got.screen, got.reviewed.Action)
+	}
+	if len(got.selected) != 1 || !got.selected[wantTask.ID] {
+		t.Fatalf("selected=%v, want only %q", got.selected, wantTask.ID)
+	}
+	if diff := cmpWorkItems(got.reviewed.Items, runner.BuildQueue(wantTask, got.runCtx)); diff != "" {
+		t.Fatal(diff)
+	}
+	if got.mode == modeRunning || len(got.queue) != 0 {
+		t.Fatal("new cursor review must not execute")
+	}
+}
+
+func TestUnavailableSelectionFallsBackToCurrentAvailableCursor(t *testing.T) {
+	m := testGuidedModel()
+	m.openMaintenance("nds")
+	if m.tasks[0].Available(m.runCtx) {
+		t.Fatal("test requires nds to be unavailable")
+	}
+	available := m.availableTasks()
+	if len(available) < 2 {
+		t.Fatalf("need two available tasks, got %v", available)
+	}
+	m.cursor = 1
+	wantTask := available[m.cursor]
+
+	next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(Model)
+	if cmd != nil || got.screen != screenReview || got.reviewed.Action != wantTask.ID {
+		t.Fatalf("cmd=%v screen=%v action=%q", cmd, got.screen, got.reviewed.Action)
+	}
+	if len(got.selected) != 1 || !got.selected[wantTask.ID] || got.selected["nds"] {
+		t.Fatalf("selected=%v, want only %q", got.selected, wantTask.ID)
+	}
+	if diff := cmpWorkItems(got.reviewed.Items, runner.BuildQueue(wantTask, got.runCtx)); diff != "" {
+		t.Fatal(diff)
+	}
+	if got.mode == modeRunning || len(got.queue) != 0 {
+		t.Fatal("fallback review must not execute")
+	}
+}
+
 func TestWorkflowScreensIgnoreTabNavigation(t *testing.T) {
 	workflows := []struct {
 		name   string
