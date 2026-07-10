@@ -114,14 +114,14 @@ func TestSearchParsesBrewFormulaeAndCasks(t *testing.T) {
 	}
 }
 
-func TestSearchKeepsNixAndCaskWhenBrewFormulaFails(t *testing.T) {
+func TestSearchDiscardsFailedFormulaOutputAndKeepsCask(t *testing.T) {
 	formulaErr := errors.New("brew formula search unavailable")
 	runner := fakeOutputRunner{responses: map[string]struct {
 		out string
 		err error
 	}{
 		"nix search --json nixpkgs ghostty": {out: `{"legacyPackages.aarch64-darwin.ghostty":{"pname":"ghostty","version":"1.1.3","description":"Terminal emulator"}}`},
-		"brew search --formula ghostty":     {err: formulaErr},
+		"brew search --formula ghostty":     {out: "failed-formula-output\n", err: formulaErr},
 		"brew search --cask ghostty":        {out: "ghostty\n"},
 	}}
 
@@ -135,6 +135,50 @@ func TestSearchKeepsNixAndCaskWhenBrewFormulaFails(t *testing.T) {
 	}
 	if len(got.Candidates) != 2 || got.Candidates[0].Provider != ProviderNix || got.Candidates[1].Kind != KindCask {
 		t.Fatalf("got %#v", got)
+	}
+}
+
+func TestSearchDiscardsFailedCaskOutputAndKeepsFormula(t *testing.T) {
+	caskErr := errors.New("brew cask search unavailable")
+	runner := fakeOutputRunner{responses: map[string]struct {
+		out string
+		err error
+	}{
+		"nix search --json nixpkgs yazi": {out: `{}`},
+		"brew search --formula yazi":     {out: "yazi\n"},
+		"brew search --cask yazi":        {out: "failed-cask-output\n", err: caskErr},
+	}}
+
+	got := Search(context.Background(), runner, "nix", "brew", "yazi")
+
+	if !errors.Is(got.BrewErr, caskErr) {
+		t.Fatalf("BrewErr=%v want %v", got.BrewErr, caskErr)
+	}
+	want := Candidate{Provider: ProviderBrew, Kind: KindFormula, ID: "yazi", Name: "yazi"}
+	if len(got.Candidates) != 1 || got.Candidates[0] != want {
+		t.Fatalf("candidates=%#v want %#v", got.Candidates, []Candidate{want})
+	}
+}
+
+func TestSearchDiscardsAllBrewOutputWhenBothSearchesFail(t *testing.T) {
+	formulaErr := errors.New("brew formula search unavailable")
+	caskErr := errors.New("brew cask search unavailable")
+	runner := fakeOutputRunner{responses: map[string]struct {
+		out string
+		err error
+	}{
+		"nix search --json nixpkgs tool": {out: `{}`},
+		"brew search --formula tool":     {out: "failed-formula-output\n", err: formulaErr},
+		"brew search --cask tool":        {out: "failed-cask-output\n", err: caskErr},
+	}}
+
+	got := Search(context.Background(), runner, "nix", "brew", "tool")
+
+	if !errors.Is(got.BrewErr, formulaErr) || !errors.Is(got.BrewErr, caskErr) {
+		t.Fatalf("BrewErr=%v want both %v and %v", got.BrewErr, formulaErr, caskErr)
+	}
+	if len(got.Candidates) != 0 {
+		t.Fatalf("candidates=%#v want none", got.Candidates)
 	}
 }
 

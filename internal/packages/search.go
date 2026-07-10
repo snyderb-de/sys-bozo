@@ -103,8 +103,14 @@ func searchBrew(ctx context.Context, runner OutputRunner, command, query string)
 	formulaOutput, formulaErr := runner.Output(ctx, command, "search", "--formula", query)
 	caskOutput, caskErr := runner.Output(ctx, command, "search", "--cask", query)
 
-	formulae := brewCandidates(formulaOutput, KindFormula)
-	casks := brewCandidates(caskOutput, KindCask)
+	var formulae []Candidate
+	if formulaErr == nil {
+		formulae = brewCandidates(formulaOutput, KindFormula)
+	}
+	var casks []Candidate
+	if caskErr == nil {
+		casks = brewCandidates(caskOutput, KindCask)
+	}
 	candidates := make([]Candidate, 0, len(formulae)+len(casks))
 	candidates = append(candidates, formulae...)
 	candidates = append(candidates, casks...)
