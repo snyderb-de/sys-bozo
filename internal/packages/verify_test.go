@@ -173,6 +173,52 @@ func TestVerifyCLIRejectsEmptyResolvedPath(t *testing.T) {
 	}
 }
 
+func TestVerifyRejectsVersionArgsWithoutExecutableBeforeOtherChecks(t *testing.T) {
+	for _, spec := range []VerifySpec{
+		{
+			Provider:    ProviderBrew,
+			Kind:        KindFormula,
+			Token:       "yazi",
+			VersionArgs: []string{"--version"},
+			BrewBin:     "brew",
+		},
+		{
+			Provider:    ProviderBrew,
+			Kind:        KindCask,
+			Token:       "zed",
+			VersionArgs: []string{"--version"},
+			BrewBin:     "brew",
+		},
+	} {
+		t.Run(string(spec.Kind), func(t *testing.T) {
+			calls := []string{}
+			runner := fakeOutputRunner{
+				responses: map[string]struct {
+					out string
+					err error
+				}{
+					"brew list --formula --versions yazi": {out: "yazi 25.5.31\n"},
+					"brew list --cask --versions zed":     {out: "zed 0.190.0\n"},
+				},
+				calls: &calls,
+			}
+			lookupCalls := 0
+
+			got := Verify(context.Background(), runner, func(string) (string, error) {
+				lookupCalls++
+				return "/test/bin/tool", nil
+			}, spec)
+
+			if got.OK || got.Err == nil || !strings.Contains(got.Detail, "version") {
+				t.Fatalf("got %#v", got)
+			}
+			if len(calls) != 0 || lookupCalls != 0 {
+				t.Fatalf("calls=%#v lookupCalls=%d want no side effects", calls, lookupCalls)
+			}
+		})
+	}
+}
+
 func TestVerifyRejectsIncoherentProviderKind(t *testing.T) {
 	for _, spec := range []VerifySpec{
 		{Provider: ProviderNix, Kind: KindCask, Executable: "zed"},

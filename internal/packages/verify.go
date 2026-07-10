@@ -8,6 +8,10 @@ import (
 )
 
 func Verify(ctx context.Context, runner OutputRunner, lookup PathLookup, spec VerifySpec) VerifyResult {
+	if len(spec.VersionArgs) > 0 && spec.Executable == "" {
+		return verificationFailure("version arguments require an executable")
+	}
+
 	switch spec.Provider {
 	case ProviderNix:
 		if spec.Kind != KindPackage {
