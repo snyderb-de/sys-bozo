@@ -77,6 +77,25 @@ type SearchResult struct {
 	BrewErr    error
 }
 
+type VerifySpec struct {
+	Provider    Provider
+	Kind        Kind
+	Token       string
+	Executable  string
+	VersionArgs []string
+	AppPath     string
+	BrewBin     string
+}
+
+type VerifyResult struct {
+	OK     bool
+	Path   string
+	Detail string
+	Err    error
+}
+
+type PathLookup func(string) (string, error)
+
 type OutputRunner interface {
 	Output(context.Context, string, ...string) ([]byte, error)
 }
