@@ -3,6 +3,7 @@ package packages
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -14,11 +15,18 @@ type fakeOutputRunner struct {
 		out string
 		err error
 	}
+	calls *[]string
 }
 
 func (f fakeOutputRunner) Output(_ context.Context, name string, args ...string) ([]byte, error) {
 	key := name + " " + strings.Join(args, " ")
-	response := f.responses[key]
+	if f.calls != nil {
+		*f.calls = append(*f.calls, key)
+	}
+	response, ok := f.responses[key]
+	if !ok {
+		return nil, fmt.Errorf("unexpected command: %s", key)
+	}
 	return []byte(response.out), response.err
 }
 

@@ -8,28 +8,38 @@ import (
 )
 
 func Verify(ctx context.Context, runner OutputRunner, lookup PathLookup, spec VerifySpec) VerifyResult {
-	if spec.Executable != "" {
-		return verifyExecutable(ctx, runner, lookup, spec)
-	}
-
-	if spec.Provider != ProviderBrew {
-		return verificationFailure("verification requires an executable for provider %q", spec.Provider)
-	}
-	if spec.BrewBin == "" {
-		return verificationFailure("Brew verification requires a brew executable")
-	}
-	if spec.Token == "" {
-		return verificationFailure("Brew verification requires a package token")
-	}
-
-	switch spec.Kind {
-	case KindFormula:
-		return verifyBrewReceipt(ctx, runner, spec, KindFormula)
-	case KindCask:
-		result := verifyBrewReceipt(ctx, runner, spec, KindCask)
-		if !result.OK || spec.AppPath == "" {
-			return result
+	switch spec.Provider {
+	case ProviderNix:
+		if spec.Kind != KindPackage {
+			return verificationFailure("unsupported Nix package kind %q", spec.Kind)
 		}
+		if spec.Executable == "" {
+			return verificationFailure("verification requires an executable for provider %q", spec.Provider)
+		}
+		return verifyExecutable(ctx, runner, lookup, spec)
+	case ProviderBrew:
+		switch spec.Kind {
+		case KindFormula:
+			if spec.Executable != "" {
+				return verifyExecutable(ctx, runner, lookup, spec)
+			}
+			return verifyBrewReceipt(ctx, runner, spec, KindFormula)
+		case KindCask:
+			return verifyBrewCask(ctx, runner, lookup, spec)
+		default:
+			return verificationFailure("unsupported Brew package kind %q", spec.Kind)
+		}
+	default:
+		return verificationFailure("unsupported package provider %q", spec.Provider)
+	}
+}
+
+func verifyBrewCask(ctx context.Context, runner OutputRunner, lookup PathLookup, spec VerifySpec) VerifyResult {
+	result := verifyBrewReceipt(ctx, runner, spec, KindCask)
+	if !result.OK {
+		return result
+	}
+	if spec.AppPath != "" {
 		if _, err := os.Stat(spec.AppPath); err != nil {
 			return VerifyResult{
 				Detail: fmt.Sprintf("Brew cask artifact %q is unavailable", spec.AppPath),
@@ -37,10 +47,17 @@ func Verify(ctx context.Context, runner OutputRunner, lookup PathLookup, spec Ve
 			}
 		}
 		result.Detail = fmt.Sprintf("Brew cask receipt and artifact %q verified", spec.AppPath)
-		return result
-	default:
-		return verificationFailure("unsupported Brew package kind %q", spec.Kind)
 	}
+	if spec.Executable == "" {
+		return result
+	}
+
+	executableResult := verifyExecutable(ctx, runner, lookup, spec)
+	if !executableResult.OK {
+		return executableResult
+	}
+	executableResult.Detail = result.Detail + "; " + executableResult.Detail
+	return executableResult
 }
 
 func verifyExecutable(ctx context.Context, runner OutputRunner, lookup PathLookup, spec VerifySpec) VerifyResult {
@@ -81,6 +98,12 @@ func verifyExecutable(ctx context.Context, runner OutputRunner, lookup PathLooku
 }
 
 func verifyBrewReceipt(ctx context.Context, runner OutputRunner, spec VerifySpec, kind Kind) VerifyResult {
+	if spec.BrewBin == "" {
+		return verificationFailure("Brew verification requires a brew executable")
+	}
+	if spec.Token == "" {
+		return verificationFailure("Brew verification requires a package token")
+	}
 	if runner == nil {
 		return verificationFailure("Brew verification requires a command runner")
 	}
