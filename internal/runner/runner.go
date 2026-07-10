@@ -400,17 +400,28 @@ func BuildQueue(task Task, ctx Context) []WorkItem {
 	return items
 }
 
-// StartWork launches one WorkItem and returns a scanner over its combined output,
-// a wait func (blocks until process exits, returns exit error), and any start error.
-func StartWork(w WorkItem) (*bufio.Scanner, func() error, error) {
+func Command(w WorkItem) *exec.Cmd {
 	cmd := exec.Command(w.Name, w.Args...)
 	if w.Dir != "" {
 		cmd.Dir = w.Dir
 	}
-	cmd.Env = os.Environ()
-	if len(w.EnvExtra) > 0 {
-		cmd.Env = append(cmd.Env, w.EnvExtra...)
-	}
+	cmd.Env = append([]string{}, os.Environ()...)
+	cmd.Env = append(cmd.Env, w.EnvExtra...)
+	return cmd
+}
+
+func RunInteractive(w WorkItem, stdin io.Reader, stdout, stderr io.Writer) error {
+	cmd := Command(w)
+	cmd.Stdin = stdin
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	return cmd.Run()
+}
+
+// StartWork launches one WorkItem and returns a scanner over its combined output,
+// a wait func (blocks until process exits, returns exit error), and any start error.
+func StartWork(w WorkItem) (*bufio.Scanner, func() error, error) {
+	cmd := Command(w)
 
 	pr, pw := io.Pipe()
 	cmd.Stdout = pw

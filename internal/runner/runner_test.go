@@ -111,3 +111,30 @@ func TestPromptingDefaultStepsAreInteractive(t *testing.T) {
 		}
 	}
 }
+
+func TestCommandAppliesDirAndEnvironment(t *testing.T) {
+	t.Setenv("SYS_BOZO_BASE", "present")
+	w := WorkItem{Name: "sh", Args: []string{"-c", "true"}, Dir: t.TempDir(), EnvExtra: []string{"EXTRA=value"}}
+	cmd := Command(w)
+	if cmd.Dir != w.Dir {
+		t.Fatalf("dir = %q, want %q", cmd.Dir, w.Dir)
+	}
+	joined := strings.Join(cmd.Env, "\n")
+	for _, want := range []string{"SYS_BOZO_BASE=present", "EXTRA=value"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("environment missing %q", want)
+		}
+	}
+}
+
+func TestRunInteractiveUsesProvidedStdio(t *testing.T) {
+	var stdout, stderr strings.Builder
+	w := WorkItem{Name: "sh", Args: []string{"-c", `read value; printf 'out:%s' "$value"; printf 'err:%s' "$value" >&2`}}
+	err := RunInteractive(w, strings.NewReader("secretless-test\n"), &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stdout.String() != "out:secretless-test" || stderr.String() != "err:secretless-test" {
+		t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
