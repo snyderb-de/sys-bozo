@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -61,10 +62,9 @@ func verifyNixGenerationClosure(ctx context.Context, runner OutputRunner, spec V
 	if !nixToken.MatchString(spec.System) || !nixToken.MatchString(spec.NixInput) {
 		return verificationFailure("invalid Nix system or input token")
 	}
-	for _, part := range strings.Split(spec.Attr, ".") {
-		if !nixToken.MatchString(part) {
-			return verificationFailure("invalid Nix attribute token")
-		}
+	expr, exprErr := nixAttrExpression(spec.Repo, spec.NixInput, spec.System, spec.Attr)
+	if exprErr != nil {
+		return VerifyResult{Detail: exprErr.Error(), Err: exprErr}
 	}
 	generations, err := runner.Output(ctx, spec.HomeManagerBin, "generations")
 	if err != nil {
@@ -83,7 +83,6 @@ func verifyNixGenerationClosure(ctx context.Context, runner OutputRunner, spec V
 	if generation == "" {
 		return verificationFailure("Home Manager newest generation store path is missing or malformed")
 	}
-	expr := fmt.Sprintf(`(builtins.getFlake %q).inputs.%s.legacyPackages.%s.%s.outPath`, spec.Repo, spec.NixInput, spec.System, spec.Attr)
 	evaluated, err := runner.Output(ctx, spec.NixBin, "eval", "--raw", "--impure", "--expr", expr)
 	if err != nil {
 		return VerifyResult{Detail: "pinned Nix package outPath could not be evaluated", Err: err}
@@ -102,6 +101,20 @@ func verifyNixGenerationClosure(ctx context.Context, runner OutputRunner, spec V
 		}
 	}
 	return verificationFailure("exact pinned Nix package outPath is absent from applied Home Manager generation")
+}
+
+func nixAttrExpression(repo, input, system, attr string) (string, error) {
+	parts := strings.Split(attr, ".")
+	for _, part := range parts {
+		if part == "" || strings.IndexFunc(part, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0 {
+			return "", fmt.Errorf("invalid Nix attribute token")
+		}
+	}
+	expr := fmt.Sprintf(`builtins.getAttr %s (builtins.getAttr %s (builtins.getAttr %s (builtins.getFlake %s).inputs).legacyPackages)`, strconv.Quote(parts[0]), strconv.Quote(system), strconv.Quote(input), strconv.Quote(repo))
+	for _, part := range parts[1:] {
+		expr = fmt.Sprintf(`builtins.getAttr %s (%s)`, strconv.Quote(part), expr)
+	}
+	return "(" + expr + ").outPath", nil
 }
 
 func verifyBrewCask(ctx context.Context, runner OutputRunner, lookup PathLookup, spec VerifySpec) VerifyResult {

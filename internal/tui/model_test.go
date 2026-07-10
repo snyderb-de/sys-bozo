@@ -312,16 +312,23 @@ func TestPackageEditorPreservesBasenameAndWritesVisibleContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.packageExecProcess = func(cmd *exec.Cmd, done tea.ExecCallback) tea.Cmd {
-		editPath := cmd.Args[len(cmd.Args)-1]
+		if len(cmd.Args) < 4 {
+			t.Fatalf("argv=%#v", cmd.Args)
+		}
+		editPath := cmd.Args[len(cmd.Args)-2]
+		contextArg := cmd.Args[len(cmd.Args)-1]
 		if filepath.Base(editPath) != "default.nix" || editPath == target {
 			t.Fatalf("edit path=%q", editPath)
 		}
-		contextBytes, err := os.ReadFile(filepath.Join(filepath.Dir(editPath), "SYS-BOZO-CONTEXT.txt"))
+		if contextArg != filepath.Join(filepath.Dir(editPath), "SYS-BOZO-CONTEXT.txt") {
+			t.Fatalf("context arg=%q", contextArg)
+		}
+		contextBytes, err := os.ReadFile(contextArg)
 		if err != nil {
 			t.Fatal(err)
 		}
 		contextText := string(contextBytes)
-		for _, want := range []string{"provider: nix", "package-id: python313Packages.requests", "package-name: requests", "scope: platform", "real-target: " + target} {
+		for _, want := range []string{"EDITOR CONTEXT: " + contextArg, "provider: nix", "package-id: python313Packages.requests", "package-name: requests", "scope: platform", "real-target: " + target} {
 			if !strings.Contains(contextText, want) {
 				t.Fatalf("context missing %q: %s", want, contextText)
 			}

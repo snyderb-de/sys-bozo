@@ -328,8 +328,9 @@ func (m Model) openPackageEditor(request packageEditorRequest) tea.Cmd {
 		_ = os.RemoveAll(dir)
 		return func() tea.Msg { return packageEditorDoneMsg{err: fmt.Errorf("write package editor copy: %w", err)} }
 	}
-	contextText := fmt.Sprintf("provider: %s\npackage-id: %s\npackage-name: %s\nscope: %s\nreal-target: %s\n", request.candidate.Provider, request.candidate.ID, request.candidate.Name, m.packageFlow.scope, request.target.Path)
-	if err := os.WriteFile(filepath.Join(dir, "SYS-BOZO-CONTEXT.txt"), []byte(contextText), 0o600); err != nil {
+	contextPath := filepath.Join(dir, "SYS-BOZO-CONTEXT.txt")
+	contextText := fmt.Sprintf("EDITOR CONTEXT: %s\nprovider: %s\npackage-id: %s\npackage-name: %s\nscope: %s\nreal-target: %s\n", contextPath, request.candidate.Provider, request.candidate.ID, request.candidate.Name, m.packageFlow.scope, request.target.Path)
+	if err := os.WriteFile(contextPath, []byte(contextText), 0o600); err != nil {
 		_ = os.RemoveAll(dir)
 		return func() tea.Msg { return packageEditorDoneMsg{err: err} }
 	}
@@ -342,7 +343,7 @@ func (m Model) openPackageEditor(request packageEditorRequest) tea.Cmd {
 		_ = os.RemoveAll(dir)
 		return func() tea.Msg { return packageEditorDoneMsg{err: err} }
 	}
-	cmd := exec.Command(argv[0], append(argv[1:], tempPath)...)
+	cmd := exec.Command(argv[0], append(argv[1:], tempPath, contextPath)...)
 	execProcess := m.packageExecProcess
 	if execProcess == nil {
 		execProcess = tea.ExecProcess

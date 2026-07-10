@@ -68,7 +68,7 @@ func realApplyFilesystem() applyFilesystem {
 	}
 }
 
-func apply(proposal Proposal, filesystem applyFilesystem) (applied AppliedEdit, retErr error) {
+func apply(proposal Proposal, filesystem applyFilesystem) (AppliedEdit, error) {
 	info, err := filesystem.stat(proposal.Target.Path)
 	if err != nil {
 		return AppliedEdit{}, fmt.Errorf("lstat declaration file: %w", err)
@@ -86,91 +86,146 @@ func apply(proposal Proposal, filesystem applyFilesystem) (applied AppliedEdit, 
 	}
 
 	after := bytes.Clone(proposal.Proposed)
-	temp, err := filesystem.createTemp(filepath.Dir(proposal.Target.Path), applyTempPattern)
+	tempPath, proposedInfo, err := prepareApplyFile(filesystem, filepath.Dir(proposal.Target.Path), applyTempPattern, after, info.Mode())
 	if err != nil {
-		return AppliedEdit{}, fmt.Errorf("create temporary declaration file: %w", err)
+		return AppliedEdit{}, err
 	}
-	tempPath := temp.Name()
-	defer func() {
-		if err := filesystem.remove(tempPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-			retErr = errors.Join(retErr, fmt.Errorf("remove proposal temporary file %q: %w", tempPath, err))
-		}
-	}()
-
-	if err := temp.Chmod(info.Mode()); err != nil {
-		_ = temp.Close()
-		return AppliedEdit{}, fmt.Errorf("set temporary declaration permissions: %w", err)
-	}
-	if written, err := temp.Write(after); err != nil {
-		_ = temp.Close()
-		return AppliedEdit{}, fmt.Errorf("write temporary declaration file: %w", err)
-	} else if written != len(after) {
-		_ = temp.Close()
-		return AppliedEdit{}, fmt.Errorf("write temporary declaration file: %w", io.ErrShortWrite)
-	}
-	if err := temp.Sync(); err != nil {
-		_ = temp.Close()
-		return AppliedEdit{}, fmt.Errorf("sync temporary declaration file: %w", err)
-	}
-	if err := temp.Close(); err != nil {
-		return AppliedEdit{}, fmt.Errorf("close temporary declaration file: %w", err)
-	}
-	proposedInfo, err := filesystem.stat(tempPath)
+	guardPath, recoveryInfo, err := prepareApplyFile(filesystem, filepath.Dir(proposal.Target.Path), applyTempPattern+"-recovery", current, info.Mode())
 	if err != nil {
-		return AppliedEdit{}, fmt.Errorf("stat proposed temporary file: %w", err)
+		return AppliedEdit{}, errors.Join(err, cleanupApplyArtifacts(filesystem, filepath.Dir(proposal.Target.Path), tempPath))
 	}
-
-	guard, err := filesystem.createTemp(filepath.Dir(proposal.Target.Path), applyTempPattern+"-recovery")
-	if err != nil {
-		return AppliedEdit{}, fmt.Errorf("create recovery file: %w", err)
-	}
-	guardPath := guard.Name()
-	if _, err := guard.Write(current); err != nil {
-		_ = guard.Close()
-		return AppliedEdit{}, fmt.Errorf("write recovery file: %w", err)
-	}
-	if err := guard.Sync(); err != nil {
-		_ = guard.Close()
-		return AppliedEdit{}, fmt.Errorf("sync recovery file: %w", err)
-	}
-	if err := guard.Close(); err != nil {
-		return AppliedEdit{}, fmt.Errorf("close recovery file: %w", err)
-	}
-	defer func() {
-		if err := filesystem.remove(guardPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-			retErr = errors.Join(retErr, fmt.Errorf("remove recovery file %q: %w", guardPath, err))
-		}
-	}()
+	state := exchangeApplyState{filesystem: filesystem, target: proposal.Target.Path, oldTemp: tempPath, recovery: guardPath, originalInfo: info, proposedInfo: proposedInfo, recoveryInfo: recoveryInfo, originalHash: proposal.OriginalHash, proposedHash: proposal.ProposedHash, originalMode: info.Mode()}
 	runApplyHook(filesystem, applyBeforeClaim, proposal.Target.Path, guardPath)
 	latestInfo, latestInfoErr := filesystem.stat(proposal.Target.Path)
 	latest, latestErr := filesystem.readFile(proposal.Target.Path)
 	if latestInfoErr != nil || latestErr != nil || !latestInfo.Mode().IsRegular() || !filesystem.sameFile(info, latestInfo) || sha256.Sum256(latest) != proposal.OriginalHash {
-		return AppliedEdit{}, errors.Join(ErrStaleFile, latestInfoErr, latestErr)
+		return AppliedEdit{}, errors.Join(ErrStaleFile, latestInfoErr, latestErr, cleanupApplyArtifacts(filesystem, filepath.Dir(proposal.Target.Path), tempPath, guardPath))
 	}
 	if err := filesystem.exchange(proposal.Target.Path, tempPath); err != nil {
-		return AppliedEdit{}, fmt.Errorf("atomically exchange declaration target: %w", err)
+		return AppliedEdit{}, errors.Join(fmt.Errorf("atomically exchange declaration target: %w", err), cleanupApplyArtifacts(filesystem, filepath.Dir(proposal.Target.Path), tempPath, guardPath))
 	}
 	runApplyHook(filesystem, applyAfterClaim, proposal.Target.Path, tempPath)
 	runApplyHook(filesystem, applyBeforeInstall, proposal.Target.Path, tempPath)
 	runApplyHook(filesystem, applyBeforeGuardRecheck, proposal.Target.Path, tempPath)
-	guarded, err := filesystem.readFile(tempPath)
-	targetInfo, targetInfoErr := filesystem.stat(proposal.Target.Path)
-	tempInfo, tempInfoErr := filesystem.stat(tempPath)
-	installed, installedErr := filesystem.readFile(proposal.Target.Path)
-	targetValid := targetInfoErr == nil && filesystem.sameFile(targetInfo, proposedInfo) && installedErr == nil && sha256.Sum256(installed) == proposal.ProposedHash
-	oldValid := tempInfoErr == nil && tempInfo.Mode().IsRegular() && filesystem.sameFile(info, tempInfo) && err == nil && sha256.Sum256(guarded) == proposal.OriginalHash
+	targetValid := state.valid(state.target, state.proposedInfo, state.proposedHash)
+	oldValid := state.valid(state.oldTemp, state.originalInfo, state.originalHash)
 	if !oldValid || !targetValid {
-		rollbackErr := filesystem.exchange(proposal.Target.Path, tempPath)
-		restored, readErr := filesystem.readFile(proposal.Target.Path)
-		if readErr != nil || sha256.Sum256(restored) != proposal.OriginalHash {
-			rollbackErr = errors.Join(rollbackErr, filesystem.exchange(proposal.Target.Path, guardPath))
-		}
-		return AppliedEdit{}, errors.Join(staleConflict("atomic exchange validation conflict", guardPath), targetInfoErr, tempInfoErr, installedErr, err, rollbackErr)
+		return AppliedEdit{}, state.rollback(oldValid)
 	}
 	if err := filesystem.syncDir(filepath.Dir(proposal.Target.Path)); err != nil {
 		return completedEdit(proposal, current, after, beforeHash), fmt.Errorf("sync declaration cleanup: %w", err)
 	}
+	if err := cleanupApplyArtifacts(filesystem, filepath.Dir(proposal.Target.Path), tempPath, guardPath); err != nil {
+		return completedEdit(proposal, current, after, beforeHash), err
+	}
 	return completedEdit(proposal, current, after, beforeHash), nil
+}
+
+type exchangeApplyState struct {
+	filesystem                               applyFilesystem
+	target, oldTemp, recovery                string
+	originalInfo, proposedInfo, recoveryInfo os.FileInfo
+	originalHash, proposedHash               [32]byte
+	originalMode                             os.FileMode
+}
+
+func (s exchangeApplyState) valid(path string, identity os.FileInfo, hash [32]byte) bool {
+	if !s.identity(path, identity) {
+		return false
+	}
+	b, err := s.filesystem.readFile(path)
+	return err == nil && sha256.Sum256(b) == hash
+}
+
+func (s exchangeApplyState) identity(path string, identity os.FileInfo) bool {
+	info, err := s.filesystem.stat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != s.originalMode.Perm() || !s.filesystem.sameFile(info, identity) {
+		return false
+	}
+	return true
+}
+
+func (s exchangeApplyState) rollback(oldValid bool) error {
+	if !s.identity(s.target, s.proposedInfo) {
+		return fmt.Errorf("%w: competing target preserved at %s; original artifacts retained at %s and %s", ErrStaleFile, s.target, s.oldTemp, s.recovery)
+	}
+	source := s.recovery
+	identity := s.recoveryInfo
+	if oldValid {
+		source = s.oldTemp
+		identity = s.originalInfo
+	} else if !s.valid(s.recovery, s.recoveryInfo, s.originalHash) {
+		return fmt.Errorf("%w: invalid recovery; artifacts retained at %s and %s", ErrStaleFile, s.oldTemp, s.recovery)
+	}
+	if err := s.filesystem.exchange(s.target, source); err != nil {
+		if oldValid && s.valid(s.recovery, s.recoveryInfo, s.originalHash) {
+			if recoveryErr := s.filesystem.exchange(s.target, s.recovery); recoveryErr == nil {
+				if s.valid(s.target, s.recoveryInfo, s.originalHash) {
+					return errors.Join(ErrStaleFile, cleanupApplyArtifacts(s.filesystem, filepath.Dir(s.target), s.oldTemp, s.recovery))
+				}
+			} else {
+				err = errors.Join(err, recoveryErr)
+			}
+		}
+		return fmt.Errorf("%w: rollback exchange failed; recovery retained at %s and %s: %v", ErrStaleFile, s.oldTemp, s.recovery, err)
+	}
+	if !s.valid(s.target, identity, s.originalHash) {
+		return fmt.Errorf("%w: rollback could not be verified; recovery retained at %s and %s", ErrStaleFile, s.oldTemp, s.recovery)
+	}
+	return errors.Join(ErrStaleFile, cleanupApplyArtifacts(s.filesystem, filepath.Dir(s.target), s.oldTemp, s.recovery))
+}
+
+func prepareApplyFile(fs applyFilesystem, dir, pattern string, content []byte, mode os.FileMode) (string, os.FileInfo, error) {
+	f, err := fs.createTemp(dir, pattern)
+	if err != nil {
+		return "", nil, err
+	}
+	path := f.Name()
+	fail := func(e error) (string, os.FileInfo, error) {
+		_ = f.Close()
+		return "", nil, errors.Join(e, cleanupApplyArtifacts(fs, dir, path))
+	}
+	if err := f.Chmod(mode); err != nil {
+		return fail(err)
+	}
+	n, err := f.Write(content)
+	if err != nil {
+		return fail(err)
+	}
+	if n != len(content) {
+		return fail(io.ErrShortWrite)
+	}
+	if err := f.Sync(); err != nil {
+		return fail(err)
+	}
+	if err := f.Close(); err != nil {
+		return "", nil, errors.Join(err, cleanupApplyArtifacts(fs, dir, path))
+	}
+	info, err := fs.stat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != mode.Perm() {
+		return "", nil, errors.Join(fmt.Errorf("invalid prepared file %s", path), err, cleanupApplyArtifacts(fs, dir, path))
+	}
+	b, err := fs.readFile(path)
+	if err != nil || !bytes.Equal(b, content) {
+		return "", nil, errors.Join(fmt.Errorf("prepared file content mismatch %s", path), err, cleanupApplyArtifacts(fs, dir, path))
+	}
+	return path, info, nil
+}
+
+func cleanupApplyArtifacts(fs applyFilesystem, dir string, paths ...string) error {
+	var result error
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+		if err := fs.remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+			result = errors.Join(result, fmt.Errorf("remove artifact %s: %w", p, err))
+		}
+	}
+	if err := fs.syncDir(dir); err != nil {
+		result = errors.Join(result, fmt.Errorf("sync artifact cleanup: %w", err))
+	}
+	return result
 }
 
 func completedEdit(proposal Proposal, current, after []byte, beforeHash [32]byte) AppliedEdit {

@@ -35,8 +35,8 @@ func TestVerifyNixUsesPinnedAttrAndActualGenerationClosure(t *testing.T) {
 	calls := []string{}
 	runner := fakeOutputRunner{responses: map[string]fakeOutputResponse{
 		"home-manager generations": {out: "2026-07-10 -> /nix/store/gen-home-manager-generation\n"},
-		`nix eval --raw --impure --expr (builtins.getFlake "/repo").inputs.nixpkgs.legacyPackages.aarch64-darwin.python313Packages.requests.outPath`: {out: "/nix/store/exact-requests\n"},
-		"nix-store -q --requisites /nix/store/gen-home-manager-generation":                                                                           {out: "/nix/store/registry-drift-requests\n/nix/store/exact-requests\n"},
+		`nix eval --raw --impure --expr (builtins.getAttr "requests" (builtins.getAttr "python313Packages" (builtins.getAttr "aarch64-darwin" (builtins.getAttr "nixpkgs" (builtins.getFlake "/repo").inputs).legacyPackages))).outPath`: {out: "/nix/store/exact-requests\n"},
+		"nix-store -q --requisites /nix/store/gen-home-manager-generation": {out: "/nix/store/registry-drift-requests\n/nix/store/exact-requests\n"},
 	}, calls: &calls}
 
 	got := Verify(context.Background(), runner, nil, VerifySpec{
@@ -72,12 +72,29 @@ func TestVerifyNixLinuxGenerationRequiresExactEvaluatedStorePath(t *testing.T) {
 	spec := VerifySpec{Provider: ProviderNix, Kind: KindPackage, NixStoreBin: "nix-store", NixBin: "nix", HomeManagerBin: "home-manager", Repo: "/repo", System: "x86_64-linux", NixInput: "nixpkgsUnstable", Attr: "hello"}
 	r := fakeOutputRunner{responses: map[string]fakeOutputResponse{
 		"home-manager generations": {out: "current -> /nix/store/linux-home-manager-generation\n"},
-		`nix eval --raw --impure --expr (builtins.getFlake "/repo").inputs.nixpkgsUnstable.legacyPackages.x86_64-linux.hello.outPath`: {out: "/nix/store/pinned-hello\n"},
-		"nix-store -q --requisites /nix/store/linux-home-manager-generation":                                                          {out: "/nix/store/registry-drift-hello\n"},
+		`nix eval --raw --impure --expr (builtins.getAttr "hello" (builtins.getAttr "x86_64-linux" (builtins.getAttr "nixpkgsUnstable" (builtins.getFlake "/repo").inputs).legacyPackages)).outPath`: {out: "/nix/store/pinned-hello\n"},
+		"nix-store -q --requisites /nix/store/linux-home-manager-generation": {out: "/nix/store/registry-drift-hello\n"},
 	}}
 	got := Verify(context.Background(), r, nil, spec)
 	if got.OK || !strings.Contains(got.Detail, "absent") {
 		t.Fatalf("got=%#v", got)
+	}
+}
+
+func TestNixAttrExpressionQuotesEveryComponent(t *testing.T) {
+	expr, err := nixAttrExpression(`/repo path`, `nixpkgsUnstable`, `x86_64-linux`, `1password.c++.quote"name`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`builtins.getFlake "/repo path"`, `builtins.getAttr "nixpkgsUnstable"`, `builtins.getAttr "x86_64-linux"`, `builtins.getAttr "1password"`, `builtins.getAttr "c++"`, `builtins.getAttr "quote\"name"`} {
+		if !strings.Contains(expr, want) {
+			t.Fatalf("missing %q: %s", want, expr)
+		}
+	}
+	for _, bad := range []string{"", `.hello`, `hello.`, `hello..world`, "hello.\nworld"} {
+		if _, err := nixAttrExpression(`/repo`, `nixpkgs`, `x86_64-linux`, bad); err == nil {
+			t.Fatalf("accepted %q", bad)
+		}
 	}
 }
 

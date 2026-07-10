@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -374,6 +375,114 @@ func TestApplyTargetExistsWithOldOrNewBytesAtEveryHook(t *testing.T) {
 	}
 }
 
+func TestApplyRollbackPreservesRenameOverCompetingTargetByIdentity(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "target")
+	original := []byte("old\n")
+	proposed := []byte("new\n")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fs := realApplyFilesystem()
+	fs.hook = func(stage applyStage, target, _ string) {
+		if stage == applyAfterClaim {
+			competitor := filepath.Join(dir, "competitor")
+			_ = os.WriteFile(competitor, proposed, 0o600)
+			_ = os.Rename(competitor, target)
+		}
+	}
+	_, err := apply(ProposeReplacement(Target{Path: path}, original, proposed), fs)
+	if !errors.Is(err, ErrStaleFile) {
+		t.Fatalf("err=%v", err)
+	}
+	got, readErr := os.ReadFile(path)
+	if readErr != nil || !bytes.Equal(got, proposed) {
+		t.Fatalf("competitor=%q err=%v", got, readErr)
+	}
+	entries, _ := os.ReadDir(dir)
+	retained := 0
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".packages-apply-") {
+			retained++
+		}
+	}
+	if retained < 2 {
+		t.Fatalf("recovery artifacts not retained: %v", entries)
+	}
+}
+
+func TestApplyPrimarySwapbackFailureFallsBackDirectlyToRecovery(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "target")
+	old := []byte("old\n")
+	newb := []byte("new\n")
+	_ = os.WriteFile(path, old, 0o600)
+	fs := realApplyFilesystem()
+	realExchange := fs.exchange
+	calls := 0
+	fs.exchange = func(a, b string) error {
+		calls++
+		if calls == 2 {
+			return errors.New("primary swapback failed")
+		}
+		return realExchange(a, b)
+	}
+	fs.hook = func(stage applyStage, target, _ string) {
+		if stage == applyBeforeGuardRecheck {
+			_ = os.WriteFile(target, []byte("tampered\n"), 0o600)
+		}
+	}
+	_, err := apply(ProposeReplacement(Target{Path: path}, old, newb), fs)
+	if !errors.Is(err, ErrStaleFile) {
+		t.Fatalf("err=%v", err)
+	}
+	got, _ := os.ReadFile(path)
+	if !bytes.Equal(got, old) {
+		t.Fatalf("target=%q calls=%d", got, calls)
+	}
+}
+
+func TestApplyRecoveryExchangeFailureRetainsProposedAndRecovery(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "target")
+	old := []byte("old\n")
+	newb := []byte("new\n")
+	_ = os.WriteFile(path, old, 0o600)
+	fs := realApplyFilesystem()
+	realExchange := fs.exchange
+	calls := 0
+	fs.exchange = func(a, b string) error {
+		calls++
+		if calls == 2 {
+			return errors.New("recovery exchange failed")
+		}
+		return realExchange(a, b)
+	}
+	fs.hook = func(stage applyStage, _, oldTemp string) {
+		if stage == applyBeforeGuardRecheck {
+			_ = os.WriteFile(oldTemp, []byte("tampered-old\n"), 0o600)
+		}
+	}
+	_, err := apply(ProposeReplacement(Target{Path: path}, old, newb), fs)
+	if !errors.Is(err, ErrStaleFile) {
+		t.Fatalf("err=%v", err)
+	}
+	got, _ := os.ReadFile(path)
+	if !bytes.Equal(got, newb) {
+		t.Fatalf("target=%q", got)
+	}
+	entries, _ := os.ReadDir(dir)
+	retained := 0
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".packages-apply-") {
+			retained++
+		}
+	}
+	if retained < 2 {
+		t.Fatalf("retained=%v", entries)
+	}
+}
+
 func TestApplyClaimRejectsSymlinkSwapAndExistingGuard(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -433,6 +542,42 @@ func TestApplySurfacesCleanupFailureAndGuardPath(t *testing.T) {
 	if readErr != nil || string(got) != "proposed\n" {
 		t.Fatalf("target=%q err=%v", got, readErr)
 	}
+}
+
+func TestApplyRecoveryPreparationPreservesModeAndRejectsShortWrite(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "target")
+	old := []byte("old\n")
+	_ = os.WriteFile(path, old, 0o644)
+	fs := realApplyFilesystem()
+	create := fs.createTemp
+	calls := 0
+	fs.createTemp = func(dir, pattern string) (applyTempFile, error) {
+		calls++
+		f, err := create(dir, pattern)
+		if err != nil {
+			return nil, err
+		}
+		if calls == 2 {
+			return &shortWriteApplyTemp{applyTempFile: f}, nil
+		}
+		return f, nil
+	}
+	_, err := apply(ProposeReplacement(Target{Path: path}, old, []byte("new\n")), fs)
+	if !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("err=%v", err)
+	}
+	info, _ := os.Stat(path)
+	got, _ := os.ReadFile(path)
+	if info.Mode().Perm() != 0o644 || !bytes.Equal(got, old) {
+		t.Fatalf("mode=%o target=%q", info.Mode().Perm(), got)
+	}
+}
+
+type shortWriteApplyTemp struct{ applyTempFile }
+
+func (s *shortWriteApplyTemp) Write(p []byte) (int, error) {
+	return s.applyTempFile.Write(p[:len(p)/2])
 }
 
 type concurrentEditApplyTempFile struct {
