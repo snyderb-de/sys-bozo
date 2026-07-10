@@ -144,7 +144,7 @@ func (m *Model) configApplyStale(err error) bool {
 		return false
 	}
 	m.reviewed.Config = cloneConfigReview(m.reviewed.Config)
-	m.reviewed.Config.Warning = "file changed; refresh and review again before applying"
+	m.reviewed.Config.Warning = "file changed; refresh and review again before applying; " + sanitizedApplyDetail(err)
 	m.mode, m.screen = modeView, screenReview
 	m.queue, m.queuePos = nil, 0
 	m.runErr = nil

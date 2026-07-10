@@ -45,6 +45,9 @@ const (
 	applyAfterClaim
 	applyBeforeInstall
 	applyBeforeGuardRecheck
+	applyBeforeInitialExchange
+	applyBeforePrimaryRollbackExchange
+	applyBeforeRecoveryRollbackExchange
 )
 
 func realApplyFilesystem() applyFilesystem {
@@ -101,24 +104,72 @@ func apply(proposal Proposal, filesystem applyFilesystem) (AppliedEdit, error) {
 	if latestInfoErr != nil || latestErr != nil || !latestInfo.Mode().IsRegular() || !filesystem.sameFile(info, latestInfo) || sha256.Sum256(latest) != proposal.OriginalHash {
 		return AppliedEdit{}, errors.Join(ErrStaleFile, latestInfoErr, latestErr, cleanupApplyArtifacts(filesystem, filepath.Dir(proposal.Target.Path), tempPath, guardPath))
 	}
+	runApplyHook(filesystem, applyBeforeInitialExchange, proposal.Target.Path, tempPath)
 	if err := filesystem.exchange(proposal.Target.Path, tempPath); err != nil {
 		return AppliedEdit{}, errors.Join(fmt.Errorf("atomically exchange declaration target: %w", err), cleanupApplyArtifacts(filesystem, filepath.Dir(proposal.Target.Path), tempPath, guardPath))
+	}
+	if err := state.verifyInitialExchange(); err != nil {
+		return AppliedEdit{}, err
 	}
 	runApplyHook(filesystem, applyAfterClaim, proposal.Target.Path, tempPath)
 	runApplyHook(filesystem, applyBeforeInstall, proposal.Target.Path, tempPath)
 	runApplyHook(filesystem, applyBeforeGuardRecheck, proposal.Target.Path, tempPath)
 	targetValid := state.valid(state.target, state.proposedInfo, state.proposedHash)
-	oldValid := state.valid(state.oldTemp, state.originalInfo, state.originalHash)
-	if !oldValid || !targetValid {
-		return AppliedEdit{}, state.rollback(oldValid)
+	oldState := state.oldIdentityState()
+	if oldState != oldReviewedValid || !targetValid {
+		return AppliedEdit{}, state.rollback(oldState)
 	}
 	if err := filesystem.syncDir(filepath.Dir(proposal.Target.Path)); err != nil {
-		return completedEdit(proposal, current, after, beforeHash), fmt.Errorf("sync declaration cleanup: %w", err)
+		return completedEdit(proposal, current, after, beforeHash), fmt.Errorf("sync committed declaration failed; artifacts retained at %s and %s: %w", tempPath, guardPath, err)
 	}
 	if err := cleanupApplyArtifacts(filesystem, filepath.Dir(proposal.Target.Path), tempPath, guardPath); err != nil {
 		return completedEdit(proposal, current, after, beforeHash), err
 	}
 	return completedEdit(proposal, current, after, beforeHash), nil
+}
+
+type oldExchangeIdentity uint8
+
+const (
+	oldReviewedValid oldExchangeIdentity = iota
+	oldReviewedTampered
+	oldDisplacedCompetitor
+)
+
+func (s exchangeApplyState) oldIdentityState() oldExchangeIdentity {
+	if !s.identity(s.oldTemp, s.originalInfo) {
+		return oldDisplacedCompetitor
+	}
+	if s.valid(s.oldTemp, s.originalInfo, s.originalHash) {
+		return oldReviewedValid
+	}
+	return oldReviewedTampered
+}
+
+func (s exchangeApplyState) verifyInitialExchange() error {
+	if !s.identity(s.target, s.proposedInfo) {
+		return fmt.Errorf("%w: competing target preserved at %s; artifacts retained at %s and %s", ErrStaleFile, s.target, s.oldTemp, s.recovery)
+	}
+	state := s.oldIdentityState()
+	if state != oldDisplacedCompetitor {
+		return nil
+	}
+	competitorInfo, err := s.filesystem.stat(s.oldTemp)
+	if err != nil {
+		return fmt.Errorf("%w: displaced target identity unavailable; artifacts retained at %s and %s", ErrStaleFile, s.oldTemp, s.recovery)
+	}
+	runApplyHook(s.filesystem, applyBeforePrimaryRollbackExchange, s.target, s.oldTemp)
+	if !s.identity(s.target, s.proposedInfo) {
+		return fmt.Errorf("%w: later competing target preserved at %s; artifacts retained at %s and %s", ErrStaleFile, s.target, s.oldTemp, s.recovery)
+	}
+	if err := s.filesystem.exchange(s.target, s.oldTemp); err != nil {
+		return fmt.Errorf("%w: displaced target restore failed; artifacts retained at %s and %s: %v", ErrStaleFile, s.oldTemp, s.recovery, err)
+	}
+	restoredInfo, restoredErr := s.filesystem.stat(s.target)
+	if restoredErr != nil || !s.filesystem.sameFile(restoredInfo, competitorInfo) || !s.identity(s.oldTemp, s.proposedInfo) {
+		return fmt.Errorf("%w: displaced target restore unverified; artifacts retained at %s and %s", ErrStaleFile, s.oldTemp, s.recovery)
+	}
+	return fmt.Errorf("%w: displaced competing target restored at %s; artifacts retained at %s and %s", ErrStaleFile, s.target, s.oldTemp, s.recovery)
 }
 
 type exchangeApplyState struct {
@@ -145,34 +196,56 @@ func (s exchangeApplyState) identity(path string, identity os.FileInfo) bool {
 	return true
 }
 
-func (s exchangeApplyState) rollback(oldValid bool) error {
+func (s exchangeApplyState) rollback(oldState oldExchangeIdentity) error {
 	if !s.identity(s.target, s.proposedInfo) {
 		return fmt.Errorf("%w: competing target preserved at %s; original artifacts retained at %s and %s", ErrStaleFile, s.target, s.oldTemp, s.recovery)
 	}
+	if oldState == oldDisplacedCompetitor {
+		return fmt.Errorf("%w: displaced competitor retained at %s; recovery retained at %s", ErrStaleFile, s.oldTemp, s.recovery)
+	}
 	source := s.recovery
 	identity := s.recoveryInfo
-	if oldValid {
+	stage := applyBeforeRecoveryRollbackExchange
+	if oldState == oldReviewedValid {
 		source = s.oldTemp
 		identity = s.originalInfo
+		stage = applyBeforePrimaryRollbackExchange
 	} else if !s.valid(s.recovery, s.recoveryInfo, s.originalHash) {
 		return fmt.Errorf("%w: invalid recovery; artifacts retained at %s and %s", ErrStaleFile, s.oldTemp, s.recovery)
 	}
-	if err := s.filesystem.exchange(s.target, source); err != nil {
-		if oldValid && s.valid(s.recovery, s.recoveryInfo, s.originalHash) {
-			if recoveryErr := s.filesystem.exchange(s.target, s.recovery); recoveryErr == nil {
-				if s.valid(s.target, s.recoveryInfo, s.originalHash) {
-					return errors.Join(ErrStaleFile, cleanupApplyArtifacts(s.filesystem, filepath.Dir(s.target), s.oldTemp, s.recovery))
-				}
-			} else {
-				err = errors.Join(err, recoveryErr)
-			}
-		}
-		return fmt.Errorf("%w: rollback exchange failed; recovery retained at %s and %s: %v", ErrStaleFile, s.oldTemp, s.recovery, err)
+	err := s.rollbackExchange(source, identity, stage)
+	if err != nil && oldState == oldReviewedValid && s.valid(s.recovery, s.recoveryInfo, s.originalHash) {
+		err = s.rollbackExchange(s.recovery, s.recoveryInfo, applyBeforeRecoveryRollbackExchange)
 	}
-	if !s.valid(s.target, identity, s.originalHash) {
-		return fmt.Errorf("%w: rollback could not be verified; recovery retained at %s and %s", ErrStaleFile, s.oldTemp, s.recovery)
+	if err != nil {
+		return err
 	}
 	return errors.Join(ErrStaleFile, cleanupApplyArtifacts(s.filesystem, filepath.Dir(s.target), s.oldTemp, s.recovery))
+}
+
+func (s exchangeApplyState) rollbackExchange(source string, identity os.FileInfo, stage applyStage) error {
+	runApplyHook(s.filesystem, stage, s.target, source)
+	if !s.identity(s.target, s.proposedInfo) {
+		return fmt.Errorf("%w: competing target preserved at %s; recovery retained at %s and %s", ErrStaleFile, s.target, s.oldTemp, s.recovery)
+	}
+	if !s.identity(source, identity) {
+		return fmt.Errorf("%w: rollback source changed; recovery retained at %s and %s", ErrStaleFile, s.oldTemp, s.recovery)
+	}
+	if err := s.filesystem.exchange(s.target, source); err != nil {
+		return fmt.Errorf("%w: rollback exchange failed; recovery retained at %s and %s: %v", ErrStaleFile, s.oldTemp, s.recovery, err)
+	}
+	if s.valid(s.target, identity, s.originalHash) && s.identity(source, s.proposedInfo) {
+		return nil
+	}
+	displacedInfo, infoErr := s.filesystem.stat(source)
+	if infoErr == nil && s.identity(s.target, identity) {
+		if err := s.filesystem.exchange(s.target, source); err == nil {
+			if targetInfo, e := s.filesystem.stat(s.target); e == nil && s.filesystem.sameFile(targetInfo, displacedInfo) {
+				return fmt.Errorf("%w: displaced competitor restored at %s; artifacts retained at %s and %s", ErrStaleFile, s.target, s.oldTemp, s.recovery)
+			}
+		}
+	}
+	return fmt.Errorf("%w: rollback identities unverified; artifacts retained at %s and %s", ErrStaleFile, s.oldTemp, s.recovery)
 }
 
 func prepareApplyFile(fs applyFilesystem, dir, pattern string, content []byte, mode os.FileMode) (string, os.FileInfo, error) {

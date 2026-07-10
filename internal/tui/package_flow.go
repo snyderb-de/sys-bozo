@@ -58,12 +58,21 @@ func (m *Model) packageApplyStale(err error) bool {
 		return false
 	}
 	m.reviewed.Package = clonePackageReview(m.reviewed.Package)
-	m.reviewed.Package.Warning = "file changed; refresh and review again before applying"
+	m.reviewed.Package.Warning = "file changed; refresh and review again before applying; " + sanitizedApplyDetail(err)
 	m.mode, m.screen = modeView, screenReview
 	m.queue, m.queuePos = nil, 0
 	m.runErr = nil
 	m.initPackageDiffViewport()
 	return true
+}
+
+func sanitizedApplyDetail(err error) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, err.Error())
 }
 
 type packageSearchMsg struct {

@@ -411,6 +411,169 @@ func TestApplyRollbackPreservesRenameOverCompetingTargetByIdentity(t *testing.T)
 	}
 }
 
+func TestApplyInitialExchangeRestoresByteIdenticalCompetitor(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "target")
+	old := []byte("old\n")
+	newb := []byte("new\n")
+	_ = os.WriteFile(path, old, 0o600)
+	fs := realApplyFilesystem()
+	fs.hook = func(stage applyStage, target, _ string) {
+		if stage == applyBeforeInitialExchange {
+			p := filepath.Join(dir, "competitor")
+			_ = os.WriteFile(p, old, 0o600)
+			_ = os.Rename(p, target)
+		}
+	}
+	_, err := apply(ProposeReplacement(Target{Path: path}, old, newb), fs)
+	if !errors.Is(err, ErrStaleFile) {
+		t.Fatalf("err=%v", err)
+	}
+	got, _ := os.ReadFile(path)
+	if !bytes.Equal(got, old) {
+		t.Fatalf("competitor=%q", got)
+	}
+	assertApplyArtifactsRetained(t, dir)
+}
+
+func TestApplyPreservesCompetitorBeforePrimaryRollbackExchange(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "target")
+	old := []byte("old\n")
+	newb := []byte("new\n")
+	_ = os.WriteFile(path, old, 0o600)
+	fs := realApplyFilesystem()
+	fs.hook = func(stage applyStage, target, _ string) {
+		switch stage {
+		case applyBeforeGuardRecheck:
+			_ = os.WriteFile(target, []byte("tampered\n"), 0o600)
+		case applyBeforePrimaryRollbackExchange:
+			p := filepath.Join(dir, "competitor")
+			_ = os.WriteFile(p, newb, 0o600)
+			_ = os.Rename(p, target)
+		}
+	}
+	_, err := apply(ProposeReplacement(Target{Path: path}, old, newb), fs)
+	if !errors.Is(err, ErrStaleFile) {
+		t.Fatalf("err=%v", err)
+	}
+	got, _ := os.ReadFile(path)
+	if !bytes.Equal(got, newb) {
+		t.Fatalf("competitor=%q", got)
+	}
+	assertApplyArtifactsRetained(t, dir)
+}
+
+func TestApplyPreservesCompetitorBeforeRecoveryExchange(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "target")
+	old := []byte("old\n")
+	newb := []byte("new\n")
+	_ = os.WriteFile(path, old, 0o600)
+	fs := realApplyFilesystem()
+	fs.hook = func(stage applyStage, target, source string) {
+		switch stage {
+		case applyBeforeGuardRecheck:
+			_ = os.WriteFile(source, []byte("tampered-old\n"), 0o600)
+		case applyBeforeRecoveryRollbackExchange:
+			p := filepath.Join(dir, "competitor")
+			_ = os.WriteFile(p, newb, 0o600)
+			_ = os.Rename(p, target)
+		}
+	}
+	_, err := apply(ProposeReplacement(Target{Path: path}, old, newb), fs)
+	if !errors.Is(err, ErrStaleFile) {
+		t.Fatalf("err=%v", err)
+	}
+	got, _ := os.ReadFile(path)
+	if !bytes.Equal(got, newb) {
+		t.Fatalf("competitor=%q", got)
+	}
+	assertApplyArtifactsRetained(t, dir)
+}
+
+func TestApplyPostCheckExchangeRaceRestoresDisplacedCompetitor(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "target")
+	old := []byte("old\n")
+	newb := []byte("new\n")
+	_ = os.WriteFile(path, old, 0o600)
+	fs := realApplyFilesystem()
+	realExchange := fs.exchange
+	calls := 0
+	fs.hook = func(stage applyStage, target, _ string) {
+		if stage == applyBeforeGuardRecheck {
+			_ = os.WriteFile(target, []byte("tampered\n"), 0o600)
+		}
+	}
+	fs.exchange = func(a, b string) error {
+		calls++
+		if calls == 2 {
+			p := filepath.Join(dir, "competitor")
+			_ = os.WriteFile(p, newb, 0o600)
+			_ = os.Rename(p, a)
+		}
+		return realExchange(a, b)
+	}
+	_, err := apply(ProposeReplacement(Target{Path: path}, old, newb), fs)
+	if !errors.Is(err, ErrStaleFile) {
+		t.Fatalf("err=%v", err)
+	}
+	got, _ := os.ReadFile(path)
+	if !bytes.Equal(got, newb) {
+		t.Fatalf("competitor=%q", got)
+	}
+	assertApplyArtifactsRetained(t, dir)
+}
+
+func TestApplyPostCheckRecoveryRaceRestoresDisplacedCompetitor(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "target")
+	old := []byte("old\n")
+	newb := []byte("new\n")
+	_ = os.WriteFile(path, old, 0o600)
+	fs := realApplyFilesystem()
+	realExchange := fs.exchange
+	calls := 0
+	fs.hook = func(stage applyStage, _, source string) {
+		if stage == applyBeforeGuardRecheck {
+			_ = os.WriteFile(source, []byte("tampered-old\n"), 0o600)
+		}
+	}
+	fs.exchange = func(a, b string) error {
+		calls++
+		if calls == 2 {
+			p := filepath.Join(dir, "competitor")
+			_ = os.WriteFile(p, newb, 0o600)
+			_ = os.Rename(p, a)
+		}
+		return realExchange(a, b)
+	}
+	_, err := apply(ProposeReplacement(Target{Path: path}, old, newb), fs)
+	if !errors.Is(err, ErrStaleFile) {
+		t.Fatalf("err=%v", err)
+	}
+	got, _ := os.ReadFile(path)
+	if !bytes.Equal(got, newb) {
+		t.Fatalf("competitor=%q", got)
+	}
+	assertApplyArtifactsRetained(t, dir)
+}
+
+func assertApplyArtifactsRetained(t *testing.T, dir string) {
+	t.Helper()
+	entries, _ := os.ReadDir(dir)
+	n := 0
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".packages-apply-") {
+			n++
+		}
+	}
+	if n < 2 {
+		t.Fatalf("artifacts=%v", entries)
+	}
+}
+
 func TestApplyPrimarySwapbackFailureFallsBackDirectlyToRecovery(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "target")

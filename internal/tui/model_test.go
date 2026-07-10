@@ -259,9 +259,9 @@ func TestConfigStaleApplyStaysInReviewWithProposal(t *testing.T) {
 	proposal := fileedit.ProposeReplacement("/tmp/fixture", []byte("old\n"), []byte("new\n"))
 	m.reviewed = reviewedPlan{Action: "config:hms", Items: []runner.WorkItem{{Name: "fixture"}}, Config: &configReview{Proposal: proposal}}
 	m.screen, m.mode, m.runStart = screenRunning, modeRunning, time.Now()
-	next, cmd := m.Update(configAppliedMsg{err: fileedit.ErrStaleFile})
+	next, cmd := m.Update(configAppliedMsg{err: fmt.Errorf("%w: artifacts retained at /tmp/recovery", fileedit.ErrStaleFile)})
 	m = next.(Model)
-	if cmd != nil || m.screen != screenReview || m.mode != modeView || m.reviewed.Config == nil || !strings.Contains(m.reviewed.Config.Warning, "refresh") {
+	if cmd != nil || m.screen != screenReview || m.mode != modeView || m.reviewed.Config == nil || !strings.Contains(m.reviewed.Config.Warning, "/tmp/recovery") {
 		t.Fatalf("cmd=%v screen=%v mode=%v review=%#v", cmd, m.screen, m.mode, m.reviewed.Config)
 	}
 }
@@ -1222,9 +1222,9 @@ func TestStalePackageApplyStaysInReviewForwardAndReverse(t *testing.T) {
 			m.reviewed = reviewedPlan{Action: "hms", Items: []runner.WorkItem{{Name: "fixture"}}, Package: &packageReview{
 				Proposal: packages.Proposal{Target: packages.Target{Path: "/tmp/packages.nix"}, Diff: "--- original\n+++ proposed\n-old\n+new\n"}, Revert: reverse,
 			}}
-			next, cmd := m.Update(packageAppliedMsg{err: packages.ErrStaleFile})
+			next, cmd := m.Update(packageAppliedMsg{err: fmt.Errorf("%w: artifacts retained at /tmp/recovery", packages.ErrStaleFile)})
 			m = next.(Model)
-			if cmd != nil || m.screen != screenReview || m.mode != modeView || m.reviewed.Package == nil || !strings.Contains(m.reviewed.Package.Warning, "refresh") {
+			if cmd != nil || m.screen != screenReview || m.mode != modeView || m.reviewed.Package == nil || !strings.Contains(m.reviewed.Package.Warning, "/tmp/recovery") {
 				t.Fatalf("cmd=%v screen=%v mode=%v review=%#v", cmd, m.screen, m.mode, m.reviewed.Package)
 			}
 			if out := m.View(); !strings.Contains(out, "file changed") || !strings.Contains(out, "ENTER CONFIRM") {
