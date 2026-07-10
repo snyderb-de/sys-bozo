@@ -26,8 +26,20 @@ func (m Model) View() string {
 		return m.viewMaintenance()
 	case screenReview:
 		return m.viewReview()
+	case screenRunning:
+		return m.viewRunning()
+	case screenResult:
+		return m.viewResult()
 	case screenInspect:
 		return m.viewInspect()
+	case screenConfig:
+		return m.viewConfig()
+	case screenAudit:
+		return m.viewAudit()
+	case screenDoctor:
+		return m.viewDoctor()
+	case screenHistory:
+		return m.viewHistory()
 	}
 	return m.viewLegacy()
 }
@@ -180,11 +192,11 @@ func (m Model) viewBody(w int) string {
 	case "Actions":
 		return m.viewActions(cw)
 	case "Config":
-		return m.viewConfig(cw)
+		return m.viewConfig()
 	case "Audit":
-		return m.viewAudit(cw)
+		return m.viewAudit()
 	case "Doctor":
-		return m.viewDoctor(cw)
+		return m.viewDoctor()
 	}
 	return ""
 }

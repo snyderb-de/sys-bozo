@@ -1,10 +1,13 @@
 package tui
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/charmbracelet/bubbles/viewport"
@@ -69,6 +72,11 @@ func (m *Model) confirmReviewedPlan() tea.Cmd {
 	m.screen = screenRunning
 	m.runAction = m.reviewed.Action
 	m.runStart = time.Now()
+	m.runErr = nil
+	m.runCancelled = false
+	m.runElapsed = 0
+	m.stepResults = nil
+	m.resultLogVisible = false
 	m.logLines = nil
 	m.logFollow = true
 	m.logVP = viewport.New(m.logWidth(), m.logHeight())
@@ -103,8 +111,20 @@ func (m Model) openEditor(path string) tea.Cmd {
 
 func runInteractiveWork(item runner.WorkItem, start time.Time) tea.Cmd {
 	return tea.ExecProcess(runner.Command(item), func(err error) tea.Msg {
-		return stepDoneMsg{err: err, elapsed: time.Since(start)}
+		return stepDoneMsg{err: err, elapsed: time.Since(start), cancelled: terminalWorkCancelled(err)}
 	})
+}
+
+func terminalWorkCancelled(err error) bool {
+	if errors.Is(err, context.Canceled) {
+		return true
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return false
+	}
+	status, ok := exitErr.Sys().(syscall.WaitStatus)
+	return ok && status.Signaled()
 }
 
 func (m Model) availableTasks() []runner.Task {
@@ -126,20 +146,11 @@ func (m Model) runSudoPreflight(sudoBin string) tea.Cmd {
 
 func (m *Model) advanceQueue() tea.Cmd {
 	if m.queuePos >= len(m.queue) {
-		m.mode = modeDone
-		m.screen = screenResult
-		elapsed := time.Since(m.runStart).Round(time.Second)
+		elapsed := time.Since(m.runStart)
 		m.logLines = append(m.logLines, logLine{kind: logHeader, text: ""})
 		m.logLines = append(m.logLines, logLine{kind: logSuccess,
-			text: fmt.Sprintf("  ✓ all done · %s", elapsed)})
-		m.logVP.SetContent(m.renderLog())
-		m.logVP.GotoBottom()
-		history.Append(history.Entry{
-			Ts:     time.Now(),
-			Action: m.runAction,
-			Secs:   elapsed.Seconds(),
-			OK:     true,
-		})
+			text: fmt.Sprintf("  ✓ all done · %s", elapsed.Round(time.Second))})
+		m.finishRun(nil, false, elapsed)
 		return nil
 	}
 
@@ -170,12 +181,12 @@ func (m *Model) advanceQueue() tea.Cmd {
 
 	scanner, wait, err := runner.StartWork(item)
 	if err != nil {
+		stepElapsed := time.Since(m.stepStart)
+		m.recordStepResult(m.queuePos, history.StatusFailure, stepElapsed, err)
+		elapsed := time.Since(m.runStart)
 		m.logLines = append(m.logLines, logLine{kind: logError,
 			text: "  ✗ " + err.Error()})
-		m.mode = modeDone
-		m.screen = screenResult
-		m.logVP.SetContent(m.renderLog())
-		m.logVP.GotoBottom()
+		m.finishRun(err, false, elapsed)
 		return nil
 	}
 
@@ -185,6 +196,45 @@ func (m *Model) advanceQueue() tea.Cmd {
 	m.logVP.GotoBottom()
 
 	return m.readNextLine()
+}
+
+func (m *Model) recordStepResult(index int, status history.Status, duration time.Duration, err error) {
+	if index < 0 || index >= len(m.queue) {
+		return
+	}
+	for len(m.stepResults) <= index {
+		m.stepResults = append(m.stepResults, stepResult{})
+	}
+	item := cloneWorkItems(m.queue[index : index+1])[0]
+	m.stepResults[index] = stepResult{Item: item, Status: status, Duration: duration, Err: err}
+}
+
+func (m *Model) finishRun(err error, cancelled bool, elapsed time.Duration) {
+	status := runStatus(err, cancelled)
+	m.mode = modeDone
+	m.screen = screenResult
+	m.runErr = err
+	m.runCancelled = cancelled
+	m.runElapsed = elapsed
+	m.logVP.SetContent(m.renderLog())
+	m.logVP.GotoBottom()
+	history.Append(history.Entry{
+		Ts:     time.Now(),
+		Action: m.runAction,
+		Secs:   elapsed.Seconds(),
+		OK:     status == history.StatusSuccess,
+		Status: status,
+	})
+}
+
+func runStatus(err error, cancelled bool) history.Status {
+	if cancelled {
+		return history.StatusCancelled
+	}
+	if err != nil {
+		return history.StatusFailure
+	}
+	return history.StatusSuccess
 }
 
 func (m Model) readNextLine() tea.Cmd {

@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/snyderb-de/sys-bozo/internal/history"
 	"github.com/snyderb-de/sys-bozo/internal/runner"
 )
 
@@ -164,6 +165,130 @@ func wrapText(text string, width int) []string {
 		text = strings.TrimSpace(string(runes[cut:]))
 	}
 	return append(lines, text)
+}
+
+func (m Model) viewRunning() string {
+	contentWidth := primaryContentWidth(m.width)
+	s := m.styles
+	items := m.queue
+	if len(items) == 0 {
+		items = m.reviewed.Items
+	}
+	completed := min(max(0, m.queuePos), len(items))
+	percent := 0
+	if len(items) > 0 {
+		percent = completed * 100 / len(items)
+	}
+
+	rows := []string{
+		s.major.Render("RUN/ACTIVE"),
+		s.label.Render("EXECUTION IN PROGRESS"),
+		majorRule(s, contentWidth, true),
+		"",
+		s.title.Render(fmt.Sprintf("%02d/%02d", completed, len(items))) +
+			"  " + s.active.Render(fmt.Sprintf("%d%%", percent)) +
+			"  " + s.muted.Render(formatRunElapsed(time.Since(m.runStart))),
+		"",
+	}
+	for i, item := range items {
+		label := "WAITING"
+		kind := statusMuted
+		if i < m.queuePos {
+			label = "DONE"
+			kind = statusSuccess
+		} else if i == m.queuePos {
+			label = "ACTIVE"
+			kind = statusActive
+			if item.Mode == runner.ExecutionInteractive {
+				label = "TTY"
+				kind = statusDanger
+			}
+		}
+		rows = append(rows, reviewCommandRows(s, fmt.Sprintf("%02d", i+1), runner.CmdLabel(item), statusText(s, label, kind), contentWidth)...)
+	}
+	if m.height == 0 || m.height >= 28 {
+		rows = append(rows, "", majorRule(s, contentWidth, false), "", s.label.Render("OUTPUT"), m.logVP.View())
+	}
+	rows = append(rows, "", s.muted.Render("J/K SCROLL   F FOLLOW   Q FORCE QUIT"))
+	return primaryFrame(s, m.width, strings.Join(rows, "\n"))
+}
+
+func (m Model) viewResult() string {
+	contentWidth := primaryContentWidth(m.width)
+	s := m.styles
+	historyStatus := m.resultHistoryStatus()
+	state := "COMPLETE"
+	kind := statusSuccess
+	if historyStatus == history.StatusCancelled {
+		state = "CANCELLED"
+		kind = statusDanger
+	} else if historyStatus == history.StatusFailure {
+		state = "FAILED"
+		kind = statusDanger
+	}
+
+	rule := s.success.Render(strings.Repeat("━", contentWidth))
+	if kind == statusDanger {
+		rule = s.danger.Render(strings.Repeat("━", contentWidth))
+	}
+	rows := []string{
+		s.major.Render("RUN/RESULT"),
+		s.label.Render("EXECUTION FINISHED"),
+		rule,
+		"",
+		s.title.Render(state) + "  " + s.muted.Render(formatRunElapsed(m.runElapsed)),
+		"",
+		s.label.Render("HISTORY ") + statusText(s, strings.ToUpper(string(historyStatus)), kind),
+		"",
+	}
+	if m.resultLogVisible {
+		rows = append(rows, majorRule(s, contentWidth, false), "", s.label.Render("OUTPUT"), m.logVP.View(), "", majorRule(s, contentWidth, false), "", s.muted.Render("L SUMMARY   ESCAPE BACK   Q CLOSE"))
+		return primaryFrame(s, m.width, strings.Join(rows, "\n"))
+	}
+	for i, item := range m.reviewed.Items {
+		label := "WAITING"
+		rowKind := statusMuted
+		command := runner.CmdLabel(item)
+		if i < len(m.stepResults) && m.stepResults[i].Status != "" {
+			result := m.stepResults[i]
+			if result.Item.Name != "" {
+				command = runner.CmdLabel(result.Item)
+			}
+			if result.Duration > 0 {
+				command += "  " + formatRunElapsed(result.Duration)
+			}
+			switch result.Status {
+			case history.StatusSuccess:
+				label = "DONE"
+				rowKind = statusSuccess
+			case history.StatusCancelled:
+				label = "CANCELLED"
+				rowKind = statusDanger
+			default:
+				label = "FAILED"
+				rowKind = statusDanger
+			}
+		}
+		rows = append(rows, reviewCommandRows(s, fmt.Sprintf("%02d", i+1), command, statusText(s, label, rowKind), contentWidth)...)
+	}
+	if m.runErr != nil {
+		rows = append(rows, "", s.danger.Render(m.runErr.Error()))
+	}
+	rows = append(rows, "", majorRule(s, contentWidth, false), "", s.muted.Render("L VIEW LOG   R REVIEW RETRY   ESCAPE BACK   Q CLOSE"))
+	return primaryFrame(s, m.width, strings.Join(rows, "\n"))
+}
+
+func (m Model) resultHistoryStatus() history.Status {
+	return runStatus(m.runErr, m.runCancelled)
+}
+
+func formatRunElapsed(elapsed time.Duration) string {
+	elapsed = elapsed.Round(time.Second)
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	total := int(elapsed / time.Second)
+	return fmt.Sprintf("%02d:%02d", total/60, total%60)
 }
 
 // ── Actions ───────────────────────────────────────────────────────────────

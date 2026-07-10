@@ -48,19 +48,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.readNextLine()
 
 	case stepDoneMsg:
+		status := runStatus(msg.err, msg.cancelled)
+		m.recordStepResult(m.queuePos, status, msg.elapsed, msg.err)
 		if msg.err != nil {
+			elapsed := time.Since(m.runStart)
+			verb := "failed"
+			if status == history.StatusCancelled {
+				verb = "cancelled"
+			}
 			m.logLines = append(m.logLines, logLine{kind: logError,
-				text: fmt.Sprintf("  ✗ failed: %s", msg.err)})
-			m.mode = modeDone
-			m.screen = screenResult
-			m.logVP.SetContent(m.renderLog())
-			m.logVP.GotoBottom()
-			history.Append(history.Entry{
-				Ts:     time.Now(),
-				Action: m.runAction,
-				Secs:   time.Since(m.runStart).Seconds(),
-				OK:     false,
-			})
+				text: fmt.Sprintf("  ✗ %s: %s", verb, msg.err)})
+			m.finishRun(msg.err, msg.cancelled, elapsed)
 			return m, nil
 		}
 		m.logLines = append(m.logLines, logLine{kind: logSuccess,
@@ -112,15 +110,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "h":
 			m.applyPrompt = false
 			m.openMaintenance("hms")
-			m.reviewSelection()
 		case "n":
 			m.applyPrompt = false
 			m.openMaintenance("nds")
-			m.reviewSelection()
 		case "b":
 			m.applyPrompt = false
 			m.openMaintenance("hms", "nds")
-			m.reviewSelection()
 		default:
 			m.applyPrompt = false
 		}
@@ -154,7 +149,73 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
-	if m.screen == screenMaintenance || m.screen == screenReview || m.screen == screenRunning {
+	if m.screen == screenInspect {
+		switch msg.String() {
+		case "j", "down":
+			m.inspectCursor = (m.inspectCursor + 1) % len(inspectEntries)
+			return m, nil
+		case "k", "up":
+			m.inspectCursor = (m.inspectCursor - 1 + len(inspectEntries)) % len(inspectEntries)
+			return m, nil
+		case "enter":
+			return m, m.openInspectEntry(m.inspectCursor)
+		case "1", "2", "3", "4":
+			return m, m.openInspectEntry(int(msg.String()[0] - '1'))
+		case "esc":
+			m.screen = screenHome
+			return m, nil
+		case "tab", "right", "shift+tab", "left", "5":
+			return m, nil
+		}
+	}
+	if m.screen == screenConfig || m.screen == screenAudit || m.screen == screenDoctor || m.screen == screenHistory {
+		if m.screen == screenConfig {
+			switch msg.String() {
+			case "j", "down":
+				m.moveConfigCursor(1)
+				return m, nil
+			case "k", "up":
+				m.moveConfigCursor(-1)
+				return m, nil
+			case "enter", " ":
+				if m.configCursor >= 0 && m.configCursor < len(m.configFiles) {
+					return m, m.openEditor(m.configFiles[m.configCursor].path)
+				}
+				return m, nil
+			}
+		}
+		if m.screen == screenAudit {
+			switch msg.String() {
+			case "a", "r":
+				m.auditReady = false
+				m.auditItems = nil
+				return m, m.runAudit()
+			}
+		}
+		switch msg.String() {
+		case "esc":
+			m.screen = screenInspect
+			return m, nil
+		case "tab", "right", "shift+tab", "left", "1", "2", "3", "4", "5":
+			return m, nil
+		}
+	}
+	if m.screen == screenResult {
+		switch strings.ToLower(msg.String()) {
+		case "l":
+			m.resultLogVisible = !m.resultLogVisible
+			return m, nil
+		case "r":
+			if len(m.reviewed.Items) > 0 {
+				m.prepareResultRetry()
+			}
+			return m, nil
+		case "esc":
+			m.closeResult()
+			return m, nil
+		}
+	}
+	if m.screen == screenMaintenance || m.screen == screenReview || m.screen == screenRunning || m.screen == screenResult {
 		switch msg.String() {
 		case "tab", "right", "shift+tab", "left", "1", "2", "3", "4", "5":
 			return m, nil
@@ -196,13 +257,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c", "q":
 		if m.mode == modeDone {
-			m.mode = modeView
-			m.logLines = nil
-			m.queue = nil
-			m.queuePos = 0
-			m.selected = map[string]bool{}
-			m.reviewed = reviewedPlan{}
-			m.syncScreenToTab()
+			m.closeResult()
 			return m, nil
 		}
 		return m, tea.Quit
@@ -395,4 +450,51 @@ func (m *Model) moveCursor(delta int) {
 		}
 		m.configCursor = (m.configCursor + delta + n) % n
 	}
+}
+
+func (m *Model) moveConfigCursor(delta int) {
+	if len(m.configFiles) == 0 {
+		return
+	}
+	m.configCursor = (m.configCursor + delta + len(m.configFiles)) % len(m.configFiles)
+}
+
+func (m *Model) openInspectEntry(index int) tea.Cmd {
+	if index < 0 || index >= len(inspectEntries) {
+		return nil
+	}
+	m.inspectCursor = index
+	m.screen = inspectEntries[index].target
+	if m.screen == screenAudit && !m.auditReady {
+		return m.runAudit()
+	}
+	return nil
+}
+
+func (m *Model) prepareResultRetry() {
+	m.mode = modeView
+	m.screen = screenReview
+	m.queue = nil
+	m.queuePos = 0
+	m.runErr = nil
+	m.runCancelled = false
+	m.runElapsed = 0
+	m.stepResults = nil
+	m.resultLogVisible = false
+	m.logLines = nil
+}
+
+func (m *Model) closeResult() {
+	m.mode = modeView
+	m.logLines = nil
+	m.queue = nil
+	m.queuePos = 0
+	m.runErr = nil
+	m.runCancelled = false
+	m.runElapsed = 0
+	m.stepResults = nil
+	m.resultLogVisible = false
+	m.selected = map[string]bool{}
+	m.reviewed = reviewedPlan{}
+	m.syncScreenToTab()
 }

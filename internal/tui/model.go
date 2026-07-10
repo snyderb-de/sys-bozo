@@ -12,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/snyderb-de/sys-bozo/internal/history"
 	"github.com/snyderb-de/sys-bozo/internal/runner"
 	"github.com/snyderb-de/sys-bozo/internal/system"
 )
@@ -63,6 +64,13 @@ type reviewedPlan struct {
 	Items  []runner.WorkItem
 }
 
+type stepResult struct {
+	Item     runner.WorkItem
+	Status   history.Status
+	Duration time.Duration
+	Err      error
+}
+
 // ── Config file entry ─────────────────────────────────────────────────────
 
 type configFile struct {
@@ -75,8 +83,9 @@ type configFile struct {
 
 type lineMsg struct{ text string }
 type stepDoneMsg struct {
-	err     error
-	elapsed time.Duration
+	err       error
+	elapsed   time.Duration
+	cancelled bool
 }
 type auditReadyMsg struct{ items []system.AuditItem }
 type sudoReadyMsg struct{ err error }
@@ -106,12 +115,17 @@ type Model struct {
 	width  int
 	height int
 
-	mode      appMode
-	queue     []runner.WorkItem
-	queuePos  int
-	runStart  time.Time
-	stepStart time.Time
-	runAction string // ID of the running action, for history
+	mode             appMode
+	queue            []runner.WorkItem
+	queuePos         int
+	runStart         time.Time
+	stepStart        time.Time
+	runAction        string // ID of the running action, for history
+	runErr           error
+	runCancelled     bool
+	runElapsed       time.Duration
+	stepResults      []stepResult
+	resultLogVisible bool
 
 	logLines  []logLine
 	logVP     viewport.Model

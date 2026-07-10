@@ -4,16 +4,19 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
+	"github.com/snyderb-de/sys-bozo/internal/history"
 	"github.com/snyderb-de/sys-bozo/internal/runner"
 	"github.com/snyderb-de/sys-bozo/internal/system"
 )
@@ -37,6 +40,63 @@ func cmpWorkItems(got, want []runner.WorkItem) string {
 		return fmt.Sprintf("got %#v, want %#v", got, want)
 	}
 	return ""
+}
+
+type ptyHandoffDoneMsg struct{ err error }
+
+type ptyHandoffSmokeModel struct {
+	returned bool
+	err      error
+}
+
+func (m ptyHandoffSmokeModel) Init() tea.Cmd {
+	return tea.ExecProcess(exec.Command("/usr/bin/printf", "HANDOFF_CHILD_OK\n"), func(err error) tea.Msg {
+		return ptyHandoffDoneMsg{err: err}
+	})
+}
+
+func (m ptyHandoffSmokeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if done, ok := msg.(ptyHandoffDoneMsg); ok {
+		m.returned = true
+		m.err = done.err
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m ptyHandoffSmokeModel) View() string {
+	if m.returned {
+		return "HANDOFF_TUI_RESTORED\n"
+	}
+	return "HANDOFF_TUI_ACTIVE\n"
+}
+
+func TestPTYTerminalHandoffSmoke(t *testing.T) {
+	if os.Getenv("SYS_BOZO_PTY_SMOKE") != "1" {
+		t.Skip("set SYS_BOZO_PTY_SMOKE=1 and run under a real PTY")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	stdinTTY, stdoutTTY := isTerminalFile(os.Stdin), isTerminalFile(os.Stdout)
+	if !stdinTTY || !stdoutTTY {
+		t.Fatalf("PTY smoke requires terminal-backed stdin and stdout: stdin=%v stdout=%v", stdinTTY, stdoutTTY)
+	}
+
+	final, err := tea.NewProgram(ptyHandoffSmokeModel{}, tea.WithAltScreen()).Run()
+	if err != nil {
+		t.Fatalf("program run: %v", err)
+	}
+	got, ok := final.(ptyHandoffSmokeModel)
+	if !ok || !got.returned || got.err != nil {
+		t.Fatalf("handoff result=%T(%#v)", final, final)
+	}
+	fmt.Fprintln(os.Stdout, "HANDOFF_RESTORED_OK")
+}
+
+func isTerminalFile(file *os.File) bool {
+	cmd := exec.Command("/usr/bin/tty", "-s")
+	cmd.Stdin = file
+	return cmd.Run() == nil
 }
 
 func TestLayoutWidthTargets100AndCaps140(t *testing.T) {
@@ -164,9 +224,9 @@ func TestSplitPreservesAuditConfigAndDoctorViews(t *testing.T) {
 		view func() string
 		want string
 	}{
-		{"config", func() string { return m.viewConfig(92) }, "flake.nix"},
-		{"audit", func() string { return m.viewAudit(92) }, "ssh config"},
-		{"doctor", func() string { return m.viewDoctor(92) }, "gen 4"},
+		{"config", func() string { return m.viewConfig() }, "flake.nix"},
+		{"audit", func() string { return m.viewAudit() }, "ssh config"},
+		{"doctor", func() string { return m.viewDoctor() }, "gen 4"},
 	} {
 		if out := tc.view(); !strings.Contains(out, tc.want) {
 			t.Fatalf("%s missing %q:\n%s", tc.name, tc.want, out)
@@ -206,6 +266,102 @@ func TestReviewShowsExactCommandsAndTTYWarning(t *testing.T) {
 	}
 	out := m.View()
 	for _, want := range []string{"REVIEW", "brew upgrade", "TTY", "ENTER CONFIRM"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestResultShowsCompletedFailedAndElapsed(t *testing.T) {
+	m := testGuidedModel()
+	m.width, m.height = 100, 36
+	m.styles = newUIStyles(true)
+	m.screen = screenResult
+	m.mode = modeDone
+	m.reviewed = reviewedPlan{Action: "all", Items: []runner.WorkItem{{Name: "nix"}, {Name: "brew"}, {Name: "topgrade"}}}
+	m.queuePos = 1
+	m.runErr = errors.New("exit status 1")
+	m.runElapsed = 5 * time.Second
+	m.stepResults = []stepResult{
+		{Item: m.reviewed.Items[0], Status: history.StatusSuccess, Duration: 2 * time.Second},
+		{Item: m.reviewed.Items[1], Status: history.StatusFailure, Duration: time.Second, Err: m.runErr},
+	}
+	m.logLines = []logLine{{kind: logOutput, text: "  harmless fixture output"}}
+	m.logVP = viewport.New(m.logWidth(), m.logHeight())
+	m.logVP.SetContent(m.renderLog())
+
+	out := m.View()
+	for _, want := range []string{"RUN/RESULT", "FAILED", "nix", "brew", "topgrade", "WAITING", "exit status 1", "00:05", "00:02", "HISTORY FAILURE", "L VIEW LOG", "R REVIEW RETRY"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q:\n%s", want, out)
+		}
+	}
+	next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
+	m = next.(Model)
+	if cmd != nil {
+		t.Fatalf("log toggle returned command: %v", cmd)
+	}
+	out = m.View()
+	for _, want := range []string{"OUTPUT", "harmless fixture output", "L SUMMARY"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("toggled log missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestResultRetryReturnsToReviewWithoutExecuting(t *testing.T) {
+	m := testGuidedModel()
+	m.screen = screenResult
+	m.mode = modeDone
+	m.reviewed = reviewedPlan{Action: "fixture", Items: []runner.WorkItem{{Name: "fixture-command"}}}
+	m.queue = cloneWorkItems(m.reviewed.Items)
+	m.queuePos = 1
+	m.runErr = errors.New("exit status 1")
+
+	next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	got := next.(Model)
+	if cmd != nil || got.screen != screenReview || got.mode != modeView || len(got.queue) != 0 || got.queuePos != 0 || got.runErr != nil {
+		t.Fatalf("cmd=%v screen=%v mode=%v queue=%v queuePos=%d runErr=%v", cmd, got.screen, got.mode, got.queue, got.queuePos, got.runErr)
+	}
+	if got.reviewed.Action != "fixture" || len(got.reviewed.Items) != 1 {
+		t.Fatalf("retry lost reviewed plan: %#v", got.reviewed)
+	}
+}
+
+func TestResultEscapeReturnsWithoutExecuting(t *testing.T) {
+	m := testGuidedModel()
+	m.tab = 1
+	m.screen = screenResult
+	m.mode = modeDone
+	m.reviewed = reviewedPlan{Action: "fixture", Items: []runner.WorkItem{{Name: "fixture-command"}}}
+	m.queue = cloneWorkItems(m.reviewed.Items)
+
+	next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
+	got := next.(Model)
+	if cmd != nil || got.mode != modeView || got.screen != screenMaintenance || len(got.queue) != 0 || len(got.reviewed.Items) != 0 {
+		t.Fatalf("cmd=%v mode=%v screen=%v queue=%v reviewed=%#v", cmd, got.mode, got.screen, got.queue, got.reviewed)
+	}
+}
+
+func TestRunningShowsProgressTTYAndStreamedLog(t *testing.T) {
+	m := testGuidedModel()
+	m.width, m.height = 100, 36
+	m.styles = newUIStyles(true)
+	m.screen = screenRunning
+	m.mode = modeRunning
+	m.runStart = time.Now().Add(-5 * time.Second)
+	m.queue = []runner.WorkItem{
+		{Name: "nix", Args: []string{"flake", "check"}},
+		{Name: "brew", Args: []string{"upgrade"}, Mode: runner.ExecutionInteractive},
+	}
+	m.reviewed = reviewedPlan{Action: "all", Items: cloneWorkItems(m.queue)}
+	m.queuePos = 1
+	m.logLines = []logLine{{kind: logOutput, text: "  harmless fixture output"}}
+	m.logVP = viewport.New(m.logWidth(), m.logHeight())
+	m.logVP.SetContent(m.renderLog())
+
+	out := m.View()
+	for _, want := range []string{"RUN/ACTIVE", "50%", "nix flake check", "DONE", "brew upgrade", "TTY", "harmless fixture output"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q:\n%s", want, out)
 		}
@@ -368,13 +524,259 @@ func TestInspectRenderingDoesNotUseStaleMaintenanceTab(t *testing.T) {
 	m.tab = 1 // rendering must remain stable even if legacy state becomes stale
 
 	out := m.View()
-	for _, want := range []string{"Config", "flake.nix"} {
+	for _, want := range []string{"INSPECT/SYSTEM", "CONFIG"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("inspection output missing %q:\n%s", want, out)
 		}
 	}
 	if strings.Contains(out, "enter run") {
 		t.Fatalf("inspection output leaked stale Actions content:\n%s", out)
+	}
+}
+
+func TestInspectListsAndRoutesConfigAuditDoctorAndHistory(t *testing.T) {
+	m := testGuidedModel()
+	m.width, m.height = 100, 30
+	m.styles = newUIStyles(true)
+	m.screen = screenInspect
+
+	out := m.View()
+	for _, want := range []string{"INSPECT/SYSTEM", "CONFIG", "AUDIT", "DOCTOR", "HISTORY"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q:\n%s", want, out)
+		}
+	}
+
+	wantScreens := []screen{screenConfig, screenAudit, screenDoctor, screenHistory}
+	for i, want := range wantScreens {
+		m.screen = screenInspect
+		m.inspectCursor = i
+		next, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+		got := next.(Model)
+		if got.screen != want {
+			t.Fatalf("entry %d routed to %v, want %v", i, got.screen, want)
+		}
+	}
+}
+
+func TestHistoryRendersNewestTwentyEntries(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for i := 0; i < 21; i++ {
+		history.Append(history.Entry{
+			Ts:     time.Unix(int64(i+1), 0),
+			Action: fmt.Sprintf("fixture-%02d", i),
+			Secs:   float64(i),
+			OK:     true,
+			Status: history.StatusSuccess,
+		})
+	}
+
+	m := testGuidedModel()
+	m.width, m.height = 100, 36
+	m.styles = newUIStyles(true)
+	m.screen = screenHistory
+	out := m.View()
+	for _, want := range []string{"INSPECT/HISTORY", "fixture-20", "fixture-01", "SUCCESS"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "fixture-00") {
+		t.Fatalf("history rendered more than newest 20 entries:\n%s", out)
+	}
+}
+
+func TestInspectChildScreensUseMonolithRulesWithoutCards(t *testing.T) {
+	m := testGuidedModel()
+	m.width, m.height = 100, 36
+	m.styles = newUIStyles(true)
+	m.configFiles = []configFile{{label: "flake.nix", path: "/fixture/flake.nix", hint: "system configuration"}}
+	m.auditReady = true
+	m.auditItems = []system.AuditItem{{Name: "ssh config", OK: true, Detail: "managed"}}
+	m.facts = system.Facts{DotfilesBranch: "main", HMGeneration: "gen 4", AgeKeyExists: true, GitHubKeyExists: true}
+
+	for _, tc := range []struct {
+		screen screen
+		header string
+		body   string
+	}{
+		{screenConfig, "INSPECT/CONFIG", "flake.nix"},
+		{screenAudit, "INSPECT/AUDIT", "ssh config"},
+		{screenDoctor, "INSPECT/DOCTOR", "gen 4"},
+	} {
+		m.screen = tc.screen
+		out := m.View()
+		for _, want := range []string{tc.header, tc.body, "━"} {
+			if !strings.Contains(out, want) {
+				t.Fatalf("screen %v missing %q:\n%s", tc.screen, want, out)
+			}
+		}
+		if strings.ContainsAny(out, "╭╮╰╯") {
+			t.Fatalf("screen %v retained rounded card:\n%s", tc.screen, out)
+		}
+	}
+}
+
+func TestConfigApplyChoiceReturnsToSelectWithoutExecuting(t *testing.T) {
+	for _, tc := range []struct {
+		key  rune
+		want []string
+	}{
+		{'h', []string{"hms"}},
+		{'n', []string{"nds"}},
+		{'b', []string{"hms", "nds"}},
+	} {
+		t.Run(string(tc.key), func(t *testing.T) {
+			m := testGuidedModel()
+			m.screen = screenConfig
+			m.applyPrompt = true
+
+			next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{tc.key}})
+			got := next.(Model)
+			if cmd != nil || got.screen != screenMaintenance || got.mode == modeRunning || len(got.queue) != 0 || len(got.reviewed.Items) != 0 {
+				t.Fatalf("cmd=%v screen=%v mode=%v queue=%v reviewed=%#v", cmd, got.screen, got.mode, got.queue, got.reviewed)
+			}
+			for _, id := range tc.want {
+				if !got.selected[id] {
+					t.Fatalf("choice %q missing selection %q: %v", tc.key, id, got.selected)
+				}
+			}
+		})
+	}
+}
+
+func TestInspectChildNavigationDoesNotDependOnLegacyTab(t *testing.T) {
+	m := testGuidedModel()
+	m.screen = screenInspect
+	m.tab = 1
+	next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
+	m = next.(Model)
+	if m.screen != screenAudit || cmd == nil {
+		t.Fatalf("audit shortcut screen=%v cmd=%v", m.screen, cmd)
+	}
+
+	next, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
+	m = next.(Model)
+	if m.screen != screenInspect {
+		t.Fatalf("audit escape screen=%v", m.screen)
+	}
+
+	m.screen = screenConfig
+	m.configFiles = []configFile{{label: "one"}, {label: "two"}}
+	next, cmd = m.handleKey(tea.KeyMsg{Type: tea.KeyDown})
+	m = next.(Model)
+	if cmd != nil || m.configCursor != 1 || m.screen != screenConfig {
+		t.Fatalf("config move cmd=%v cursor=%d screen=%v", cmd, m.configCursor, m.screen)
+	}
+
+	m.screen = screenAudit
+	m.auditReady = true
+	next, cmd = m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	m = next.(Model)
+	if cmd == nil || m.auditReady {
+		t.Fatalf("audit rescan cmd=%v ready=%v", cmd, m.auditReady)
+	}
+}
+
+func TestTask5VisualSmokeFitsTargetTerminals(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for i := 0; i < 21; i++ {
+		history.Append(history.Entry{Ts: time.Unix(int64(i+1), 0), Action: fmt.Sprintf("fixture-%02d", i), Secs: 3, OK: true, Status: history.StatusSuccess})
+	}
+
+	base := testGuidedModel()
+	base.styles = newUIStyles(true)
+	base.facts = system.Facts{
+		User: "fixture", Hostname: "host", OS: "darwin", DotfilesBranch: "main",
+		HMGeneration: "gen 4", AgeKeyExists: true, GitHubKeyExists: true,
+	}
+	base.configFiles = []configFile{{label: "flake.nix", path: "/fixture/flake.nix", hint: "system configuration"}}
+	base.auditReady = true
+	for i := 0; i < 12; i++ {
+		base.auditItems = append(base.auditItems, system.AuditItem{Name: fmt.Sprintf("check-%02d", i), OK: true, Detail: "managed"})
+	}
+	base.auditItems[0] = system.AuditItem{Name: "ssh config", Detail: "unmanaged", Description: "fixture explanation", Fix: "fixture fix"}
+	items := []runner.WorkItem{
+		{Name: "fixture-stream", Args: []string{"--safe"}},
+		{Name: "fixture-terminal", Args: []string{"--safe"}, Mode: runner.ExecutionInteractive},
+	}
+	base.reviewed = reviewedPlan{Action: "fixture", Items: cloneWorkItems(items)}
+	base.queue = cloneWorkItems(items)
+	base.runStart = time.Now().Add(-5 * time.Second)
+	base.runElapsed = 5 * time.Second
+	base.logLines = []logLine{{kind: logOutput, text: "  harmless fixture output"}}
+
+	screens := []struct {
+		name   string
+		screen screen
+		setup  func(*Model)
+	}{
+		{"home", screenHome, nil},
+		{"select", screenMaintenance, nil},
+		{"review", screenReview, nil},
+		{"running", screenRunning, func(m *Model) { m.mode, m.queuePos = modeRunning, 1 }},
+		{"result-success", screenResult, func(m *Model) {
+			m.mode, m.queuePos = modeDone, len(items)
+			m.stepResults = []stepResult{{Item: items[0], Status: history.StatusSuccess, Duration: 2 * time.Second}, {Item: items[1], Status: history.StatusSuccess, Duration: 3 * time.Second}}
+		}},
+		{"result-failure", screenResult, func(m *Model) {
+			m.mode, m.queuePos, m.runErr = modeDone, 1, errors.New("exit status 1")
+			m.stepResults = []stepResult{{Item: items[0], Status: history.StatusSuccess, Duration: 2 * time.Second}, {Item: items[1], Status: history.StatusFailure, Duration: 3 * time.Second, Err: m.runErr}}
+		}},
+		{"result-log", screenResult, func(m *Model) {
+			m.mode, m.queuePos, m.runErr, m.resultLogVisible = modeDone, 1, errors.New("exit status 1"), true
+		}},
+		{"inspect", screenInspect, nil},
+		{"config", screenConfig, nil},
+		{"audit", screenAudit, nil},
+		{"doctor", screenDoctor, nil},
+		{"history", screenHistory, nil},
+	}
+	for _, size := range []struct{ width, height int }{{80, 24}, {110, 36}} {
+		for _, tc := range screens {
+			t.Run(fmt.Sprintf("%dx%d/%s", size.width, size.height, tc.name), func(t *testing.T) {
+				m := base
+				m.width, m.height, m.screen = size.width, size.height, tc.screen
+				if tc.setup != nil {
+					tc.setup(&m)
+				}
+				m.logVP = viewport.New(m.logWidth(), m.logHeight())
+				m.logVP.SetContent(m.renderLog())
+				out := m.View()
+				if got := lipgloss.Width(out); got > size.width {
+					t.Fatalf("width=%d want <=%d:\n%s", got, size.width, out)
+				}
+				if got := strings.Count(out, "\n") + 1; got > size.height {
+					t.Fatalf("height=%d want <=%d:\n%s", got, size.height, out)
+				}
+				if os.Getenv("TASK5_VISUAL_LOG") != "" {
+					t.Logf("\n%s", out)
+				}
+			})
+		}
+	}
+}
+
+func TestTask5NoColorHomeReviewAndResultHaveNoANSI(t *testing.T) {
+	previousProfile := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(previousProfile) })
+
+	for _, target := range []screen{screenHome, screenReview, screenResult} {
+		m := testGuidedModel()
+		m.width, m.height = 100, 30
+		m.styles = newUIStyles(true)
+		m.screen = target
+		m.reviewed = reviewedPlan{Action: "fixture", Items: []runner.WorkItem{{Name: "fixture-command"}}}
+		m.mode = modeDone
+		m.queuePos = 1
+		m.runElapsed = time.Second
+		out := m.View()
+		if strings.Contains(out, "\x1b[") {
+			t.Fatalf("screen %v contains ANSI:\n%q", target, out)
+		}
 	}
 }
 
@@ -761,6 +1163,10 @@ func TestTabIntoAuditStartsScan(t *testing.T) {
 }
 
 func TestRefreshOnAuditRestartsScan(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("DOTFILES_REPO", t.TempDir())
+	t.Setenv("PATH", t.TempDir())
 	m := testModelOnUpdatesTab()
 	m.tab = 2
 	m.auditReady = true
@@ -789,11 +1195,35 @@ func TestAuditViewShowsFailureGuidance(t *testing.T) {
 		},
 	}
 
-	out := m.viewAudit(100)
+	out := m.viewAudit()
 	for _, want := range []string{"ssh config", "unmanaged file", "why:", "SSH aliases", "fix:", "home-manager", "switch."} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("audit view missing %q:\n%s", want, out)
 		}
+	}
+}
+
+func TestCompactAuditKeepsIssueStatusWithoutLongGuidance(t *testing.T) {
+	m := testGuidedModel()
+	m.width, m.height = 80, 24
+	m.styles = newUIStyles(true)
+	m.auditReady = true
+	m.auditItems = []system.AuditItem{{
+		Name:        "ssh config",
+		Detail:      "unmanaged file",
+		Description: "long explanation hidden only in compact layout",
+		Fix:         "long fix hidden only in compact layout",
+	}}
+
+	out := m.viewAudit()
+	if !strings.Contains(out, "ISSUE") || strings.Contains(out, "PASS") {
+		t.Fatalf("compact failure status is wrong:\n%s", out)
+	}
+	if strings.Contains(out, "long explanation") || strings.Contains(out, "long fix") {
+		t.Fatalf("compact audit retained long guidance:\n%s", out)
+	}
+	if got := strings.Count(out, "\n") + 1; got > 24 {
+		t.Fatalf("height=%d want <=24:\n%s", got, out)
 	}
 }
 
@@ -861,6 +1291,39 @@ func TestAdvanceQueueUsesTerminalHandoffForInteractiveWork(t *testing.T) {
 	}
 }
 
+func TestInteractiveHandoffReturnAdvancesToSuccessResult(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	item := runner.WorkItem{Name: "fixture-terminal", Args: []string{"--safe"}, Mode: runner.ExecutionInteractive}
+	m := Model{
+		mode:      modeRunning,
+		screen:    screenRunning,
+		queue:     []runner.WorkItem{item},
+		runAction: "fixture-terminal",
+		runStart:  time.Now().Add(-time.Second),
+		terminalExec: func(runner.WorkItem, time.Time) tea.Cmd {
+			return func() tea.Msg { return stepDoneMsg{elapsed: time.Second} }
+		},
+	}
+
+	cmd := m.advanceQueue()
+	if cmd == nil {
+		t.Fatal("terminal handoff command is nil")
+	}
+	next, nextCmd := m.Update(cmd())
+	got := next.(Model)
+	if nextCmd != nil || got.mode != modeDone || got.screen != screenResult || got.runErr != nil || got.queuePos != 1 {
+		t.Fatalf("cmd=%v mode=%v screen=%v runErr=%v queuePos=%d", nextCmd, got.mode, got.screen, got.runErr, got.queuePos)
+	}
+	if len(got.stepResults) != 1 || got.stepResults[0].Status != history.StatusSuccess || got.stepResults[0].Duration != time.Second || got.stepResults[0].Item.Name != item.Name {
+		t.Fatalf("handoff step result=%#v", got.stepResults)
+	}
+	entries := history.Read(1)
+	if len(entries) != 1 || entries[0].Status != history.StatusSuccess {
+		t.Fatalf("handoff history=%#v", entries)
+	}
+}
+
 func TestInteractiveFailureStopsQueueAndRestoresDoneState(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -869,24 +1332,83 @@ func TestInteractiveFailureStopsQueueAndRestoresDoneState(t *testing.T) {
 		t.Fatalf("isolated HOME not active: home=%q err=%v", resolvedHome, err)
 	}
 
-	m := Model{mode: modeRunning, screen: screenRunning, runAction: "brew", runStart: time.Now()}
+	item := runner.WorkItem{Name: "fixture-failure"}
+	m := Model{mode: modeRunning, screen: screenRunning, queue: []runner.WorkItem{item}, reviewed: reviewedPlan{Items: []runner.WorkItem{item}}, runAction: "brew", runStart: time.Now()}
 	next, _ := m.Update(stepDoneMsg{err: errors.New("exit status 1"), elapsed: time.Second})
 	got := next.(Model)
 	if got.mode != modeDone || got.screen != screenResult || !strings.Contains(got.renderLog(), "exit status 1") {
 		t.Fatalf("mode=%v screen=%v log=%q", got.mode, got.screen, got.renderLog())
 	}
+	if got.runErr == nil || got.runErr.Error() != "exit status 1" || got.runElapsed <= 0 || got.runCancelled {
+		t.Fatalf("runErr=%v runElapsed=%s runCancelled=%v", got.runErr, got.runElapsed, got.runCancelled)
+	}
+	if len(got.stepResults) != 1 || got.stepResults[0].Status != history.StatusFailure || got.stepResults[0].Duration != time.Second || got.stepResults[0].Err == nil {
+		t.Fatalf("failure step result=%#v", got.stepResults)
+	}
 	historyPath := filepath.Join(home, ".local", "state", "sys-bozo", "history.jsonl")
 	if _, err := os.Stat(historyPath); err != nil {
 		t.Fatalf("history was not isolated under temp HOME %q: %v", historyPath, err)
 	}
+	entries := history.Read(1)
+	if len(entries) != 1 || entries[0].OK || entries[0].Status != history.StatusFailure {
+		t.Fatalf("failure history=%#v", entries)
+	}
+}
+
+func TestFinalSuccessStoresResultAndCompatibleHistory(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	m := Model{
+		mode:      modeRunning,
+		screen:    screenRunning,
+		runAction: "fixture-success",
+		runStart:  time.Now().Add(-2 * time.Second),
+	}
+
+	if cmd := m.advanceQueue(); cmd != nil {
+		t.Fatal("completed queue returned command")
+	}
+	if m.mode != modeDone || m.screen != screenResult || m.runErr != nil || m.runCancelled || m.runElapsed < 2*time.Second {
+		t.Fatalf("mode=%v screen=%v runErr=%v cancelled=%v elapsed=%s", m.mode, m.screen, m.runErr, m.runCancelled, m.runElapsed)
+	}
+	entries := history.Read(1)
+	if len(entries) != 1 || !entries[0].OK || entries[0].Status != history.StatusSuccess {
+		t.Fatalf("success history=%#v", entries)
+	}
+}
+
+func TestTerminalHandoffCancellationStoresCancelledResult(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	item := runner.WorkItem{Name: "fixture-cancel", Mode: runner.ExecutionInteractive}
+	m := Model{mode: modeRunning, screen: screenRunning, queue: []runner.WorkItem{item}, reviewed: reviewedPlan{Items: []runner.WorkItem{item}}, runAction: "fixture-cancel", runStart: time.Now().Add(-time.Second)}
+
+	next, _ := m.Update(stepDoneMsg{err: errors.New("signal: interrupt"), elapsed: time.Second, cancelled: true})
+	got := next.(Model)
+	if got.mode != modeDone || got.screen != screenResult || got.runErr == nil || !got.runCancelled || got.runElapsed < time.Second {
+		t.Fatalf("mode=%v screen=%v runErr=%v cancelled=%v elapsed=%s", got.mode, got.screen, got.runErr, got.runCancelled, got.runElapsed)
+	}
+	if len(got.stepResults) != 1 || got.stepResults[0].Status != history.StatusCancelled || got.stepResults[0].Duration != time.Second || got.stepResults[0].Err == nil {
+		t.Fatalf("cancel step result=%#v", got.stepResults)
+	}
+	entries := history.Read(1)
+	if len(entries) != 1 || entries[0].OK || entries[0].Status != history.StatusCancelled {
+		t.Fatalf("cancel history=%#v", entries)
+	}
+	got.styles = newUIStyles(true)
+	if out := got.View(); !strings.Contains(out, "CANCELLED") {
+		t.Fatalf("cancelled result missing status:\n%s", out)
+	}
 }
 
 func TestStreamedStartFailureLogHasSingleCommandPrefix(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 	item := runner.WorkItem{
 		Name: filepath.Join(t.TempDir(), "missing-command"),
 		Mode: runner.ExecutionStreamed,
 	}
-	m := Model{mode: modeRunning, queue: []runner.WorkItem{item}}
+	m := Model{mode: modeRunning, queue: []runner.WorkItem{item}, runAction: "fixture", runStart: time.Now()}
 
 	if cmd := m.advanceQueue(); cmd != nil {
 		t.Fatal("streamed start failure returned a command")
@@ -901,5 +1423,12 @@ func TestStreamedStartFailureLogHasSingleCommandPrefix(t *testing.T) {
 	}
 	if strings.HasPrefix(strings.TrimPrefix(got, prefix), item.Name+": ") {
 		t.Fatalf("log = %q, duplicate command prefix %q", got, item.Name+": ")
+	}
+	if m.screen != screenResult || m.runErr == nil || m.runElapsed <= 0 {
+		t.Fatalf("screen=%v runErr=%v runElapsed=%s", m.screen, m.runErr, m.runElapsed)
+	}
+	entries := history.Read(1)
+	if len(entries) != 1 || entries[0].OK || entries[0].Status != history.StatusFailure {
+		t.Fatalf("start failure history=%#v", entries)
 	}
 }

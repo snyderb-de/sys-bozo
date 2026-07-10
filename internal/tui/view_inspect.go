@@ -3,85 +3,129 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/snyderb-de/sys-bozo/internal/history"
 )
 
-// viewInspect keeps the guided Inspect route stable until its Task 5 redesign.
-// Config is the existing read-mostly inspection surface and does not depend on
-// whichever legacy tab was active before the route opened.
+var inspectEntries = []struct {
+	number, label string
+	target        screen
+}{
+	{"01", "CONFIG", screenConfig},
+	{"02", "AUDIT", screenAudit},
+	{"03", "DOCTOR", screenDoctor},
+	{"04", "HISTORY", screenHistory},
+}
+
 func (m Model) viewInspect() string {
-	return m.viewConfig(layoutWidth(m.width))
+	contentWidth := primaryContentWidth(m.width)
+	s := m.styles
+	rows := []string{
+		s.major.Render("INSPECT/SYSTEM"),
+		s.label.Render("READ-ONLY SYSTEM SURFACES"),
+		majorRule(s, contentWidth, true),
+		"",
+	}
+	for i, entry := range inspectEntries {
+		rows = append(rows, numberedRow(s, entry.number, entry.label, statusText(s, "OPEN", statusSuccess), contentWidth, i == m.inspectCursor))
+	}
+	rows = append(rows, "", majorRule(s, contentWidth, false), "", s.muted.Render("ESCAPE BACK   ENTER OPEN"))
+	return primaryFrame(s, m.width, strings.Join(rows, "\n"))
+}
+
+func (m Model) viewHistory() string {
+	contentWidth := primaryContentWidth(m.width)
+	s := m.styles
+	rows := []string{
+		s.major.Render("INSPECT/HISTORY"),
+		s.label.Render("RECENT EXECUTION METADATA"),
+		majorRule(s, contentWidth, true),
+		"",
+	}
+	entries := history.Read(20)
+	visible := len(entries)
+	if m.height > 0 && m.height <= 24 {
+		visible = min(14, visible)
+	}
+	if visible == 0 {
+		rows = append(rows, s.muted.Render("NO HISTORY"))
+	}
+	for i, entry := range entries[:visible] {
+		status := entry.EffectiveStatus()
+		kind := statusSuccess
+		if status != history.StatusSuccess {
+			kind = statusDanger
+		}
+		label := entry.Ts.Local().Format("2006-01-02 15:04") + "  " + entry.Action + "  " + formatRunElapsed(time.Duration(entry.Secs*float64(time.Second)))
+		rows = append(rows, numberedRow(s, fmt.Sprintf("%02d", i+1), label, statusText(s, strings.ToUpper(string(status)), kind), contentWidth, false))
+	}
+	footer := "ESCAPE BACK"
+	if visible < len(entries) {
+		footer = fmt.Sprintf("SHOWING %d OF %d   ESCAPE BACK", visible, len(entries))
+	}
+	rows = append(rows, "", majorRule(s, contentWidth, false), "", s.muted.Render(footer))
+	return primaryFrame(s, m.width, strings.Join(rows, "\n"))
 }
 
 // ── Config ────────────────────────────────────────────────────────────────
 
-func (m Model) viewConfig(w int) string {
-	cw := innerWidth(w)
-
-	var rows []string
-	rows = append(rows, styleTitle.Render("Config")+"  "+styleFaint.Render("enter edit · j/k move"))
-	rows = append(rows, "")
+func (m Model) viewConfig() string {
+	contentWidth := primaryContentWidth(m.width)
+	s := m.styles
+	rows := []string{
+		s.major.Render("INSPECT/CONFIG"),
+		s.label.Render("DECLARATIVE SOURCE FILES"),
+		majorRule(s, contentWidth, true),
+		"",
+	}
 
 	for i, f := range m.configFiles {
-		cur := "  "
-		var labelStyle lipgloss.Style
-		if i == m.configCursor {
-			cur = styleCursor.Render("▶ ")
-			labelStyle = styleActionLabel
-		} else {
-			labelStyle = styleActionAvail
+		label := f.label
+		if f.hint != "" {
+			label += "  " + f.hint
 		}
-		label := labelStyle.Render(fmt.Sprintf("%-42s", f.label))
-		hint := styleFaint.Render(f.hint)
-		rows = append(rows, cur+label+"  "+hint)
+		rows = append(rows, numberedRow(s, fmt.Sprintf("%02d", i+1), label, statusText(s, "EDIT", statusActive), contentWidth, i == m.configCursor))
 	}
 
 	if m.applyPrompt {
-		rows = append(rows, "")
-		rows = append(rows, styleWarn.Render("  apply changes?")+"  "+
-			styleFaint.Render("[h]ms  [n]ds  [b]oth  any other key = skip"))
+		rows = append(rows, "", s.attention.Render("APPLY CHANGES?"), s.muted.Render("H HMS   N NDS   B BOTH   ANY OTHER KEY SKIPS"))
 	}
-
-	return styleCard.Width(cw).Render(strings.Join(rows, "\n"))
+	rows = append(rows, "", majorRule(s, contentWidth, false), "", s.muted.Render("ESCAPE BACK   J/K MOVE   ENTER EDIT"))
+	return primaryFrame(s, m.width, strings.Join(rows, "\n"))
 }
 
 // ── Audit ─────────────────────────────────────────────────────────────────
 
-func (m Model) viewAudit(w int) string {
-	cw := innerWidth(w)
-	header := styleTitle.Render("Local Audit") + "  " + styleFaint.Render("a rescan")
+func (m Model) viewAudit() string {
+	contentWidth := primaryContentWidth(m.width)
+	s := m.styles
+	compact := m.height > 0 && m.height <= 24
+	header := []string{s.major.Render("INSPECT/AUDIT"), s.label.Render("LOCAL CONFIGURATION AUDIT"), majorRule(s, contentWidth, true), ""}
 
 	if !m.auditReady {
-		content := strings.Join([]string{
-			header,
-			"",
-			styleMuted.Render("  scanning..."),
-		}, "\n")
-		return styleCard.Width(cw).Render(content)
+		rows := append(header, s.muted.Render("SCANNING..."), "", s.muted.Render("ESCAPE BACK   A RESCAN"))
+		return primaryFrame(s, m.width, strings.Join(rows, "\n"))
 	}
 
-	var rows []string
-	rows = append(rows, header)
-	rows = append(rows, "")
-
-	rows = append(rows, stylePurple.Render("  Config files"))
+	rows := header
 	configCount := 0
-	for _, item := range m.auditItems {
+	for i, item := range m.auditItems {
 		if configCount == 6 {
-			rows = append(rows, "")
-			rows = append(rows, stylePurple.Render("  Tools"))
+			rows = append(rows, "", s.title.Render("TOOLS"))
 		}
-		icon := styleGood.Render("  ✓")
-		detail := styleFaint.Render(item.Detail)
+		label := "PASS"
+		kind := statusSuccess
 		if !item.OK {
-			icon = styleErr.Render("  ✗")
-			detail = styleWarn.Render(item.Detail)
+			label = "ISSUE"
+			kind = statusDanger
 		}
-		rows = append(rows, fmt.Sprintf("%s  %-18s %s", icon, item.Name, detail))
-		if !item.OK {
-			rows = append(rows, auditHelpRows("why", item.Description, cw-8, styleFaint)...)
-			rows = append(rows, auditHelpRows("fix", item.Fix, cw-8, styleMuted)...)
+		rows = append(rows, numberedRow(s, fmt.Sprintf("%02d", i+1), item.Name+"  "+item.Detail, statusText(s, label, kind), contentWidth, false))
+		if !item.OK && !compact {
+			rows = append(rows, auditHelpRows("why", item.Description, contentWidth-8, s.muted)...)
+			rows = append(rows, auditHelpRows("fix", item.Fix, contentWidth-8, s.text)...)
 		}
 		configCount++
 	}
@@ -95,13 +139,16 @@ func (m Model) viewAudit(w int) string {
 		}
 	}
 	rows = append(rows, "")
-	summary := styleGood.Render(fmt.Sprintf("  %d ok", ok))
+	summary := s.success.Render(fmt.Sprintf("%d OK", ok))
 	if fail > 0 {
-		summary += "  " + styleErr.Render(fmt.Sprintf("%d issues", fail))
+		summary += "  " + s.danger.Render(fmt.Sprintf("%d ISSUES", fail))
 	}
 	rows = append(rows, summary)
-
-	return styleCard.Width(cw).Render(strings.Join(rows, "\n"))
+	rows = append(rows, "", majorRule(s, contentWidth, false), "", s.muted.Render("ESCAPE BACK   A RESCAN"))
+	if compact {
+		rows = nonEmptyRows(rows)
+	}
+	return primaryFrame(s, m.width, strings.Join(rows, "\n"))
 }
 
 func auditHelpRows(label, text string, width int, style lipgloss.Style) []string {
@@ -147,94 +194,99 @@ func wrapWords(text string, width int) []string {
 
 // ── Doctor ────────────────────────────────────────────────────────────────
 
-func (m Model) viewDoctor(w int) string {
-	cw := innerWidth(w)
+func (m Model) viewDoctor() string {
+	contentWidth := primaryContentWidth(m.width)
+	s := m.styles
+	compact := m.height > 0 && m.height <= 24
 	f := m.facts
 
-	var rows []string
-	rows = append(rows, styleTitle.Render("Doctor"))
-	rows = append(rows, "")
+	rows := []string{s.major.Render("INSPECT/DOCTOR"), s.label.Render("WORKSTATION DIAGNOSTICS"), majorRule(s, contentWidth, true), ""}
 
-	rows = append(rows, stylePurple.Render("  Dotfiles"))
+	rows = append(rows, s.title.Render("DOTFILES"))
 	branch := f.DotfilesBranch
 	if branch == "" {
-		branch = styleMuted.Render("unknown")
+		branch = "unknown"
 	}
-	rows = append(rows, rowStyled("    branch    ", branch))
+	rows = append(rows, s.label.Render("BRANCH")+"  "+s.text.Render(branch))
 	if f.DotfilesDirty == 0 {
-		rows = append(rows, rowStyled("    dirty     ", styleGood.Render("clean")))
+		rows = append(rows, s.label.Render("WORKTREE")+"  "+s.success.Render("CLEAN"))
 	} else {
-		rows = append(rows, rowStyled("    dirty     ", styleWarn.Render(fmt.Sprintf("%d files", f.DotfilesDirty))))
+		rows = append(rows, s.label.Render("WORKTREE")+"  "+s.danger.Render(fmt.Sprintf("%d DIRTY", f.DotfilesDirty)))
 	}
 	rows = append(rows, "")
 
-	rows = append(rows, stylePurple.Render("  Home Manager"))
+	rows = append(rows, s.title.Render("HOME MANAGER"))
 	gen := f.HMGeneration
 	if gen == "" || gen == "none" {
-		rows = append(rows, rowStyled("    generation", styleErr.Render("none — run hms")))
+		rows = append(rows, s.label.Render("GENERATION")+"  "+s.danger.Render("NONE — RUN HMS"))
 	} else {
-		rows = append(rows, rowStyled("    generation", styleGood.Render(gen)))
+		rows = append(rows, s.label.Render("GENERATION")+"  "+s.success.Render(gen))
 	}
 	rows = append(rows, "")
 
-	rows = append(rows, stylePurple.Render("  Secrets"))
+	rows = append(rows, s.title.Render("SECRETS / SSH"))
 	if f.AgeKeyExists {
-		rows = append(rows, rowStyled("    age key   ", styleGood.Render("present")))
+		rows = append(rows, s.label.Render("AGE KEY")+"  "+s.success.Render("PRESENT"))
 	} else {
-		rows = append(rows, rowStyled("    age key   ", styleErr.Render("missing · ~/.config/sops/age/keys.txt")))
+		rows = append(rows, s.label.Render("AGE KEY")+"  "+s.danger.Render("MISSING · ~/.config/sops/age/keys.txt"))
 	}
-	rows = append(rows, "")
-
-	rows = append(rows, stylePurple.Render("  SSH"))
 	if f.GitHubKeyExists {
-		rows = append(rows, rowStyled("    github key", styleGood.Render("present")))
+		rows = append(rows, s.label.Render("GITHUB KEY")+"  "+s.success.Render("PRESENT"))
 	} else {
-		rows = append(rows, rowStyled("    github key", styleErr.Render("missing")))
+		rows = append(rows, s.label.Render("GITHUB KEY")+"  "+s.danger.Render("MISSING"))
 	}
 	rows = append(rows, "")
 
-	rows = append(rows, stylePurple.Render("  Package Managers"))
+	rows = append(rows, s.title.Render("PACKAGE MANAGERS"))
 	for _, check := range []struct{ name, path string }{
-		{"nix         ", f.NixPath},
+		{"nix", f.NixPath},
 		{"home-manager", f.HomeManager},
-		{"topgrade    ", f.Topgrade},
+		{"topgrade", f.Topgrade},
 	} {
-		if check.path == "" {
-			rows = append(rows, rowStyled("    "+check.name, styleErr.Render("missing")))
-		} else {
-			rows = append(rows, rowStyled("    "+check.name, styleGood.Render(shortPath(check.path))))
-		}
+		rows = append(rows, doctorManagerRow(s, check.name, check.path))
 	}
 	if f.OS == "linux" && f.OSID == "fedora" {
 		for _, check := range []struct{ name, path string }{
-			{"dnf         ", f.DnfPath},
-			{"sudo        ", f.SudoPath},
+			{"dnf", f.DnfPath},
+			{"sudo", f.SudoPath},
 		} {
-			if check.path == "" {
-				rows = append(rows, rowStyled("    "+check.name, styleErr.Render("missing")))
-			} else {
-				rows = append(rows, rowStyled("    "+check.name, styleGood.Render(shortPath(check.path))))
-			}
+			rows = append(rows, doctorManagerRow(s, check.name, check.path))
 		}
 	}
 	if f.OS == "darwin" {
 		for _, check := range []struct{ name, path string }{
-			{"brew        ", f.BrewPath},
-			{"nix-darwin  ", f.DarwinRebuild},
+			{"brew", f.BrewPath},
+			{"nix-darwin", f.DarwinRebuild},
 		} {
-			if check.path == "" {
-				rows = append(rows, rowStyled("    "+check.name, styleErr.Render("missing")))
-			} else {
-				rows = append(rows, rowStyled("    "+check.name, styleGood.Render(shortPath(check.path))))
-			}
+			rows = append(rows, doctorManagerRow(s, check.name, check.path))
 		}
 	}
 
 	if f.TailscaleIP != "" {
 		rows = append(rows, "")
-		rows = append(rows, stylePurple.Render("  Network"))
-		rows = append(rows, rowStyled("    tailscale ", styleGood.Render(f.TailscaleIP)))
+		rows = append(rows, s.title.Render("NETWORK"))
+		rows = append(rows, s.label.Render("TAILSCALE")+"  "+s.success.Render(f.TailscaleIP))
 	}
+	rows = append(rows, "", majorRule(s, contentWidth, false), "", s.muted.Render("ESCAPE BACK   R REFRESH"))
+	if compact {
+		rows = nonEmptyRows(rows)
+	}
+	return primaryFrame(s, m.width, strings.Join(rows, "\n"))
+}
 
-	return styleCard.Width(cw).Render(strings.Join(rows, "\n"))
+func nonEmptyRows(rows []string) []string {
+	compact := rows[:0]
+	for _, row := range rows {
+		if row != "" {
+			compact = append(compact, row)
+		}
+	}
+	return compact
+}
+
+func doctorManagerRow(s uiStyles, name, path string) string {
+	if path == "" {
+		return s.label.Render(strings.ToUpper(name)) + "  " + s.danger.Render("MISSING")
+	}
+	return s.label.Render(strings.ToUpper(name)) + "  " + s.success.Render(shortPath(path))
 }
