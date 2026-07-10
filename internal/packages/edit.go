@@ -8,6 +8,8 @@ import (
 	"strings"
 )
 
+const uncategorizedSection Section = "Uncategorized"
+
 type sourceLine struct {
 	body   []byte
 	ending []byte
@@ -16,7 +18,12 @@ type sourceLine struct {
 type parsedList struct {
 	lines      []sourceLine
 	assignment int
+	opening    int
 	closing    int
+	closeAt    int
+	nested     bool
+	inline     bool
+	badSuffix  bool
 	sections   []parsedSection
 }
 
@@ -56,26 +63,31 @@ func Sections(original []byte, target Target) ([]Section, error) {
 }
 
 func ProposeAdd(original []byte, target Target, sectionName, item string) (Proposal, error) {
-	list, err := parseList(original, target)
+	list, err := scanList(original, target)
 	if err != nil {
 		return Proposal{}, err
-	}
-
-	section, next, ok := list.findSection(Section(sectionName))
-	if !ok {
-		return Proposal{}, ErrSectionNotFound
 	}
 
 	rendered := item
 	if target.Quoted {
 		rendered = strconv.Quote(item)
 	}
-	normalized := section.indent + rendered
-	for i := list.assignment + 1; i < list.closing; i++ {
-		if string(bytes.TrimSpace(list.lines[i].body)) == rendered {
-			return Proposal{}, ErrAlreadyDeclared
-		}
+	duplicate := list.containsItem(rendered)
+	if list.inline && !list.nested && !list.badSuffix && duplicate {
+		return Proposal{}, ErrAlreadyDeclared
 	}
+	if list.invalid() {
+		return Proposal{}, ErrAmbiguousTarget
+	}
+	if duplicate {
+		return Proposal{}, ErrAlreadyDeclared
+	}
+
+	section, next, ok := list.findSection(Section(sectionName))
+	if !ok {
+		return Proposal{}, ErrSectionNotFound
+	}
+	normalized := section.indent + rendered
 
 	insertAt := next
 	for insertAt > section.line+1 && len(bytes.TrimSpace(list.lines[insertAt-1].body)) == 0 {
@@ -101,64 +113,314 @@ func ProposeAdd(original []byte, target Target, sectionName, item string) (Propo
 }
 
 func parseList(original []byte, target Target) (parsedList, error) {
+	list, err := scanList(original, target)
+	if err != nil {
+		return parsedList{}, err
+	}
+	if list.invalid() {
+		return parsedList{}, ErrAmbiguousTarget
+	}
+	return list, nil
+}
+
+func scanList(original []byte, target Target) (parsedList, error) {
 	lines := splitLines(original)
 	prefix := target.Assignment + " ="
 	assignment := -1
+	state := lexicalState{}
 	for i, line := range lines {
-		if strings.HasPrefix(strings.TrimSpace(string(line.body)), prefix) {
+		if state == (lexicalState{}) && strings.HasPrefix(strings.TrimSpace(string(line.body)), prefix) {
 			if assignment >= 0 {
 				return parsedList{}, ErrAmbiguousTarget
 			}
 			assignment = i
 		}
+		scanCode(line.body, 0, &state, func(_ int, _ byte) bool { return true })
 	}
-	if target.Assignment == "" || assignment < 0 || !hasListOpening(lines[assignment].body, prefix) {
+	if target.Assignment == "" || assignment < 0 {
 		return parsedList{}, ErrAmbiguousTarget
 	}
 
-	closing := -1
-	for i := assignment + 1; i < len(lines); i++ {
-		if strings.TrimSpace(string(lines[i].body)) == "];" {
-			closing = i
-			break
-		}
-	}
-	if closing < 0 {
+	opening, closing, closeAt, nested, inline, badSuffix, err := listBounds(lines, assignment, prefix)
+	if err != nil {
 		return parsedList{}, ErrAmbiguousTarget
 	}
 
-	sections := make([]parsedSection, 0)
-	sectionNames := make(map[Section]struct{})
-	for i := assignment + 1; i < closing; i++ {
-		trimmed := strings.TrimSpace(string(lines[i].body))
-		if !strings.HasPrefix(trimmed, "# ") || len(strings.TrimSpace(trimmed[2:])) == 0 {
-			continue
-		}
-		indentLength := len(lines[i].body) - len(bytes.TrimLeft(lines[i].body, " \t"))
-		name := Section(strings.TrimSpace(trimmed[2:]))
-		if _, exists := sectionNames[name]; exists {
-			return parsedList{}, ErrAmbiguousTarget
-		}
-		sectionNames[name] = struct{}{}
+	sections, err := discoverSections(lines, assignment, opening, closing, closeAt)
+	if err != nil {
+		return parsedList{}, err
+	}
+	if len(sections) == 0 && !nested && !inline && !badSuffix {
+		closingIndent := len(lines[closing].body) - len(bytes.TrimLeft(lines[closing].body, " \t"))
 		sections = append(sections, parsedSection{
-			name:   name,
-			line:   i,
-			indent: string(lines[i].body[:indentLength]),
+			name:   uncategorizedSection,
+			line:   assignment,
+			indent: string(lines[closing].body[:closingIndent]) + "  ",
 		})
 	}
 
-	return parsedList{lines: lines, assignment: assignment, closing: closing, sections: sections}, nil
+	return parsedList{
+		lines:      lines,
+		assignment: assignment,
+		opening:    opening,
+		closing:    closing,
+		closeAt:    closeAt,
+		nested:     nested,
+		inline:     inline,
+		badSuffix:  badSuffix,
+		sections:   sections,
+	}, nil
 }
 
-func hasListOpening(line []byte, prefix string) bool {
-	remainder := strings.TrimPrefix(strings.TrimSpace(string(line)), prefix)
-	if strings.HasPrefix(remainder, "=") {
+func discoverSections(lines []sourceLine, assignment, opening, closing, closeAt int) ([]parsedSection, error) {
+	sections := make([]parsedSection, 0)
+	names := make(map[Section]struct{})
+	state := lexicalState{}
+	for lineIndex := assignment; lineIndex <= closing; lineIndex++ {
+		start := 0
+		end := len(lines[lineIndex].body)
+		if lineIndex == assignment {
+			start = opening + 1
+		}
+		if lineIndex == closing {
+			end = closeAt
+		}
+		segment := lines[lineIndex].body[start:end]
+		trimmed := strings.TrimSpace(string(segment))
+		if state == (lexicalState{}) && strings.HasPrefix(trimmed, "# ") && len(strings.TrimSpace(trimmed[2:])) > 0 {
+			name := Section(strings.TrimSpace(trimmed[2:]))
+			if _, exists := names[name]; exists {
+				return nil, ErrAmbiguousTarget
+			}
+			names[name] = struct{}{}
+			indentLength := len(lines[lineIndex].body) - len(bytes.TrimLeft(lines[lineIndex].body, " \t"))
+			sections = append(sections, parsedSection{
+				name:   name,
+				line:   lineIndex,
+				indent: string(lines[lineIndex].body[:indentLength]),
+			})
+		}
+		scanCode(lines[lineIndex].body, start, &state, func(_ int, _ byte) bool { return true })
+	}
+	return sections, nil
+}
+
+type lexicalState struct {
+	quote         byte
+	escaped       bool
+	blockComment  bool
+	indentedQuote bool
+}
+
+func listBounds(lines []sourceLine, assignment int, prefix string) (int, int, int, bool, bool, bool, error) {
+	body := lines[assignment].body
+	leading := len(body) - len(bytes.TrimLeft(body, " \t"))
+	start := leading + len(prefix)
+	if start > len(body) || (start < len(body) && body[start] == '=') {
+		return 0, 0, 0, false, false, false, ErrAmbiguousTarget
+	}
+
+	state := lexicalState{}
+	opening := -1
+	openingLine := -1
+	closing := -1
+	closeAt := -1
+	depth := 0
+	nested := false
+	unexpectedClose := false
+	for lineIndex := assignment; lineIndex < len(lines) && closing < 0; lineIndex++ {
+		lineStart := 0
+		if lineIndex == assignment {
+			lineStart = start
+		}
+		scanCode(lines[lineIndex].body, lineStart, &state, func(offset int, char byte) bool {
+			switch char {
+			case '[':
+				if opening < 0 {
+					opening = offset
+					openingLine = lineIndex
+					depth = 1
+					return true
+				}
+				depth++
+				nested = true
+			case ']':
+				if opening < 0 {
+					unexpectedClose = true
+					return false
+				}
+				depth--
+				if depth == 0 {
+					closing = lineIndex
+					closeAt = offset
+					return false
+				}
+			}
+			return true
+		})
+	}
+
+	if opening < 0 || openingLine != assignment || closing < 0 || unexpectedClose {
+		return 0, 0, 0, false, false, false, ErrAmbiguousTarget
+	}
+	return opening, closing, closeAt, nested, closing == assignment, !validClosingSuffix(lines[closing].body[closeAt+1:]), nil
+}
+
+func (l parsedList) invalid() bool {
+	return l.nested || l.inline || l.badSuffix
+}
+
+func (l parsedList) containsItem(item string) bool {
+	for _, token := range l.tokens() {
+		if token == item {
+			return true
+		}
+	}
+	return false
+}
+
+func (l parsedList) tokens() []string {
+	var tokens []string
+	var token strings.Builder
+	state := lexicalState{}
+	flush := func() {
+		if token.Len() > 0 {
+			tokens = append(tokens, token.String())
+			token.Reset()
+		}
+	}
+
+	for lineIndex := l.assignment; lineIndex <= l.closing; lineIndex++ {
+		start := 0
+		end := len(l.lines[lineIndex].body)
+		if lineIndex == l.assignment {
+			start = l.opening + 1
+		}
+		if lineIndex == l.closing {
+			end = l.closeAt
+		}
+		line := l.lines[lineIndex].body
+		for i := start; i < end; i++ {
+			char := line[i]
+			if state.blockComment {
+				if char == '*' && i+1 < end && line[i+1] == '/' {
+					state.blockComment = false
+					i++
+				}
+				continue
+			}
+			if state.quote != 0 {
+				token.WriteByte(char)
+				if state.escaped {
+					state.escaped = false
+					continue
+				}
+				if char == '\\' {
+					state.escaped = true
+					continue
+				}
+				if char == state.quote {
+					state.quote = 0
+				}
+				continue
+			}
+
+			switch {
+			case char == '#':
+				i = end
+			case char == '/' && i+1 < end && line[i+1] == '*':
+				flush()
+				state.blockComment = true
+				i++
+			case char == '"':
+				token.WriteByte(char)
+				state.quote = char
+			case char == '[' || char == ']' || char == ' ' || char == '\t' || char == '\r' || char == '\n':
+				flush()
+			default:
+				token.WriteByte(char)
+			}
+		}
+		flush()
+	}
+	return tokens
+}
+
+func scanCode(line []byte, start int, state *lexicalState, visit func(int, byte) bool) {
+	for i := start; i < len(line); i++ {
+		char := line[i]
+		if state.blockComment {
+			if char == '*' && i+1 < len(line) && line[i+1] == '/' {
+				state.blockComment = false
+				i++
+			}
+			continue
+		}
+		if state.indentedQuote {
+			if char == '\'' && i+1 < len(line) && line[i+1] == '\'' {
+				state.indentedQuote = false
+				i++
+			}
+			continue
+		}
+		if state.quote != 0 {
+			if state.escaped {
+				state.escaped = false
+				continue
+			}
+			if char == '\\' {
+				state.escaped = true
+				continue
+			}
+			if char == state.quote {
+				state.quote = 0
+			}
+			continue
+		}
+
+		switch {
+		case char == '#':
+			return
+		case char == '/' && i+1 < len(line) && line[i+1] == '*':
+			state.blockComment = true
+			i++
+		case char == '\'' && i+1 < len(line) && line[i+1] == '\'':
+			state.indentedQuote = true
+			i++
+		case char == '"':
+			state.quote = char
+		case !visit(i, char):
+			return
+		}
+	}
+}
+
+func validClosingSuffix(suffix []byte) bool {
+	i := 0
+	skipWhitespace := func() {
+		for i < len(suffix) && (suffix[i] == ' ' || suffix[i] == '\t') {
+			i++
+		}
+	}
+	skipWhitespace()
+	if i >= len(suffix) || suffix[i] != ';' {
 		return false
 	}
-	if comment := strings.IndexByte(remainder, '#'); comment >= 0 {
-		remainder = remainder[:comment]
+	i++
+	for {
+		skipWhitespace()
+		if i == len(suffix) || suffix[i] == '#' {
+			return true
+		}
+		if i+1 >= len(suffix) || suffix[i] != '/' || suffix[i+1] != '*' {
+			return false
+		}
+		end := bytes.Index(suffix[i+2:], []byte("*/"))
+		if end < 0 {
+			return false
+		}
+		i += end + 4
 	}
-	return strings.Count(remainder, "[") == 1 && !strings.Contains(remainder, "]")
 }
 
 func (l parsedList) findSection(name Section) (parsedSection, int, bool) {
@@ -248,5 +510,10 @@ func unifiedInsertionDiff(original []sourceLine, inserted sourceLine, insertAt i
 func writeDiffLine(diff *strings.Builder, prefix byte, line sourceLine) {
 	diff.WriteByte(prefix)
 	diff.Write(line.body)
+	if len(line.ending) > 0 {
+		diff.Write(line.ending)
+		return
+	}
 	diff.WriteByte('\n')
+	diff.WriteString("\\ No newline at end of file\n")
 }

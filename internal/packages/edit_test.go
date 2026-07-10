@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"errors"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -116,6 +118,77 @@ func TestSectionsFailsClosedOnDuplicateNames(t *testing.T) {
 	}
 }
 
+func TestSectionsSynthesizesUncategorizedForUnsectionedMappedShapes(t *testing.T) {
+	tests := []struct {
+		name     string
+		original string
+		target   Target
+		item     string
+		wantLine string
+	}{
+		{
+			name:     "empty Darwin home packages",
+			original: "{ pkgs, ... }:\n{\n  home.packages = with pkgs; [\n  ];\n}\n",
+			target:   Target{Assignment: "home.packages"},
+			item:     "lazydocker",
+			wantLine: "    lazydocker\n",
+		},
+		{
+			name:     "unsectioned Linux home packages",
+			original: "{ pkgs, ... }:\n{\n  home.packages = with pkgs; [\n    coreutils\n  ];\n}\n",
+			target:   Target{Assignment: "home.packages"},
+			item:     "yazi",
+			wantLine: "    yazi\n",
+		},
+		{
+			name:     "unsectioned Brew formulae",
+			original: "{\n  brews = [\n    \"mas\"\n  ];\n}\n",
+			target:   Target{Assignment: "brews", Quoted: true},
+			item:     "wget",
+			wantLine: "    \"wget\"\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sections, err := Sections([]byte(tt.original), tt.target)
+			if err != nil || len(sections) != 1 || sections[0] != "Uncategorized" {
+				t.Fatalf("sections=%#v err=%v", sections, err)
+			}
+			proposal, err := ProposeAdd([]byte(tt.original), tt.target, "Uncategorized", tt.item)
+			if err != nil || !bytes.Contains(proposal.Proposed, []byte(tt.wantLine)) {
+				t.Fatalf("proposal=%q err=%v", proposal.Proposed, err)
+			}
+		})
+	}
+}
+
+func TestSectionsDoesNotSynthesizeUncategorizedWhenRealSectionsExist(t *testing.T) {
+	original := []byte("home.packages = [\n  # Misc\n  yazi\n];\n")
+
+	sections, err := Sections(original, Target{Assignment: "home.packages"})
+	if err != nil || len(sections) != 1 || sections[0] != "Misc" {
+		t.Fatalf("sections=%#v err=%v", sections, err)
+	}
+}
+
+func TestSectionsIgnoresHeadingsInsideStringsAndBlockComments(t *testing.T) {
+	original := []byte("home.packages = [\n  # Misc\n  \"text [\n  # Fake string section\n  ] text\"\n  /* [\n  # Fake comment section\n  ] */\n  yazi\n];\n")
+
+	sections, err := Sections(original, Target{Assignment: "home.packages"})
+	if err != nil || len(sections) != 1 || sections[0] != "Misc" {
+		t.Fatalf("sections=%#v err=%v", sections, err)
+	}
+	proposal, err := ProposeAdd(original, Target{Assignment: "home.packages"}, "Misc", "lazydocker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantTail := "  ] */\n  yazi\n  lazydocker\n];\n"
+	if !bytes.Contains(proposal.Proposed, []byte(wantTail)) {
+		t.Fatalf("proposal=%q", proposal.Proposed)
+	}
+}
+
 func TestProposeAddPreservesNixFileAndInsertsInSection(t *testing.T) {
 	original := []byte("{ pkgs, ... }:\n{\n  home.packages = with pkgs; [\n    # Git tooling\n    gh\n\n    # Misc\n    sqlite\n  ];\n}\n")
 	target := Target{Assignment: "home.packages", Quoted: false}
@@ -157,11 +230,68 @@ func TestProposeAddRejectsDuplicateDespiteWhitespaceDrift(t *testing.T) {
 	}
 }
 
+func TestProposeAddDetectsNormalizedDuplicatesAcrossListContent(t *testing.T) {
+	tests := []struct {
+		name     string
+		original string
+		target   Target
+		section  string
+		item     string
+	}{
+		{
+			name:     "bare Nix item with trailing comment",
+			original: "home.packages = [\n  # Misc\n  yazi # file manager\n];\n",
+			target:   Target{Assignment: "home.packages"},
+			section:  "Misc",
+			item:     "yazi",
+		},
+		{
+			name:     "quoted Brew item with trailing comment",
+			original: "casks = [\n  # Core\n  \"zed\" # editor\n];\n",
+			target:   Target{Assignment: "casks", Quoted: true},
+			section:  "Core",
+			item:     "zed",
+		},
+		{
+			name:     "item after assignment opening",
+			original: "home.packages = [ yazi\n  # Misc\n  ripgrep\n];\n",
+			target:   Target{Assignment: "home.packages"},
+			section:  "Misc",
+			item:     "yazi",
+		},
+		{
+			name:     "unsupported inline multi-item reports duplicate first",
+			original: "home.packages = [ yazi ripgrep ];\n",
+			target:   Target{Assignment: "home.packages"},
+			section:  "Uncategorized",
+			item:     "yazi",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ProposeAdd([]byte(tt.original), tt.target, tt.section, tt.item)
+			if !errors.Is(err, ErrAlreadyDeclared) {
+				t.Fatalf("err=%v", err)
+			}
+		})
+	}
+}
+
 func TestProposeAddFailsClosedOnMultipleAssignments(t *testing.T) {
 	original := []byte("home.packages = [ ];\nhome.packages = [ ];\n")
 	_, err := ProposeAdd(original, Target{Assignment: "home.packages"}, "Misc", "x")
 	if !errors.Is(err, ErrAmbiguousTarget) {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestProposeAddIgnoresAssignmentTextInsideStringsAndComments(t *testing.T) {
+	original := []byte("text = ''\nhome.packages = [\n'';\n/*\nhome.packages = [\n*/\nhome.packages = [\n  # Misc\n  yazi\n];\n")
+
+	proposal, err := ProposeAdd(original, Target{Assignment: "home.packages"}, "Misc", "lazydocker")
+	if err != nil || !bytes.Contains(proposal.Proposed, []byte("  lazydocker\n")) {
+		t.Fatalf("proposal=%q err=%v", proposal.Proposed, err)
 	}
 }
 
@@ -172,6 +302,7 @@ func TestProposeAddFailsClosedOnMalformedOrMissingTarget(t *testing.T) {
 	}{
 		{name: "missing assignment", original: "other.packages = [\n  # Misc\n  x\n];\n"},
 		{name: "missing opening bracket", original: "home.packages = with pkgs;\n  # Misc\n  x\n];\n"},
+		{name: "opening bracket on later line", original: "home.packages =\n[\n  # Misc\n  x\n];\n"},
 		{name: "comparison instead of assignment", original: "home.packages == [\n  # Misc\n  x\n];\n"},
 		{name: "opening bracket only in comment", original: "home.packages = with pkgs; # [\n  # Misc\n  x\n];\n"},
 		{name: "missing closing bracket", original: "home.packages = [\n  # Misc\n  x\n"},
@@ -186,6 +317,44 @@ func TestProposeAddFailsClosedOnMalformedOrMissingTarget(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestProposeAddTracksListDepthOutsideStringsAndComments(t *testing.T) {
+	t.Run("nested list fails closed", func(t *testing.T) {
+		original := []byte("home.packages = [\n  # Misc\n  yazi\n  [ ripgrep ]\n];\n")
+
+		_, err := ProposeAdd(original, Target{Assignment: "home.packages"}, "Misc", "lazydocker")
+		if !errors.Is(err, ErrAmbiguousTarget) {
+			t.Fatalf("err=%v", err)
+		}
+	})
+
+	t.Run("quoted and commented brackets are ignored", func(t *testing.T) {
+		original := []byte("home.packages = builtins.trace \"[not the list]\" [\n  # Misc\n  yazi # ignored [ and ]\n]; # ignored [\n")
+
+		proposal, err := ProposeAdd(original, Target{Assignment: "home.packages"}, "Misc", "lazydocker")
+		if err != nil || !bytes.Contains(proposal.Proposed, []byte("  lazydocker\n")) {
+			t.Fatalf("proposal=%q err=%v", proposal.Proposed, err)
+		}
+	})
+
+	t.Run("malformed closing suffix fails closed", func(t *testing.T) {
+		original := []byte("home.packages = [\n  # Misc\n  yazi\n] + other;\n")
+
+		_, err := ProposeAdd(original, Target{Assignment: "home.packages"}, "Misc", "lazydocker")
+		if !errors.Is(err, ErrAmbiguousTarget) {
+			t.Fatalf("err=%v", err)
+		}
+	})
+
+	t.Run("single quoted pseudo string fails closed", func(t *testing.T) {
+		original := []byte("home.packages = '[not Nix]' [\n  # Misc\n  yazi\n];\n")
+
+		_, err := ProposeAdd(original, Target{Assignment: "home.packages"}, "Misc", "lazydocker")
+		if !errors.Is(err, ErrAmbiguousTarget) {
+			t.Fatalf("err=%v", err)
+		}
+	})
 }
 
 func TestProposeAddReturnsSectionNotFound(t *testing.T) {
@@ -216,12 +385,68 @@ func TestProposeAddPreservesBlankEdgeCRLFHashesAndInputOwnership(t *testing.T) {
 	if !strings.HasPrefix(proposal.Diff, "--- original\n+++ proposed\n@@ -1,9 +1,10 @@\n") {
 		t.Fatalf("diff=%q", proposal.Diff)
 	}
-	if strings.Count(proposal.Diff, "@@") != 2 || !strings.Contains(proposal.Diff, "+    \"ghostty\"\n") {
+	if strings.Count(proposal.Diff, "@@") != 2 || !strings.Contains(proposal.Diff, "+    \"ghostty\"\r\n") {
 		t.Fatalf("diff=%q", proposal.Diff)
 	}
 
 	original[0] = '!'
 	if proposal.Original[0] != '{' || proposal.Proposed[0] != '{' {
 		t.Fatalf("proposal retained caller-owned bytes: original=%q proposed=%q", proposal.Original[0], proposal.Proposed[0])
+	}
+}
+
+func TestProposalDiffAppliesToExactProposedBytes(t *testing.T) {
+	patchCommand, err := exec.LookPath("patch")
+	if err != nil {
+		t.Skip("patch is unavailable")
+	}
+	tests := []struct {
+		name       string
+		original   string
+		wantMarker bool
+	}{
+		{
+			name:       "CRLF",
+			original:   "home.packages = [\r\n  # Misc\r\n  yazi\r\n];\r\n",
+			wantMarker: false,
+		},
+		{
+			name:       "missing final newline",
+			original:   "home.packages = [\n  # Misc\n  yazi\n];",
+			wantMarker: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			proposal, err := ProposeAdd([]byte(tt.original), Target{Assignment: "home.packages"}, "Misc", "lazydocker")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.name == "CRLF" && !strings.Contains(proposal.Diff, "  yazi\r\n+  lazydocker\r\n") {
+				t.Fatalf("diff does not preserve CRLF hunk content: %q", proposal.Diff)
+			}
+			marker := "\\ No newline at end of file\n"
+			if strings.Contains(proposal.Diff, marker) != tt.wantMarker {
+				t.Fatalf("marker presence=%t want %t diff=%q", strings.Contains(proposal.Diff, marker), tt.wantMarker, proposal.Diff)
+			}
+
+			path := filepath.Join(t.TempDir(), "fixture.nix")
+			if err := os.WriteFile(path, []byte(tt.original), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			command := exec.Command(patchCommand, "-s", path)
+			command.Stdin = strings.NewReader(proposal.Diff)
+			if output, err := command.CombinedOutput(); err != nil {
+				t.Fatalf("patch failed: %v\n%s\ndiff=%q", err, output, proposal.Diff)
+			}
+			got, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got, proposal.Proposed) {
+				t.Fatalf("patched=%q want proposed=%q", got, proposal.Proposed)
+			}
+		})
 	}
 }
