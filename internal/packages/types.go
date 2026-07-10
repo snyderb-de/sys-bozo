@@ -46,10 +46,19 @@ type Proposal struct {
 	Diff         string
 }
 
+type AppliedEdit struct {
+	Path       string
+	Before     []byte
+	After      []byte
+	BeforeHash [32]byte
+	AfterHash  [32]byte
+}
+
 var (
 	ErrAlreadyDeclared = errors.New("package already declared")
 	ErrAmbiguousTarget = errors.New("declaration target is missing or ambiguous")
 	ErrSectionNotFound = errors.New("declaration section not found")
+	ErrStaleFile       = errors.New("declaration file changed after review")
 )
 
 type Candidate struct {
