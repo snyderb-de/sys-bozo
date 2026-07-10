@@ -287,14 +287,74 @@ func TestPackageReviewContainsDiffApplyAndVerify(t *testing.T) {
 }
 
 func TestPackageVerifySpecUsesOnlyTrustedExecutableMetadata(t *testing.T) {
-	ctx := runner.Context{BrewBin: "brew", NixStoreBin: "nix-store", NixProfilePath: "/tmp/profile"}
-	trusted := packageVerifySpec(packages.Candidate{Provider: packages.ProviderNix, Kind: packages.KindPackage, ID: "ripgrep", Name: "ripgrep", Version: "14.1.1", Executable: "rg", VersionArgs: []string{"--version"}}, ctx)
-	if trusted.Executable != "rg" || !slices.Equal(trusted.VersionArgs, []string{"--version"}) || trusted.PName != "ripgrep" || trusted.NixStoreBin != "nix-store" || trusted.ProfilePath != "/tmp/profile" {
+	ctx := runner.Context{Repo: "/repo", BrewBin: "brew", NixBin: "nix", NixStoreBin: "nix-store", HomeManager: "home-manager", NixSystem: "aarch64-darwin"}
+	trusted := packageVerifySpec(packages.Candidate{Provider: packages.ProviderNix, Kind: packages.KindPackage, ID: "ripgrep", Name: "ripgrep", Version: "14.1.1", Executable: "rg", VersionArgs: []string{"--version"}}, ctx, packages.Target{NixInput: "nixpkgsUnstable"})
+	if trusted.Executable != "rg" || !slices.Equal(trusted.VersionArgs, []string{"--version"}) || trusted.NixInput != "nixpkgsUnstable" || trusted.Attr != "ripgrep" || trusted.HomeManagerBin != "home-manager" {
 		t.Fatalf("trusted=%#v", trusted)
 	}
-	untrusted := packageVerifySpec(packages.Candidate{Provider: packages.ProviderBrew, Kind: packages.KindFormula, ID: "ripgrep", Name: "ripgrep"}, ctx)
+	untrusted := packageVerifySpec(packages.Candidate{Provider: packages.ProviderBrew, Kind: packages.KindFormula, ID: "ripgrep", Name: "ripgrep"}, ctx, packages.Target{})
 	if untrusted.Executable != "" || untrusted.BrewBin != "brew" {
 		t.Fatalf("untrusted=%#v", untrusted)
+	}
+}
+
+func TestPackageEditorPreservesBasenameAndWritesVisibleContext(t *testing.T) {
+	t.Setenv("EDITOR", "code --wait")
+	m := testPackageModel(t)
+	m.packageEditor = nil
+	m.packageFlow.scope = packages.ScopePlatform
+	target := filepath.Join(m.runCtx.Repo, "home", "darwin", "default.nix")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original := []byte("original\n")
+	if err := os.WriteFile(target, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m.packageExecProcess = func(cmd *exec.Cmd, done tea.ExecCallback) tea.Cmd {
+		editPath := cmd.Args[len(cmd.Args)-1]
+		if filepath.Base(editPath) != "default.nix" || editPath == target {
+			t.Fatalf("edit path=%q", editPath)
+		}
+		contextBytes, err := os.ReadFile(filepath.Join(filepath.Dir(editPath), "SYS-BOZO-CONTEXT.txt"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		contextText := string(contextBytes)
+		for _, want := range []string{"provider: nix", "package-id: python313Packages.requests", "package-name: requests", "scope: platform", "real-target: " + target} {
+			if !strings.Contains(contextText, want) {
+				t.Fatalf("context missing %q: %s", want, contextText)
+			}
+		}
+		return func() tea.Msg { return done(errors.New("fixture stop")) }
+	}
+	cmd := m.openPackageEditor(packageEditorRequest{target: packages.Target{Path: target}, original: original, candidate: packages.Candidate{Provider: packages.ProviderNix, ID: "python313Packages.requests", Name: "requests"}})
+	if cmd == nil {
+		t.Fatal("missing editor handoff")
+	}
+	_ = cmd()
+}
+
+func TestHomeUsesCachedLatestHistoryAndAccurateInspectWording(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	history.Append(history.Entry{Ts: time.Date(2026, 7, 10, 12, 0, 0, 0, time.Local), Action: "hms", Status: history.StatusSuccess, OK: true})
+	m := testGuidedModel()
+	m.styles = newUIStyles(true)
+	m.width, m.height = 100, 30
+	m.refreshLatestHistory()
+	out := m.viewHome()
+	for _, want := range []string{"LAST RUN", "hms", "SUCCESS", "2026-07-10"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q:\n%s", want, out)
+		}
+	}
+	m.latestHistory = nil
+	if out = m.viewHome(); !strings.Contains(out, "NO HISTORY") {
+		t.Fatalf("no-history missing:\n%s", out)
+	}
+	m.screen = screenInspect
+	if out = m.View(); !strings.Contains(out, "REVIEW-GATED SYSTEM OPERATIONS") || strings.Contains(out, "READ-ONLY") {
+		t.Fatalf("inspect wording:\n%s", out)
 	}
 }
 

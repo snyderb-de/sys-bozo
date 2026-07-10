@@ -25,7 +25,7 @@ func (m Model) viewInspect() string {
 	s := m.styles
 	rows := []string{
 		s.major.Render("INSPECT/SYSTEM"),
-		s.label.Render("READ-ONLY SYSTEM SURFACES"),
+		s.label.Render("REVIEW-GATED SYSTEM OPERATIONS"),
 		majorRule(s, contentWidth, true),
 		"",
 	}

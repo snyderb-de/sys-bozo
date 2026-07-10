@@ -76,6 +76,11 @@ From Home, press `2` or select Add Package:
 Confirmation atomically edits the declarative Nix or Homebrew config, applies
 the matching Home Manager or nix-darwin action, and verifies the selected
 provider. A changed file hash aborts instead of overwriting newer work. If the
+process stops during the atomic exchange, the target path remains present with
+either old or new bytes and a same-directory recovery temporary may remain;
+that temporary preserves reviewed old bytes for manual recovery. A stale file can be
+briefly swapped into place and then rolled back, but the target path is never
+absent. If the
 apply action fails after the edit, the declaration stays visible and `v` opens
 a separately reviewed, hash-gated revert; sys-bozo never silently rolls it
 back. Verification failure is reported as failure and also leaves the

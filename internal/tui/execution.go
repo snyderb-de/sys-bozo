@@ -255,6 +255,7 @@ func (m *Model) finishRun(err error, cancelled bool, elapsed time.Duration) {
 		OK:     status == history.StatusSuccess,
 		Status: status,
 	})
+	m.refreshLatestHistory()
 }
 
 func runStatus(err error, cancelled bool) history.Status {

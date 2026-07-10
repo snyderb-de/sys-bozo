@@ -26,7 +26,7 @@ type Context struct {
 	DnfBin         string
 	NixBin         string
 	NixStoreBin    string
-	NixProfilePath string
+	NixSystem      string
 	BrewBin        string
 	HomeManager    string
 	DarwinRebuild  string
@@ -133,7 +133,7 @@ func Build() Context {
 		DnfBin:         findExe("dnf", "/usr/bin/dnf5"),
 		NixBin:         findExe("nix", "/nix/var/nix/profiles/default/bin/nix"),
 		NixStoreBin:    findExe("nix-store", "/nix/var/nix/profiles/default/bin/nix-store"),
-		NixProfilePath: filepath.Join(home, ".nix-profile"),
+		NixSystem:      runtime.GOARCH + "-" + runtime.GOOS,
 		BrewBin:        findExe("brew", "/opt/homebrew/bin/brew", "/usr/local/bin/brew"),
 		HomeManager:    findExe("home-manager", hmFallbacks...),
 		DarwinRebuild:  findExe("darwin-rebuild", "/run/current-system/sw/bin/darwin-rebuild"),

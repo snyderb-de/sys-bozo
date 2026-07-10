@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -101,10 +102,14 @@ func (m Model) viewHome() string {
 		s.label.Render("BRANCH") + "  " + s.text.Render(branch),
 		s.label.Render("REPOSITORY") + "  " + statusText(s, repo, repoKind),
 		s.label.Render("UPDATES") + "  " + statusText(s, updates, updatesKind),
-		"",
-		majorRule(s, contentWidth, false),
-		"",
 	}
+	if m.latestHistory == nil {
+		rows = append(rows, s.label.Render("LAST RUN")+"  "+s.muted.Render("NO HISTORY"))
+	} else {
+		entry := m.latestHistory
+		rows = append(rows, s.label.Render("LAST RUN")+"  "+s.text.Render(entry.Action+"  "+strings.ToUpper(string(entry.EffectiveStatus()))+"  "+entry.Ts.Local().Format(time.DateTime)))
+	}
+	rows = append(rows, "", majorRule(s, contentWidth, false), "")
 
 	for i, entry := range homeEntries {
 		kind := statusMuted

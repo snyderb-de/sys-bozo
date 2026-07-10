@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -254,7 +255,7 @@ func (m Model) handlePackagePlacementKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.packageFlow.err = nil
 			return m, m.openPackageEditor(packageEditorRequest{target: m.packageFlow.target, original: original, candidate: candidate})
 		}
-		m.buildPackageReview(proposal, packageVerifySpec(candidate, m.runCtx))
+		m.buildPackageReview(proposal, packageVerifySpec(candidate, m.runCtx, proposal.Target))
 	}
 	return m, nil
 }
@@ -318,19 +319,19 @@ func (m Model) openPackageEditor(request packageEditorRequest) tea.Cmd {
 	if m.packageEditor != nil {
 		return m.packageEditor(request)
 	}
-	temp, err := os.CreateTemp("", "sys-bozo-package-*")
+	dir, err := os.MkdirTemp("", "sys-bozo-package-edit-*")
 	if err != nil {
 		return func() tea.Msg { return packageEditorDoneMsg{err: fmt.Errorf("create package editor copy: %w", err)} }
 	}
-	tempPath := temp.Name()
-	if _, err := temp.Write(request.original); err != nil {
-		_ = temp.Close()
-		_ = os.Remove(tempPath)
+	tempPath := filepath.Join(dir, filepath.Base(request.target.Path))
+	if err := os.WriteFile(tempPath, request.original, 0o600); err != nil {
+		_ = os.RemoveAll(dir)
 		return func() tea.Msg { return packageEditorDoneMsg{err: fmt.Errorf("write package editor copy: %w", err)} }
 	}
-	if err := temp.Close(); err != nil {
-		_ = os.Remove(tempPath)
-		return func() tea.Msg { return packageEditorDoneMsg{err: fmt.Errorf("close package editor copy: %w", err)} }
+	contextText := fmt.Sprintf("provider: %s\npackage-id: %s\npackage-name: %s\nscope: %s\nreal-target: %s\n", request.candidate.Provider, request.candidate.ID, request.candidate.Name, m.packageFlow.scope, request.target.Path)
+	if err := os.WriteFile(filepath.Join(dir, "SYS-BOZO-CONTEXT.txt"), []byte(contextText), 0o600); err != nil {
+		_ = os.RemoveAll(dir)
+		return func() tea.Msg { return packageEditorDoneMsg{err: err} }
 	}
 	editor := os.Getenv("EDITOR")
 	if editor == "" {
@@ -338,12 +339,16 @@ func (m Model) openPackageEditor(request packageEditorRequest) tea.Cmd {
 	}
 	argv, err := parseEditorArgv(editor)
 	if err != nil {
-		_ = os.Remove(tempPath)
+		_ = os.RemoveAll(dir)
 		return func() tea.Msg { return packageEditorDoneMsg{err: err} }
 	}
 	cmd := exec.Command(argv[0], append(argv[1:], tempPath)...)
-	return tea.ExecProcess(cmd, func(editorErr error) tea.Msg {
-		defer os.Remove(tempPath)
+	execProcess := m.packageExecProcess
+	if execProcess == nil {
+		execProcess = tea.ExecProcess
+	}
+	return execProcess(cmd, func(editorErr error) tea.Msg {
+		defer os.RemoveAll(dir)
 		if editorErr != nil {
 			return packageEditorDoneMsg{err: editorErr}
 		}
@@ -363,7 +368,7 @@ func (m Model) selectedPackageCandidate() (packages.Candidate, bool) {
 	return m.packageFlow.result.Candidates[selected], true
 }
 
-func packageVerifySpec(candidate packages.Candidate, ctx runner.Context) packages.VerifySpec {
+func packageVerifySpec(candidate packages.Candidate, ctx runner.Context, target packages.Target) packages.VerifySpec {
 	spec := packages.VerifySpec{
 		Provider:    candidate.Provider,
 		Kind:        candidate.Kind,
@@ -374,7 +379,8 @@ func packageVerifySpec(candidate packages.Candidate, ctx runner.Context) package
 		VersionArgs: append([]string(nil), candidate.VersionArgs...),
 		BrewBin:     ctx.BrewBin,
 		NixStoreBin: ctx.NixStoreBin,
-		ProfilePath: ctx.NixProfilePath,
+		NixBin:      ctx.NixBin, HomeManagerBin: ctx.HomeManager, Repo: ctx.Repo, System: ctx.NixSystem,
+		NixInput: target.NixInput, Attr: candidate.ID,
 	}
 	return spec
 }
@@ -517,7 +523,7 @@ func packageVerificationLabel(spec packages.VerifySpec) string {
 	}
 	if spec.Token != "" {
 		if spec.Provider == packages.ProviderNix {
-			return fmt.Sprintf("nix direct profile reference for %s %s", spec.PName, spec.Version)
+			return fmt.Sprintf("exact %s#%s in applied Home Manager generation", spec.NixInput, spec.Attr)
 		}
 		return fmt.Sprintf("%s %s receipt", spec.Provider, spec.Token)
 	}

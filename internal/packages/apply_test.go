@@ -185,7 +185,7 @@ func TestApplyCleansTemporaryFileOnEveryPreRenameFailure(t *testing.T) {
 				return &failingApplyTempFile{File: file.(*os.File), stage: stage, err: failure}, nil
 			}
 			if stage == "rename" {
-				filesystem.rename = func(_, _ string) error { return failure }
+				filesystem.exchange = func(_, _ string) error { return failure }
 			}
 
 			_, err = apply(proposal, filesystem)
@@ -280,11 +280,11 @@ func TestApplyRaceHooksNeverOverwriteCompetingEdits(t *testing.T) {
 			hook: func(target, _ string) { _ = os.WriteFile(target, []byte("before-claim\n"), 0o600) },
 		},
 		{
-			name: "competing target before install", stage: applyBeforeInstall, want: []byte("competitor\n"),
+			name: "competing target before install", stage: applyBeforeInstall, want: []byte("original\n"),
 			hook: func(target, _ string) { _ = os.WriteFile(target, []byte("competitor\n"), 0o600) },
 		},
 		{
-			name: "old inode write after claim", stage: applyBeforeGuardRecheck, want: []byte("old-inode-write\n"),
+			name: "old inode write after claim", stage: applyBeforeGuardRecheck, want: []byte("original\n"),
 			hook: func(_, guard string) { _ = os.WriteFile(guard, []byte("old-inode-write\n"), 0o600) },
 		},
 		{
@@ -332,8 +332,8 @@ func TestApplyAfterClaimHookCanObserveClaimedTarget(t *testing.T) {
 			return
 		}
 		seen = true
-		if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("target still exists: %v", err)
+		if got, err := os.ReadFile(target); err != nil || !bytes.Equal(got, []byte("proposed\n")) {
+			t.Fatalf("target unavailable/unexpected: %q %v", got, err)
 		}
 		if got, err := os.ReadFile(guard); err != nil || !bytes.Equal(got, original) {
 			t.Fatalf("guard=%q err=%v", got, err)
@@ -347,6 +347,33 @@ func TestApplyAfterClaimHookCanObserveClaimedTarget(t *testing.T) {
 	}
 }
 
+func TestApplyTargetExistsWithOldOrNewBytesAtEveryHook(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "target")
+	original := []byte("old\n")
+	proposed := []byte("new\n")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[applyStage]bool{}
+	fs := realApplyFilesystem()
+	fs.hook = func(stage applyStage, target, _ string) {
+		seen[stage] = true
+		got, err := os.ReadFile(target)
+		if err != nil || (!bytes.Equal(got, original) && !bytes.Equal(got, proposed)) {
+			t.Fatalf("stage=%v target=%q err=%v", stage, got, err)
+		}
+	}
+	if _, err := apply(ProposeReplacement(Target{Path: path}, original, proposed), fs); err != nil {
+		t.Fatal(err)
+	}
+	for _, stage := range []applyStage{applyBeforeClaim, applyAfterClaim, applyBeforeInstall, applyBeforeGuardRecheck} {
+		if !seen[stage] {
+			t.Fatalf("stage %v unseen", stage)
+		}
+	}
+}
+
 func TestApplyClaimRejectsSymlinkSwapAndExistingGuard(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -357,7 +384,6 @@ func TestApplyClaimRejectsSymlinkSwapAndExistingGuard(t *testing.T) {
 			_ = os.Rename(target, backup)
 			_ = os.Symlink(backup, target)
 		}},
-		{"existing guard", func(_, guard string) { _ = os.WriteFile(guard, []byte("competitor\n"), 0o600) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -391,13 +417,13 @@ func TestApplySurfacesCleanupFailureAndGuardPath(t *testing.T) {
 	fs := realApplyFilesystem()
 	remove := fs.remove
 	fs.remove = func(path string) error {
-		if strings.HasSuffix(path, ".guard") {
+		if strings.Contains(path, "recovery") {
 			return failure
 		}
 		return remove(path)
 	}
 	applied, err := apply(ProposeReplacement(Target{Path: path}, original, []byte("proposed\n")), fs)
-	if !errors.Is(err, failure) || !strings.Contains(err.Error(), ".guard") {
+	if !errors.Is(err, failure) || !strings.Contains(err.Error(), "recovery") {
 		t.Fatalf("err=%v", err)
 	}
 	if applied.Path != path {

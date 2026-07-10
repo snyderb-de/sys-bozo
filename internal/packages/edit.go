@@ -36,11 +36,11 @@ type parsedSection struct {
 func ResolveTarget(repo, goos string, provider Provider, kind Kind, scope Scope) (Target, error) {
 	switch {
 	case provider == ProviderNix && scope == ScopeShared:
-		return Target{Path: filepath.Join(repo, "home/modules/packages.nix"), Assignment: "home.packages", ApplyAction: "hms"}, nil
+		return Target{Path: filepath.Join(repo, "home/modules/packages.nix"), Assignment: "home.packages", ApplyAction: "hms", NixInput: "nixpkgs"}, nil
 	case provider == ProviderNix && scope == ScopePlatform && goos == "darwin":
-		return Target{Path: filepath.Join(repo, "home/darwin/default.nix"), Assignment: "home.packages", ApplyAction: "hms"}, nil
+		return Target{Path: filepath.Join(repo, "home/darwin/default.nix"), Assignment: "home.packages", ApplyAction: "hms", NixInput: "nixpkgsUnstable"}, nil
 	case provider == ProviderNix && scope == ScopePlatform && goos == "linux":
-		return Target{Path: filepath.Join(repo, "home/linux/default.nix"), Assignment: "home.packages", ApplyAction: "hms"}, nil
+		return Target{Path: filepath.Join(repo, "home/linux/default.nix"), Assignment: "home.packages", ApplyAction: "hms", NixInput: "nixpkgsUnstable"}, nil
 	case provider == ProviderBrew && scope == ScopeShared && kind == KindFormula:
 		return Target{Path: filepath.Join(repo, "homebrew.nix"), Assignment: "brews", Quoted: true, ApplyAction: "nds"}, nil
 	case provider == ProviderBrew && scope == ScopeShared && kind == KindCask:
@@ -59,9 +59,9 @@ func ResolveEditorTarget(repo, goos, hostname string, provider Provider, kind Ki
 	}
 	switch goos {
 	case "darwin":
-		return Target{Path: filepath.Join(repo, "hosts", hostname, "darwin.nix"), Assignment: "home.packages", ApplyAction: "nds"}, nil
+		return Target{Path: filepath.Join(repo, "hosts", hostname, "darwin.nix"), Assignment: "home.packages", ApplyAction: "nds", NixInput: "nixpkgs"}, nil
 	case "linux":
-		return Target{Path: filepath.Join(repo, "hosts", hostname, "home.nix"), Assignment: "home.packages", ApplyAction: "hms"}, nil
+		return Target{Path: filepath.Join(repo, "hosts", hostname, "home.nix"), Assignment: "home.packages", ApplyAction: "hms", NixInput: "nixpkgs"}, nil
 	default:
 		return Target{}, ErrUnsupportedTarget
 	}

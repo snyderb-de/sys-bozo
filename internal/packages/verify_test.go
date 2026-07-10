@@ -19,9 +19,9 @@ func TestVerifyCLIRequiresResolvedExecutable(t *testing.T) {
 		return "", exec.ErrNotFound
 	}
 
-	got := Verify(context.Background(), fakeOutputRunner{}, lookup, VerifySpec{
-		Provider:   ProviderNix,
-		Kind:       KindPackage,
+	got := Verify(context.Background(), fakeOutputRunner{responses: map[string]fakeOutputResponse{"brew list --formula --versions yazi": {out: "yazi 1\n"}}}, lookup, VerifySpec{
+		Provider: ProviderBrew,
+		Kind:     KindFormula, BrewBin: "brew",
 		Token:      "yazi",
 		Executable: "yazi",
 	})
@@ -31,50 +31,59 @@ func TestVerifyCLIRequiresResolvedExecutable(t *testing.T) {
 	}
 }
 
-func TestVerifyNixWithoutTrustedExecutableUsesDirectProfileReference(t *testing.T) {
+func TestVerifyNixUsesPinnedAttrAndActualGenerationClosure(t *testing.T) {
 	calls := []string{}
 	runner := fakeOutputRunner{responses: map[string]fakeOutputResponse{
-		"nix-store -q --references /tmp/profile": {out: "/nix/store/aaa-bash-5.2\n/nix/store/bbb-ripgrep-14.1.1\n"},
+		"home-manager generations": {out: "2026-07-10 -> /nix/store/gen-home-manager-generation\n"},
+		`nix eval --raw --impure --expr (builtins.getFlake "/repo").inputs.nixpkgs.legacyPackages.aarch64-darwin.python313Packages.requests.outPath`: {out: "/nix/store/exact-requests\n"},
+		"nix-store -q --requisites /nix/store/gen-home-manager-generation":                                                                           {out: "/nix/store/registry-drift-requests\n/nix/store/exact-requests\n"},
 	}, calls: &calls}
 
 	got := Verify(context.Background(), runner, nil, VerifySpec{
-		Provider: ProviderNix, Kind: KindPackage, Token: "ripgrep",
-		PName: "ripgrep", Version: "14.1.1", NixStoreBin: "nix-store", ProfilePath: "/tmp/profile",
+		Provider: ProviderNix, Kind: KindPackage, Token: "python313Packages.requests",
+		NixStoreBin: "nix-store", NixBin: "nix", HomeManagerBin: "home-manager", Repo: "/repo", System: "aarch64-darwin", NixInput: "nixpkgs", Attr: "python313Packages.requests",
 	})
 
-	if !got.OK || !strings.Contains(got.Detail, "direct profile reference") {
+	if !got.OK || got.Path != "/nix/store/exact-requests" {
 		t.Fatalf("got %#v", got)
 	}
-	if want := []string{"nix-store -q --references /tmp/profile"}; !slices.Equal(calls, want) {
-		t.Fatalf("calls=%#v want %#v", calls, want)
+	if len(calls) != 3 {
+		t.Fatalf("calls=%#v", calls)
+	}
+	for _, call := range calls {
+		if strings.Contains(call, "/etc/profiles") || strings.Contains(call, ".nix-profile") {
+			t.Fatalf("profile inference: %s", call)
+		}
 	}
 }
 
-func TestVerifyNixNestedAttrDoesNotGuessPnameExecutable(t *testing.T) {
-	calls := []string{}
-	lookupCalls := 0
-	runner := fakeOutputRunner{responses: map[string]fakeOutputResponse{
-		"nix-store -q --references /tmp/profile": {out: "/nix/store/bbb-requests-2.32.4\n"},
-	}, calls: &calls}
+func TestVerifyNixMissingOrMalformedGenerationFails(t *testing.T) {
+	base := VerifySpec{Provider: ProviderNix, Kind: KindPackage, NixStoreBin: "nix-store", NixBin: "nix", HomeManagerBin: "home-manager", Repo: "/repo", System: "x86_64-linux", NixInput: "nixpkgs", Attr: "hello"}
+	for _, output := range []string{"", "1 -> /tmp/not-store\n"} {
+		r := fakeOutputRunner{responses: map[string]fakeOutputResponse{"home-manager generations": {out: output}}}
+		got := Verify(context.Background(), r, nil, base)
+		if got.OK || !strings.Contains(got.Detail, "generation") {
+			t.Fatalf("got=%#v", got)
+		}
+	}
+}
 
-	got := Verify(context.Background(), runner, func(string) (string, error) {
-		lookupCalls++
-		return "/wrong", nil
-	}, VerifySpec{
-		Provider: ProviderNix, Kind: KindPackage, Token: "python313Packages.requests",
-		PName: "requests", Version: "2.32.4", NixStoreBin: "nix-store", ProfilePath: "/tmp/profile",
-	})
-
-	if !got.OK || lookupCalls != 0 || len(calls) != 1 {
-		t.Fatalf("got=%#v lookupCalls=%d calls=%#v", got, lookupCalls, calls)
+func TestVerifyNixLinuxGenerationRequiresExactEvaluatedStorePath(t *testing.T) {
+	spec := VerifySpec{Provider: ProviderNix, Kind: KindPackage, NixStoreBin: "nix-store", NixBin: "nix", HomeManagerBin: "home-manager", Repo: "/repo", System: "x86_64-linux", NixInput: "nixpkgsUnstable", Attr: "hello"}
+	r := fakeOutputRunner{responses: map[string]fakeOutputResponse{
+		"home-manager generations": {out: "current -> /nix/store/linux-home-manager-generation\n"},
+		`nix eval --raw --impure --expr (builtins.getFlake "/repo").inputs.nixpkgsUnstable.legacyPackages.x86_64-linux.hello.outPath`: {out: "/nix/store/pinned-hello\n"},
+		"nix-store -q --requisites /nix/store/linux-home-manager-generation":                                                          {out: "/nix/store/registry-drift-hello\n"},
+	}}
+	got := Verify(context.Background(), r, nil, spec)
+	if got.OK || !strings.Contains(got.Detail, "absent") {
+		t.Fatalf("got=%#v", got)
 	}
 }
 
 func TestVerifyNixWithoutProviderEvidenceFailsClosed(t *testing.T) {
 	for _, spec := range []VerifySpec{
-		{Provider: ProviderNix, Kind: KindPackage, PName: "ripgrep", Version: "14.1.1", ProfilePath: "/tmp/profile"},
-		{Provider: ProviderNix, Kind: KindPackage, PName: "ripgrep", Version: "14.1.1", NixStoreBin: "nix-store"},
-		{Provider: ProviderNix, Kind: KindPackage, NixStoreBin: "nix-store", ProfilePath: "/tmp/profile"},
+		{Provider: ProviderNix, Kind: KindPackage},
 	} {
 		got := Verify(context.Background(), fakeOutputRunner{}, nil, spec)
 		if got.OK || got.Err == nil || !strings.Contains(got.Detail, "evidence") {
@@ -209,9 +218,10 @@ func TestVerifyCLIRequiresSuccessfulVersionCommand(t *testing.T) {
 	}}
 	lookup := func(string) (string, error) { return "/test/bin/yazi", nil }
 
+	runner.responses["brew list --formula --versions yazi"] = fakeOutputResponse{out: "yazi 1\n"}
 	got := Verify(context.Background(), runner, lookup, VerifySpec{
-		Provider:    ProviderNix,
-		Kind:        KindPackage,
+		Provider: ProviderBrew, BrewBin: "brew",
+		Kind:        KindFormula,
 		Token:       "yazi",
 		Executable:  "yazi",
 		VersionArgs: []string{"--version"},
@@ -225,9 +235,9 @@ func TestVerifyCLIRequiresSuccessfulVersionCommand(t *testing.T) {
 func TestVerifyCLIRejectsEmptyResolvedPath(t *testing.T) {
 	lookup := func(string) (string, error) { return "", nil }
 
-	got := Verify(context.Background(), fakeOutputRunner{}, lookup, VerifySpec{
-		Provider:   ProviderNix,
-		Kind:       KindPackage,
+	got := Verify(context.Background(), fakeOutputRunner{responses: map[string]fakeOutputResponse{"brew list --formula --versions yazi": {out: "yazi 1\n"}}}, lookup, VerifySpec{
+		Provider: ProviderBrew, BrewBin: "brew",
+		Kind:       KindFormula,
 		Token:      "yazi",
 		Executable: "yazi",
 	})

@@ -33,6 +33,7 @@ type Target struct {
 	Assignment  string
 	Quoted      bool
 	ApplyAction string
+	NixInput    string
 }
 
 type Section = string
@@ -83,17 +84,22 @@ type SearchResult struct {
 }
 
 type VerifySpec struct {
-	Provider    Provider
-	Kind        Kind
-	Token       string
-	PName       string
-	Version     string
-	Executable  string
-	VersionArgs []string
-	AppPath     string
-	BrewBin     string
-	NixStoreBin string
-	ProfilePath string
+	Provider       Provider
+	Kind           Kind
+	Token          string
+	PName          string
+	Version        string
+	Executable     string
+	VersionArgs    []string
+	AppPath        string
+	BrewBin        string
+	NixStoreBin    string
+	NixBin         string
+	HomeManagerBin string
+	Repo           string
+	System         string
+	NixInput       string
+	Attr           string
 }
 
 type VerifyResult struct {

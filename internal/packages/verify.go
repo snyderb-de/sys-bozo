@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -18,10 +18,15 @@ func Verify(ctx context.Context, runner OutputRunner, lookup PathLookup, spec Ve
 		if spec.Kind != KindPackage {
 			return verificationFailure("unsupported Nix package kind %q", spec.Kind)
 		}
-		if spec.Executable != "" {
-			return verifyExecutable(ctx, runner, lookup, spec)
+		provider := verifyNixGenerationClosure(ctx, runner, spec)
+		if !provider.OK || spec.Executable == "" {
+			return provider
 		}
-		return verifyNixProfileReference(ctx, runner, spec)
+		executable := verifyExecutable(ctx, runner, lookup, spec)
+		if executable.OK {
+			executable.Detail = provider.Detail + "; " + executable.Detail
+		}
+		return executable
 	case ProviderBrew:
 		switch spec.Kind {
 		case KindFormula:
@@ -44,25 +49,59 @@ func Verify(ctx context.Context, runner OutputRunner, lookup PathLookup, spec Ve
 	}
 }
 
-func verifyNixProfileReference(ctx context.Context, runner OutputRunner, spec VerifySpec) VerifyResult {
-	if spec.NixStoreBin == "" || spec.ProfilePath == "" || spec.PName == "" || spec.Version == "" {
-		return verificationFailure("Nix provider evidence requires nix-store binary, profile path, pname, and version")
+var nixToken = regexp.MustCompile(`^[A-Za-z0-9_+.-]+$`)
+
+func verifyNixGenerationClosure(ctx context.Context, runner OutputRunner, spec VerifySpec) VerifyResult {
+	if spec.NixStoreBin == "" || spec.NixBin == "" || spec.HomeManagerBin == "" || spec.Repo == "" || spec.System == "" || spec.NixInput == "" || spec.Attr == "" {
+		return verificationFailure("Nix applied evidence requires nix-store, nix, home-manager, repo, system, input, and attr")
 	}
 	if runner == nil {
 		return verificationFailure("Nix provider evidence requires a command runner")
 	}
-	output, err := runner.Output(ctx, spec.NixStoreBin, "-q", "--references", spec.ProfilePath)
-	if err != nil {
-		return VerifyResult{Detail: fmt.Sprintf("Nix direct profile references for %q could not be queried", spec.ProfilePath), Err: err}
+	if !nixToken.MatchString(spec.System) || !nixToken.MatchString(spec.NixInput) {
+		return verificationFailure("invalid Nix system or input token")
 	}
-	wantSuffix := "-" + spec.PName + "-" + spec.Version
-	for _, line := range strings.Split(string(output), "\n") {
-		ref := strings.TrimSpace(line)
-		if ref != "" && strings.HasSuffix(filepath.Base(ref), wantSuffix) {
-			return VerifyResult{OK: true, Path: ref, Detail: fmt.Sprintf("Nix direct profile reference for %s %s verified", spec.PName, spec.Version)}
+	for _, part := range strings.Split(spec.Attr, ".") {
+		if !nixToken.MatchString(part) {
+			return verificationFailure("invalid Nix attribute token")
 		}
 	}
-	return verificationFailure("Nix direct profile reference for %s %s was not found", spec.PName, spec.Version)
+	generations, err := runner.Output(ctx, spec.HomeManagerBin, "generations")
+	if err != nil {
+		return VerifyResult{Detail: "Home Manager generations could not be queried", Err: err}
+	}
+	generation := ""
+	for _, line := range strings.Split(string(generations), "\n") {
+		if at := strings.Index(line, "-> "); at >= 0 {
+			candidate := strings.TrimSpace(line[at+3:])
+			if strings.HasPrefix(candidate, "/nix/store/") && strings.HasSuffix(candidate, "-home-manager-generation") {
+				generation = candidate
+				break
+			}
+		}
+	}
+	if generation == "" {
+		return verificationFailure("Home Manager newest generation store path is missing or malformed")
+	}
+	expr := fmt.Sprintf(`(builtins.getFlake %q).inputs.%s.legacyPackages.%s.%s.outPath`, spec.Repo, spec.NixInput, spec.System, spec.Attr)
+	evaluated, err := runner.Output(ctx, spec.NixBin, "eval", "--raw", "--impure", "--expr", expr)
+	if err != nil {
+		return VerifyResult{Detail: "pinned Nix package outPath could not be evaluated", Err: err}
+	}
+	outPath := strings.TrimSpace(string(evaluated))
+	if !strings.HasPrefix(outPath, "/nix/store/") {
+		return verificationFailure("evaluated Nix outPath is malformed")
+	}
+	closure, err := runner.Output(ctx, spec.NixStoreBin, "-q", "--requisites", generation)
+	if err != nil {
+		return VerifyResult{Detail: "Home Manager generation closure could not be queried", Err: err}
+	}
+	for _, line := range strings.Split(string(closure), "\n") {
+		if strings.TrimSpace(line) == outPath {
+			return VerifyResult{OK: true, Path: outPath, Detail: "exact pinned Nix package outPath verified in applied Home Manager generation"}
+		}
+	}
+	return verificationFailure("exact pinned Nix package outPath is absent from applied Home Manager generation")
 }
 
 func verifyBrewCask(ctx context.Context, runner OutputRunner, lookup PathLookup, spec VerifySpec) VerifyResult {

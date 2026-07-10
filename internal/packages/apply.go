@@ -31,7 +31,7 @@ type applyFilesystem struct {
 	stat       func(string) (os.FileInfo, error)
 	createTemp func(string, string) (applyTempFile, error)
 	remove     func(string) error
-	rename     func(string, string) error
+	exchange   func(string, string) error
 	link       func(string, string) error
 	sameFile   func(os.FileInfo, os.FileInfo) bool
 	syncDir    func(string) error
@@ -55,7 +55,7 @@ func realApplyFilesystem() applyFilesystem {
 			return os.CreateTemp(dir, pattern)
 		},
 		remove:   os.Remove,
-		rename:   renameNoReplace,
+		exchange: exchangePaths,
 		link:     os.Link,
 		sameFile: os.SameFile,
 		syncDir: func(dir string) error {
@@ -115,60 +115,57 @@ func apply(proposal Proposal, filesystem applyFilesystem) (applied AppliedEdit, 
 	if err := temp.Close(); err != nil {
 		return AppliedEdit{}, fmt.Errorf("close temporary declaration file: %w", err)
 	}
-
-	guardPath := tempPath + ".guard"
-	runApplyHook(filesystem, applyBeforeClaim, proposal.Target.Path, guardPath)
-	if err := filesystem.rename(proposal.Target.Path, guardPath); err != nil {
-		return AppliedEdit{}, fmt.Errorf("claim declaration target: %w", err)
-	}
-	runApplyHook(filesystem, applyAfterClaim, proposal.Target.Path, guardPath)
-	claimedInfo, claimErr := filesystem.stat(guardPath)
-	if claimErr != nil || !claimedInfo.Mode().IsRegular() || !filesystem.sameFile(info, claimedInfo) {
-		return AppliedEdit{}, errors.Join(staleConflict("claimed target identity or type changed", guardPath), claimErr, restoreGuard(filesystem, guardPath, proposal.Target.Path))
-	}
-	if err := filesystem.syncDir(filepath.Dir(proposal.Target.Path)); err != nil {
-		restoreErr := restoreGuard(filesystem, guardPath, proposal.Target.Path)
-		return AppliedEdit{}, errors.Join(fmt.Errorf("sync claimed declaration directory: %w", err), restoreErr)
-	}
-
-	guarded, err := filesystem.readFile(guardPath)
+	proposedInfo, err := filesystem.stat(tempPath)
 	if err != nil {
-		return AppliedEdit{}, errors.Join(fmt.Errorf("read claimed declaration file: %w", err), restoreGuard(filesystem, guardPath, proposal.Target.Path))
-	}
-	if sha256.Sum256(guarded) != proposal.OriginalHash {
-		return AppliedEdit{}, errors.Join(staleConflict("claimed file hash changed", guardPath), restoreGuard(filesystem, guardPath, proposal.Target.Path))
+		return AppliedEdit{}, fmt.Errorf("stat proposed temporary file: %w", err)
 	}
 
-	runApplyHook(filesystem, applyBeforeInstall, proposal.Target.Path, guardPath)
-	if err := filesystem.link(tempPath, proposal.Target.Path); err != nil {
-		if errors.Is(err, os.ErrExist) {
-			return AppliedEdit{}, staleConflict("competing target appeared before install", guardPath)
+	guard, err := filesystem.createTemp(filepath.Dir(proposal.Target.Path), applyTempPattern+"-recovery")
+	if err != nil {
+		return AppliedEdit{}, fmt.Errorf("create recovery file: %w", err)
+	}
+	guardPath := guard.Name()
+	if _, err := guard.Write(current); err != nil {
+		_ = guard.Close()
+		return AppliedEdit{}, fmt.Errorf("write recovery file: %w", err)
+	}
+	if err := guard.Sync(); err != nil {
+		_ = guard.Close()
+		return AppliedEdit{}, fmt.Errorf("sync recovery file: %w", err)
+	}
+	if err := guard.Close(); err != nil {
+		return AppliedEdit{}, fmt.Errorf("close recovery file: %w", err)
+	}
+	defer func() {
+		if err := filesystem.remove(guardPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			retErr = errors.Join(retErr, fmt.Errorf("remove recovery file %q: %w", guardPath, err))
 		}
-		return AppliedEdit{}, errors.Join(fmt.Errorf("install declaration file without overwrite: %w", err), restoreGuard(filesystem, guardPath, proposal.Target.Path))
+	}()
+	runApplyHook(filesystem, applyBeforeClaim, proposal.Target.Path, guardPath)
+	latestInfo, latestInfoErr := filesystem.stat(proposal.Target.Path)
+	latest, latestErr := filesystem.readFile(proposal.Target.Path)
+	if latestInfoErr != nil || latestErr != nil || !latestInfo.Mode().IsRegular() || !filesystem.sameFile(info, latestInfo) || sha256.Sum256(latest) != proposal.OriginalHash {
+		return AppliedEdit{}, errors.Join(ErrStaleFile, latestInfoErr, latestErr)
 	}
-	if err := filesystem.syncDir(filepath.Dir(proposal.Target.Path)); err != nil {
-		return AppliedEdit{}, errors.Join(fmt.Errorf("sync installed declaration directory: %w", err), rollbackInstalled(filesystem, tempPath, guardPath, proposal.Target.Path))
+	if err := filesystem.exchange(proposal.Target.Path, tempPath); err != nil {
+		return AppliedEdit{}, fmt.Errorf("atomically exchange declaration target: %w", err)
 	}
-
-	// A writer holding the old inode can still mutate guardPath after claim.
-	// Recheck immediately before releasing it. Portable APIs cannot prevent a
-	// non-cooperative old-inode write that begins after this final recheck; such
-	// a write cannot overwrite the newly installed target directory entry.
-	runApplyHook(filesystem, applyBeforeGuardRecheck, proposal.Target.Path, guardPath)
-	guarded, err = filesystem.readFile(guardPath)
+	runApplyHook(filesystem, applyAfterClaim, proposal.Target.Path, tempPath)
+	runApplyHook(filesystem, applyBeforeInstall, proposal.Target.Path, tempPath)
+	runApplyHook(filesystem, applyBeforeGuardRecheck, proposal.Target.Path, tempPath)
+	guarded, err := filesystem.readFile(tempPath)
 	targetInfo, targetInfoErr := filesystem.stat(proposal.Target.Path)
 	tempInfo, tempInfoErr := filesystem.stat(tempPath)
 	installed, installedErr := filesystem.readFile(proposal.Target.Path)
-	targetValid := targetInfoErr == nil && tempInfoErr == nil && filesystem.sameFile(targetInfo, tempInfo) && installedErr == nil && sha256.Sum256(installed) == proposal.ProposedHash
-	if err != nil || sha256.Sum256(guarded) != proposal.OriginalHash || !targetValid {
-		rollbackErr := rollbackInstalled(filesystem, tempPath, guardPath, proposal.Target.Path)
-		if err != nil {
-			return AppliedEdit{}, errors.Join(staleConflict("could not recheck claimed file", guardPath), err, rollbackErr)
+	targetValid := targetInfoErr == nil && filesystem.sameFile(targetInfo, proposedInfo) && installedErr == nil && sha256.Sum256(installed) == proposal.ProposedHash
+	oldValid := tempInfoErr == nil && tempInfo.Mode().IsRegular() && filesystem.sameFile(info, tempInfo) && err == nil && sha256.Sum256(guarded) == proposal.OriginalHash
+	if !oldValid || !targetValid {
+		rollbackErr := filesystem.exchange(proposal.Target.Path, tempPath)
+		restored, readErr := filesystem.readFile(proposal.Target.Path)
+		if readErr != nil || sha256.Sum256(restored) != proposal.OriginalHash {
+			rollbackErr = errors.Join(rollbackErr, filesystem.exchange(proposal.Target.Path, guardPath))
 		}
-		return AppliedEdit{}, errors.Join(staleConflict("claimed original or installed proposal changed", guardPath), targetInfoErr, tempInfoErr, installedErr, rollbackErr)
-	}
-	if err := filesystem.remove(guardPath); err != nil {
-		return completedEdit(proposal, current, after, beforeHash), fmt.Errorf("remove claimed original %q: %w", guardPath, err)
+		return AppliedEdit{}, errors.Join(staleConflict("atomic exchange validation conflict", guardPath), targetInfoErr, tempInfoErr, installedErr, err, rollbackErr)
 	}
 	if err := filesystem.syncDir(filepath.Dir(proposal.Target.Path)); err != nil {
 		return completedEdit(proposal, current, after, beforeHash), fmt.Errorf("sync declaration cleanup: %w", err)
@@ -194,34 +191,6 @@ func runApplyHook(filesystem applyFilesystem, stage applyStage, target, guard st
 
 func staleConflict(detail, guard string) error {
 	return fmt.Errorf("%w: %s; claimed original retained at %s if automatic restore is unsafe", ErrStaleFile, detail, guard)
-}
-
-func restoreGuard(filesystem applyFilesystem, guard, target string) error {
-	if err := filesystem.link(guard, target); err != nil {
-		if errors.Is(err, os.ErrExist) {
-			return staleConflict("competing target prevents original restore", guard)
-		}
-		return fmt.Errorf("restore claimed original from %q: %w", guard, err)
-	}
-	if err := filesystem.remove(guard); err != nil {
-		return fmt.Errorf("remove restored guard %q: %w", guard, err)
-	}
-	return filesystem.syncDir(filepath.Dir(target))
-}
-
-func rollbackInstalled(filesystem applyFilesystem, proposed, guard, target string) error {
-	targetInfo, targetErr := filesystem.stat(target)
-	proposedInfo, proposedErr := filesystem.stat(proposed)
-	if targetErr == nil && proposedErr == nil && filesystem.sameFile(targetInfo, proposedInfo) {
-		if err := filesystem.remove(target); err != nil {
-			return fmt.Errorf("remove installed proposal during rollback: %w", err)
-		}
-	} else if targetErr == nil {
-		return staleConflict("competing target prevents rollback", guard)
-	} else if !errors.Is(targetErr, os.ErrNotExist) {
-		return fmt.Errorf("inspect installed proposal during rollback: %w", targetErr)
-	}
-	return restoreGuard(filesystem, guard, target)
 }
 
 func ProposeRevert(applied AppliedEdit) (Proposal, error) {

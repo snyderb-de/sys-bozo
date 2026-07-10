@@ -119,6 +119,7 @@ type Model struct {
 	inspectCursor int
 	selected      map[string]bool
 	reviewed      reviewedPlan
+	latestHistory *history.Entry
 
 	tabs   []string
 	tab    int
@@ -170,6 +171,7 @@ type Model struct {
 	verifyPackage        func(packages.VerifySpec) packages.VerifyResult
 	proposePackageRevert func(packages.AppliedEdit) (packages.Proposal, error)
 	packageEditor        func(packageEditorRequest) tea.Cmd
+	packageExecProcess   func(*exec.Cmd, tea.ExecCallback) tea.Cmd
 }
 
 func New() Model {
@@ -186,7 +188,7 @@ func New() Model {
 		return packages.Verify(context.Background(), packages.ExecRunner{}, exec.LookPath, spec)
 	}
 
-	return Model{
+	model := Model{
 		facts:                system.Probe(),
 		runCtx:               ctx,
 		tasks:                tasks,
@@ -204,6 +206,17 @@ func New() Model {
 		verifyPackage:        verifyPackage,
 		proposePackageRevert: packages.ProposeRevert,
 		applyConfig:          fileedit.Apply,
+	}
+	model.refreshLatestHistory()
+	return model
+}
+
+func (m *Model) refreshLatestHistory() {
+	entries := history.Read(1)
+	m.latestHistory = nil
+	if len(entries) > 0 {
+		entry := entries[0]
+		m.latestHistory = &entry
 	}
 }
 

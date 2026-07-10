@@ -113,7 +113,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		proposal := packages.ProposeReplacement(msg.target, msg.original, msg.proposed)
-		m.buildPackageReview(proposal, packageVerifySpec(msg.candidate, m.runCtx))
+		m.buildPackageReview(proposal, packageVerifySpec(msg.candidate, m.runCtx, msg.target))
 		return m, nil
 
 	case lineMsg:

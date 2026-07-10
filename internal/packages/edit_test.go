@@ -27,7 +27,7 @@ func TestResolveTargetMapsOnlySupportedDestinations(t *testing.T) {
 			provider: ProviderNix,
 			kind:     KindPackage,
 			scope:    ScopeShared,
-			want:     Target{Path: filepath.Join(repo, "home/modules/packages.nix"), Assignment: "home.packages", ApplyAction: "hms"},
+			want:     Target{Path: filepath.Join(repo, "home/modules/packages.nix"), Assignment: "home.packages", ApplyAction: "hms", NixInput: "nixpkgs"},
 		},
 		{
 			name:     "darwin nix",
@@ -35,7 +35,7 @@ func TestResolveTargetMapsOnlySupportedDestinations(t *testing.T) {
 			provider: ProviderNix,
 			kind:     KindPackage,
 			scope:    ScopePlatform,
-			want:     Target{Path: filepath.Join(repo, "home/darwin/default.nix"), Assignment: "home.packages", ApplyAction: "hms"},
+			want:     Target{Path: filepath.Join(repo, "home/darwin/default.nix"), Assignment: "home.packages", ApplyAction: "hms", NixInput: "nixpkgsUnstable"},
 		},
 		{
 			name:     "linux nix",
@@ -43,7 +43,7 @@ func TestResolveTargetMapsOnlySupportedDestinations(t *testing.T) {
 			provider: ProviderNix,
 			kind:     KindPackage,
 			scope:    ScopePlatform,
-			want:     Target{Path: filepath.Join(repo, "home/linux/default.nix"), Assignment: "home.packages", ApplyAction: "hms"},
+			want:     Target{Path: filepath.Join(repo, "home/linux/default.nix"), Assignment: "home.packages", ApplyAction: "hms", NixInput: "nixpkgsUnstable"},
 		},
 		{
 			name:     "brew formula",
@@ -102,9 +102,9 @@ func TestResolveEditorTargetOwnsExplicitFallbackPolicy(t *testing.T) {
 		scope    Scope
 		want     Target
 	}{
-		{"known shared nix", "darwin", "mac", ProviderNix, KindPackage, ScopeShared, Target{Path: filepath.Join(repo, "home/modules/packages.nix"), Assignment: "home.packages", ApplyAction: "hms"}},
-		{"darwin host nix", "darwin", "mac", ProviderNix, KindPackage, ScopeHost, Target{Path: filepath.Join(repo, "hosts/mac/darwin.nix"), Assignment: "home.packages", ApplyAction: "nds"}},
-		{"linux host nix", "linux", "box", ProviderNix, KindPackage, ScopeHost, Target{Path: filepath.Join(repo, "hosts/box/home.nix"), Assignment: "home.packages", ApplyAction: "hms"}},
+		{"known shared nix", "darwin", "mac", ProviderNix, KindPackage, ScopeShared, Target{Path: filepath.Join(repo, "home/modules/packages.nix"), Assignment: "home.packages", ApplyAction: "hms", NixInput: "nixpkgs"}},
+		{"darwin host nix", "darwin", "mac", ProviderNix, KindPackage, ScopeHost, Target{Path: filepath.Join(repo, "hosts/mac/darwin.nix"), Assignment: "home.packages", ApplyAction: "nds", NixInput: "nixpkgs"}},
+		{"linux host nix", "linux", "box", ProviderNix, KindPackage, ScopeHost, Target{Path: filepath.Join(repo, "hosts/box/home.nix"), Assignment: "home.packages", ApplyAction: "hms", NixInput: "nixpkgs"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
