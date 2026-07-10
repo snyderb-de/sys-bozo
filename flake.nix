@@ -15,7 +15,7 @@
             pname = "sys-bozo";
             version = "dev";
             src = ./.;
-            vendorHash = "sha256-cuDmOnJis3VuLi957hXCtP43KagxcsNCVX51YSdLxl0=";
+            vendorHash = "sha256-hzF4U/qjdwh8L4I90P4x3GGtwZzD2lvmMe3HLIDETx4=";
             meta.mainProgram = "sys-bozo";
           };
         }

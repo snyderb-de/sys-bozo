@@ -2,8 +2,10 @@ package tui
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"time"
 
@@ -13,6 +15,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/snyderb-de/sys-bozo/internal/history"
+	"github.com/snyderb-de/sys-bozo/internal/packages"
 	"github.com/snyderb-de/sys-bozo/internal/runner"
 	"github.com/snyderb-de/sys-bozo/internal/system"
 )
@@ -57,11 +60,13 @@ const (
 	screenAudit
 	screenDoctor
 	screenHistory
+	screenPackage
 )
 
 type reviewedPlan struct {
-	Action string
-	Items  []runner.WorkItem
+	Action  string
+	Items   []runner.WorkItem
+	Package *packageReview
 }
 
 type stepResult struct {
@@ -126,6 +131,7 @@ type Model struct {
 	runElapsed       time.Duration
 	stepResults      []stepResult
 	resultLogVisible bool
+	revertErr        error
 
 	logLines  []logLine
 	logVP     viewport.Model
@@ -144,6 +150,13 @@ type Model struct {
 	configCursor  int
 	applyPrompt   bool // show apply-after-edit prompt
 	applyEditPath string
+
+	packageFlow          packageFlow
+	searchPackage        func(string) packages.SearchResult
+	applyPackage         func(packages.Proposal) (packages.AppliedEdit, error)
+	verifyPackage        func(packages.VerifySpec) packages.VerifyResult
+	proposePackageRevert func(packages.AppliedEdit) (packages.Proposal, error)
+	packageEditor        func(packageEditorRequest) tea.Cmd
 }
 
 func New() Model {
@@ -153,19 +166,29 @@ func New() Model {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(clrCyan)
+	searchPackage := func(query string) packages.SearchResult {
+		return packages.Search(context.Background(), packages.ExecRunner{}, ctx.NixBin, ctx.BrewBin, query)
+	}
+	verifyPackage := func(spec packages.VerifySpec) packages.VerifyResult {
+		return packages.Verify(context.Background(), packages.ExecRunner{}, exec.LookPath, spec)
+	}
 
 	return Model{
-		facts:        system.Probe(),
-		runCtx:       ctx,
-		tasks:        tasks,
-		screen:       screenHome,
-		styles:       newUIStyles(os.Getenv("NO_COLOR") != ""),
-		selected:     map[string]bool{},
-		tabs:         []string{"Dashboard", "Actions", "Config", "Audit", "Doctor"},
-		logFollow:    true,
-		spinner:      sp,
-		configFiles:  buildConfigFiles(ctx),
-		terminalExec: runInteractiveWork,
+		facts:                system.Probe(),
+		runCtx:               ctx,
+		tasks:                tasks,
+		screen:               screenHome,
+		styles:               newUIStyles(os.Getenv("NO_COLOR") != ""),
+		selected:             map[string]bool{},
+		tabs:                 []string{"Dashboard", "Actions", "Config", "Audit", "Doctor"},
+		logFollow:            true,
+		spinner:              sp,
+		configFiles:          buildConfigFiles(ctx),
+		terminalExec:         runInteractiveWork,
+		searchPackage:        searchPackage,
+		applyPackage:         packages.Apply,
+		verifyPackage:        verifyPackage,
+		proposePackageRevert: packages.ProposeRevert,
 	}
 }
 

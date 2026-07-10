@@ -14,7 +14,7 @@ var homeEntries = []struct {
 	target        screen
 }{
 	{"01", "WEEKLY MAINTENANCE", screenMaintenance},
-	{"02", "ADD PACKAGE", screenHome},
+	{"02", "ADD PACKAGE", screenPackage},
 	{"03", "INSPECT SYSTEM", screenInspect},
 }
 
@@ -40,6 +40,8 @@ func (m Model) View() string {
 		return m.viewDoctor()
 	case screenHistory:
 		return m.viewHistory()
+	case screenPackage:
+		return m.viewPackage()
 	}
 	return m.viewLegacy()
 }

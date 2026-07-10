@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"github.com/muesli/termenv"
 
 	"github.com/snyderb-de/sys-bozo/internal/history"
+	"github.com/snyderb-de/sys-bozo/internal/packages"
 	"github.com/snyderb-de/sys-bozo/internal/runner"
 	"github.com/snyderb-de/sys-bozo/internal/system"
 )
@@ -33,6 +35,671 @@ func testGuidedModel() Model {
 		terminalExec: func(runner.WorkItem, time.Time) tea.Cmd {
 			return nil
 		},
+	}
+}
+
+func testPackageModel(t *testing.T) Model {
+	t.Helper()
+	home := t.TempDir()
+	repo := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("DOTFILES_REPO", repo)
+	m := testGuidedModel()
+	m.runCtx.Repo = repo
+	m.searchPackage = func(string) packages.SearchResult { return packages.SearchResult{} }
+	m.applyPackage = func(packages.Proposal) (packages.AppliedEdit, error) { return packages.AppliedEdit{}, nil }
+	m.verifyPackage = func(packages.VerifySpec) packages.VerifyResult { return packages.VerifyResult{OK: true} }
+	m.proposePackageRevert = func(packages.AppliedEdit) (packages.Proposal, error) { return packages.Proposal{}, nil }
+	m.packageEditor = func(request packageEditorRequest) tea.Cmd {
+		return func() tea.Msg {
+			return packageEditorDoneMsg{target: request.target, original: request.original, proposed: request.original, candidate: request.candidate}
+		}
+	}
+	return m
+}
+
+func TestPackageSearchDefaultsToNixAndDoesNotWrite(t *testing.T) {
+	m := testPackageModel(t)
+	m.screen = screenPackage
+	m.packageFlow = packageFlow{stage: packageChoose, result: packages.SearchResult{
+		Candidates: []packages.Candidate{
+			{Provider: packages.ProviderNix, ID: "lazydocker", Name: "lazydocker"},
+			{Provider: packages.ProviderBrew, Kind: packages.KindFormula, ID: "lazydocker", Name: "lazydocker"},
+		},
+		Selected: 0,
+	}}
+	if got := m.packageFlow.result.Candidates[m.packageFlow.result.Selected].Provider; got != packages.ProviderNix {
+		t.Fatalf("provider=%s", got)
+	}
+	if len(m.queue) != 0 || m.mode == modeRunning {
+		t.Fatal("search must not execute")
+	}
+}
+
+func TestPackageReviewContainsDiffApplyAndVerify(t *testing.T) {
+	m := testPackageModel(t)
+	m.styles = newUIStyles(true)
+	m.width, m.height = 100, 36
+	proposal := packages.Proposal{
+		Diff:   "--- original\n+++ proposed\n+    lazydocker\n",
+		Target: packages.Target{Path: "/fixture/home/modules/packages.nix", ApplyAction: "hms"},
+	}
+	m.buildPackageReview(proposal, packages.VerifySpec{Executable: "lazydocker"})
+	if m.screen != screenReview || m.reviewed.Package == nil {
+		t.Fatal("missing package review")
+	}
+	out := m.View()
+	for _, want := range []string{"lazydocker", "home-manager", "VERIFY", "ENTER CONFIRM"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestConfirmPackageReviewAppliesOnlyAfterConfirmation(t *testing.T) {
+	m := testPackageModel(t)
+	called := false
+	m.applyPackage = func(packages.Proposal) (packages.AppliedEdit, error) {
+		called = true
+		return packages.AppliedEdit{}, nil
+	}
+	m.screen = screenReview
+	m.reviewed.Package = &packageReview{Proposal: packages.Proposal{}}
+	if called {
+		t.Fatal("apply called before confirmation")
+	}
+	cmd := m.confirmReviewedPlan()
+	if cmd == nil {
+		t.Fatal("confirmation did not schedule apply")
+	}
+	_ = cmd()
+	if !called {
+		t.Fatal("apply not called after confirmation")
+	}
+}
+
+func TestHomeAddPackageRunsInjectedSearchAndDefaultsToNix(t *testing.T) {
+	m := testPackageModel(t)
+	called := false
+	m.searchPackage = func(query string) packages.SearchResult {
+		called = true
+		if query != "lazydocker" {
+			t.Fatalf("query=%q", query)
+		}
+		return packages.SearchResult{Candidates: []packages.Candidate{
+			{Provider: packages.ProviderBrew, Kind: packages.KindFormula, ID: "lazydocker", Name: "lazydocker"},
+			{Provider: packages.ProviderNix, Kind: packages.KindPackage, ID: "lazydocker", Name: "lazydocker"},
+		}}
+	}
+
+	next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
+	m = next.(Model)
+	if cmd != nil || m.screen != screenPackage || m.packageFlow.stage != packageSearch {
+		t.Fatalf("cmd=%v screen=%v stage=%v", cmd, m.screen, m.packageFlow.stage)
+	}
+	for _, r := range "lazydocker" {
+		next, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = next.(Model)
+	}
+	next, cmd = m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+	if cmd == nil || called || m.packageFlow.stage != packageSearching || len(m.queue) != 0 || m.mode == modeRunning {
+		t.Fatalf("cmd=%v called=%v stage=%v queue=%v mode=%v", cmd, called, m.packageFlow.stage, m.queue, m.mode)
+	}
+
+	next, nextCmd := m.Update(cmd())
+	m = next.(Model)
+	if nextCmd != nil || !called || m.packageFlow.stage != packageChoose || m.packageFlow.result.Selected != 1 {
+		t.Fatalf("cmd=%v called=%v stage=%v selected=%d", nextCmd, called, m.packageFlow.stage, m.packageFlow.result.Selected)
+	}
+	if len(m.queue) != 0 || m.mode == modeRunning {
+		t.Fatal("search executed package work")
+	}
+}
+
+func TestPackagePlacementBuildsProposalWithoutWritingAndDefaultsMisc(t *testing.T) {
+	m := testPackageModel(t)
+	path := filepath.Join(m.runCtx.Repo, "home", "modules", "packages.nix")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original := []byte("{ pkgs, ... }:\n{\n  home.packages = with pkgs; [\n    # Core\n    git\n\n    # Misc\n    yazi\n  ];\n}\n")
+	if err := os.WriteFile(path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m.screen = screenPackage
+	m.packageFlow = packageFlow{
+		stage: packageChoose,
+		result: packages.SearchResult{Candidates: []packages.Candidate{{
+			Provider: packages.ProviderNix,
+			Kind:     packages.KindPackage,
+			ID:       "lazydocker",
+			Name:     "lazydocker",
+		}}, Selected: 0},
+	}
+
+	next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+	if cmd != nil || m.packageFlow.stage != packagePlacement || m.packageFlow.scope != packages.ScopeShared {
+		t.Fatalf("cmd=%v stage=%v scope=%q", cmd, m.packageFlow.stage, m.packageFlow.scope)
+	}
+	next, cmd = m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+	if cmd != nil || !m.packageFlow.placingSection || m.packageFlow.sections[m.packageFlow.section] != "Misc" {
+		t.Fatalf("cmd=%v placingSection=%v sections=%v section=%d", cmd, m.packageFlow.placingSection, m.packageFlow.sections, m.packageFlow.section)
+	}
+	next, cmd = m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+	if cmd != nil || m.screen != screenReview || m.reviewed.Package == nil || m.mode == modeRunning || len(m.queue) != 0 {
+		t.Fatalf("cmd=%v screen=%v reviewed=%#v mode=%v queue=%v", cmd, m.screen, m.reviewed, m.mode, m.queue)
+	}
+	if !strings.Contains(m.reviewed.Package.Proposal.Diff, "+    lazydocker") {
+		t.Fatalf("diff=%q", m.reviewed.Package.Proposal.Diff)
+	}
+	if m.reviewed.Package.Verify.Provider != packages.ProviderNix || m.reviewed.Package.Verify.Executable != "lazydocker" {
+		t.Fatalf("verify=%#v", m.reviewed.Package.Verify)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, original) {
+		t.Fatalf("declaration changed before confirmation:\n%s", got)
+	}
+}
+
+func TestConfirmedPackageRunsApplyThenReviewedQueueThenVerify(t *testing.T) {
+	m := testPackageModel(t)
+	m.tasks = []runner.Task{{
+		ID:        "hms",
+		Available: func(runner.Context) bool { return true },
+		Steps: []runner.Step{{
+			Mode:      runner.ExecutionInteractive,
+			Retryable: true,
+			Cmd: func(runner.Context) (string, []string) {
+				return "fixture-hms", []string{"--safe"}
+			},
+		}},
+	}}
+	path := filepath.Join(m.runCtx.Repo, "home", "modules", "packages.nix")
+	proposal := packages.Proposal{Target: packages.Target{Path: path, ApplyAction: "hms"}}
+	edit := packages.AppliedEdit{Path: path, Before: []byte("before"), After: []byte("after")}
+	order := []string{}
+	m.applyPackage = func(got packages.Proposal) (packages.AppliedEdit, error) {
+		order = append(order, "apply")
+		return edit, nil
+	}
+	m.terminalExec = func(item runner.WorkItem, _ time.Time) tea.Cmd {
+		order = append(order, "rebuild:"+runner.CmdLabel(item))
+		return func() tea.Msg { return stepDoneMsg{elapsed: time.Second} }
+	}
+	m.verifyPackage = func(spec packages.VerifySpec) packages.VerifyResult {
+		order = append(order, "verify:"+spec.Executable)
+		return packages.VerifyResult{OK: true, Path: "/fixture/bin/lazydocker", Detail: "fixture verified"}
+	}
+	m.buildPackageReview(proposal, packages.VerifySpec{Provider: packages.ProviderNix, Kind: packages.KindPackage, Executable: "lazydocker"})
+
+	cmd := m.confirmReviewedPlan()
+	if cmd == nil || len(order) != 0 {
+		t.Fatalf("confirmation cmd=%v order=%v", cmd, order)
+	}
+	next, cmd := m.Update(cmd())
+	m = next.(Model)
+	if cmd == nil || strings.Join(order, ",") != "apply,rebuild:fixture-hms --safe" || m.reviewed.Package.Applied == nil {
+		t.Fatalf("after apply cmd=%v order=%v package=%#v", cmd, order, m.reviewed.Package)
+	}
+	next, cmd = m.Update(cmd())
+	m = next.(Model)
+	if cmd == nil || m.mode != modeRunning || strings.Contains(strings.Join(order, ","), "verify") {
+		t.Fatalf("after rebuild cmd=%v mode=%v order=%v", cmd, m.mode, order)
+	}
+	next, cmd = m.Update(cmd())
+	m = next.(Model)
+	if cmd != nil || m.screen != screenResult || m.mode != modeDone || m.runErr != nil {
+		t.Fatalf("after verify cmd=%v screen=%v mode=%v err=%v", cmd, m.screen, m.mode, m.runErr)
+	}
+	if got := strings.Join(order, ","); got != "apply,rebuild:fixture-hms --safe,verify:lazydocker" {
+		t.Fatalf("order=%q", got)
+	}
+	if m.reviewed.Package.Result == nil || !m.reviewed.Package.Result.OK {
+		t.Fatalf("verification result=%#v", m.reviewed.Package.Result)
+	}
+}
+
+func TestPackageApplyFailureStopsBeforeRebuildAndVerify(t *testing.T) {
+	m := testPackageModel(t)
+	m.tasks = []runner.Task{{ID: "hms", Available: func(runner.Context) bool { return true }, Steps: []runner.Step{{
+		Mode: runner.ExecutionInteractive,
+		Cmd:  func(runner.Context) (string, []string) { return "never-run", nil },
+	}}}}
+	wantErr := errors.New("fixture stale apply")
+	m.applyPackage = func(packages.Proposal) (packages.AppliedEdit, error) { return packages.AppliedEdit{}, wantErr }
+	rebuildCalled := false
+	m.terminalExec = func(runner.WorkItem, time.Time) tea.Cmd { rebuildCalled = true; return nil }
+	verifyCalled := false
+	m.verifyPackage = func(packages.VerifySpec) packages.VerifyResult {
+		verifyCalled = true
+		return packages.VerifyResult{OK: true}
+	}
+	m.buildPackageReview(packages.Proposal{Target: packages.Target{ApplyAction: "hms"}}, packages.VerifySpec{Executable: "fixture"})
+
+	cmd := m.confirmReviewedPlan()
+	next, nextCmd := m.Update(cmd())
+	got := next.(Model)
+	if nextCmd != nil || got.screen != screenResult || got.mode != modeDone || !errors.Is(got.runErr, wantErr) {
+		t.Fatalf("cmd=%v screen=%v mode=%v err=%v", nextCmd, got.screen, got.mode, got.runErr)
+	}
+	if rebuildCalled || verifyCalled {
+		t.Fatalf("rebuild=%v verify=%v", rebuildCalled, verifyCalled)
+	}
+}
+
+func TestPackageRebuildFailureOffersHashGatedRevertReviewWithoutWriting(t *testing.T) {
+	m := testPackageModel(t)
+	path := filepath.Join(m.runCtx.Repo, "home", "modules", "packages.nix")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	before := []byte("before\n")
+	after := []byte("after\n")
+	if err := os.WriteFile(path, after, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	applied := packages.AppliedEdit{
+		Path:       path,
+		Before:     before,
+		After:      after,
+		BeforeHash: sha256.Sum256(before),
+		AfterHash:  sha256.Sum256(after),
+	}
+	m.proposePackageRevert = packages.ProposeRevert
+	m.styles = newUIStyles(true)
+	m.screen = screenResult
+	m.mode = modeDone
+	m.runErr = errors.New("fixture rebuild failed")
+	m.reviewed = reviewedPlan{
+		Action: "hms",
+		Items:  []runner.WorkItem{{Name: "fixture-hms", Retryable: true}},
+		Package: &packageReview{
+			Proposal: packages.Proposal{Target: packages.Target{Path: path, ApplyAction: "hms"}},
+			Applied:  &applied,
+		},
+	}
+	m.queue = cloneWorkItems(m.reviewed.Items)
+	m.stepResults = []stepResult{{Item: m.queue[0], Status: history.StatusFailure, Err: m.runErr}}
+
+	if out := m.View(); !strings.Contains(out, "REVIEW REVERT") {
+		t.Fatalf("missing revert offer:\n%s", out)
+	}
+	next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'v'}})
+	got := next.(Model)
+	if cmd != nil || got.screen != screenReview || got.mode != modeView || got.reviewed.Package == nil || !got.reviewed.Package.Revert {
+		t.Fatalf("cmd=%v screen=%v mode=%v package=%#v", cmd, got.screen, got.mode, got.reviewed.Package)
+	}
+	if !strings.Contains(got.reviewed.Package.Proposal.Diff, "-after") || !strings.Contains(got.reviewed.Package.Proposal.Diff, "+before") {
+		t.Fatalf("reverse diff=%q", got.reviewed.Package.Proposal.Diff)
+	}
+	current, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(current, after) {
+		t.Fatalf("revert wrote before confirmation: %q", current)
+	}
+}
+
+func TestPackageRevertReviewRejectsStaleDeclaration(t *testing.T) {
+	m := testPackageModel(t)
+	path := filepath.Join(m.runCtx.Repo, "packages.nix")
+	after := []byte("reviewed\n")
+	if err := os.WriteFile(path, []byte("changed later\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	applied := packages.AppliedEdit{Path: path, Before: []byte("before\n"), After: after, AfterHash: sha256.Sum256(after)}
+	m.proposePackageRevert = packages.ProposeRevert
+	m.screen, m.mode = screenResult, modeDone
+	m.runErr = errors.New("fixture rebuild failed")
+	m.reviewed = reviewedPlan{Package: &packageReview{Proposal: packages.Proposal{Target: packages.Target{ApplyAction: "hms"}}, Applied: &applied}}
+
+	next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'v'}})
+	got := next.(Model)
+	if cmd != nil || got.screen != screenResult || !errors.Is(got.revertErr, packages.ErrStaleFile) {
+		t.Fatalf("cmd=%v screen=%v revertErr=%v", cmd, got.screen, got.revertErr)
+	}
+}
+
+func TestAmbiguousPackageTargetUsesInjectedEditorAndResumesReviewWithoutWriting(t *testing.T) {
+	m := testPackageModel(t)
+	path := filepath.Join(m.runCtx.Repo, "home", "modules", "packages.nix")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original := []byte("{ pkgs, ... }:\n{\n  home.packages = [ pkgs.yazi ];\n}\n")
+	if err := os.WriteFile(path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	editorCalled := false
+	m.packageEditor = func(request packageEditorRequest) tea.Cmd {
+		editorCalled = true
+		if request.target.Path != path || !reflect.DeepEqual(request.original, original) {
+			t.Fatalf("editor request=%#v", request)
+		}
+		proposed := []byte("{ pkgs, ... }:\n{\n  home.packages = [ pkgs.yazi pkgs.lazydocker ];\n}\n")
+		return func() tea.Msg {
+			return packageEditorDoneMsg{target: request.target, original: request.original, proposed: proposed, candidate: request.candidate}
+		}
+	}
+	m.screen = screenPackage
+	m.packageFlow = packageFlow{stage: packageChoose, result: packages.SearchResult{Candidates: []packages.Candidate{{
+		Provider: packages.ProviderNix, Kind: packages.KindPackage, ID: "lazydocker", Name: "lazydocker",
+	}}, Selected: 0}}
+
+	next, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+	next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+	if cmd == nil || !editorCalled || m.screen != screenPackage || m.screen == screenReview {
+		t.Fatalf("cmd=%v editor=%v screen=%v", cmd, editorCalled, m.screen)
+	}
+	current, err := os.ReadFile(path)
+	if err != nil || !reflect.DeepEqual(current, original) {
+		t.Fatalf("real declaration changed before editor return: %q err=%v", current, err)
+	}
+	next, nextCmd := m.Update(cmd())
+	got := next.(Model)
+	if nextCmd != nil || got.screen != screenReview || got.reviewed.Package == nil {
+		t.Fatalf("cmd=%v screen=%v reviewed=%#v", nextCmd, got.screen, got.reviewed)
+	}
+	if !strings.Contains(got.reviewed.Package.Proposal.Diff, "+{ pkgs, ... }") || !strings.Contains(got.reviewed.Package.Proposal.Diff, "pkgs.lazydocker") {
+		t.Fatalf("editor diff=%q", got.reviewed.Package.Proposal.Diff)
+	}
+	current, err = os.ReadFile(path)
+	if err != nil || !reflect.DeepEqual(current, original) {
+		t.Fatalf("real declaration changed before review confirmation: %q err=%v", current, err)
+	}
+}
+
+func TestUnsupportedPackageScopeAlwaysUsesEditorHandoff(t *testing.T) {
+	m := testPackageModel(t)
+	m.runCtx.OS = "darwin"
+	m.runCtx.Hostname = "fixture-host"
+	path := filepath.Join(m.runCtx.Repo, "hosts", m.runCtx.Hostname, "darwin.nix")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original := []byte("{ pkgs, ... }:\n{\n  home.packages = with pkgs; [\n    # Misc\n    yazi\n  ];\n}\n")
+	if err := os.WriteFile(path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	editorCalled := false
+	m.packageEditor = func(request packageEditorRequest) tea.Cmd {
+		editorCalled = true
+		return func() tea.Msg {
+			return packageEditorDoneMsg{target: request.target, original: request.original, proposed: append(request.original, []byte("# editor fixture\n")...), candidate: request.candidate}
+		}
+	}
+	m.screen = screenPackage
+	m.packageFlow = packageFlow{stage: packagePlacement, scope: packages.ScopeHost, result: packages.SearchResult{Candidates: []packages.Candidate{{
+		Provider: packages.ProviderNix, Kind: packages.KindPackage, ID: "lazydocker", Name: "lazydocker",
+	}}, Selected: 0}}
+
+	next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(Model)
+	if cmd == nil || !editorCalled || got.packageFlow.placingSection || got.screen != screenPackage {
+		t.Fatalf("cmd=%v editor=%v placingSection=%v screen=%v", cmd, editorCalled, got.packageFlow.placingSection, got.screen)
+	}
+	current, err := os.ReadFile(path)
+	if err != nil || !reflect.DeepEqual(current, original) {
+		t.Fatalf("unsupported handoff changed declaration: %q err=%v", current, err)
+	}
+}
+
+func TestPackageWorkflowViewsFit80x24AndPreserveNoColorSemantics(t *testing.T) {
+	base := testPackageModel(t)
+	base.width, base.height = 80, 24
+	base.styles = newUIStyles(true)
+	base.screen = screenPackage
+	base.packageFlow = newPackageFlow(base.width)
+	base.packageFlow.query.SetValue("lazy")
+	candidates := []packages.Candidate{
+		{Provider: packages.ProviderNix, Kind: packages.KindPackage, ID: "lazydocker", Name: "lazydocker", Version: "0.24.1", Description: "Terminal UI for Docker"},
+		{Provider: packages.ProviderBrew, Kind: packages.KindFormula, ID: "lazydocker", Name: "lazydocker", Description: "Homebrew formula"},
+	}
+	for i := 0; i < 10; i++ {
+		candidates = append(candidates, packages.Candidate{Provider: packages.ProviderBrew, Kind: packages.KindFormula, ID: fmt.Sprintf("fixture-%02d", i), Name: fmt.Sprintf("fixture-%02d", i)})
+	}
+	proposal := packages.Proposal{
+		Target: packages.Target{Path: "/fixture/" + strings.Repeat("long/", 10) + "packages.nix", ApplyAction: "hms"},
+		Diff:   "--- original\n+++ proposed\n@@ -1,5 +1,6 @@\n home.packages = [\n   # Misc\n+  lazydocker\n ];\n",
+	}
+
+	cases := []struct {
+		name  string
+		setup func(*Model)
+		want  []string
+	}{
+		{"search", func(m *Model) {}, []string{"ADD/PACKAGE", "DECLARATIVE INSTALL", "SEARCH"}},
+		{"results", func(m *Model) {
+			m.packageFlow.stage = packageChoose
+			m.packageFlow.result = packages.SearchResult{Candidates: candidates, Selected: 0}
+		}, []string{"RESULTS", "NIX", "BREW", "DEFAULT", "lazydocker"}},
+		{"placement", func(m *Model) {
+			m.packageFlow = packageFlow{stage: packagePlacement, result: packages.SearchResult{Candidates: candidates}, scope: packages.ScopeShared, sections: []string{"Core", "Misc"}, section: 1, placingSection: true}
+		}, []string{"PLACEMENT", "PROVIDER", "SCOPE", "SHARED", "SECTION", "Misc"}},
+		{"review", func(m *Model) {
+			m.tasks = []runner.Task{{ID: "hms", Available: func(runner.Context) bool { return true }, Steps: []runner.Step{{Cmd: func(runner.Context) (string, []string) {
+				return "home-manager", []string{"switch", "--flake", ".#fixture"}
+			}}}}}
+			m.buildPackageReview(proposal, packages.VerifySpec{Provider: packages.ProviderNix, Kind: packages.KindPackage, Executable: "lazydocker"})
+		}, []string{"REVIEW/PACKAGE", "lazydocker", "home-manager", "VERIFY", "ENTER CONFIRM"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := base
+			tc.setup(&m)
+			out := m.View()
+			if os.Getenv("PACKAGE_VISUAL_LOG") != "" {
+				t.Logf("\n%s", out)
+			}
+			if strings.Contains(out, "\x1b[") {
+				t.Fatalf("NO_COLOR output contains ANSI: %q", out)
+			}
+			if got := lipgloss.Width(out); got > 80 {
+				t.Fatalf("width=%d want <=80:\n%s", got, out)
+			}
+			if got := strings.Count(out, "\n") + 1; got > 24 {
+				t.Fatalf("height=%d want <=24:\n%s", got, out)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(out, want) {
+					t.Fatalf("missing %q:\n%s", want, out)
+				}
+			}
+			if tc.name == "review" && strings.Index(out, "@@ -1,5 +1,6 @@") > strings.Index(out, "+  lazydocker") {
+				t.Fatalf("compact diff reordered hunk and addition:\n%s", out)
+			}
+		})
+	}
+}
+
+func TestPackageWorkflowFakeRepoSmoke(t *testing.T) {
+	m := testPackageModel(t)
+	path := filepath.Join(m.runCtx.Repo, "home", "modules", "packages.nix")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original := []byte("{ pkgs, ... }:\n{\n  home.packages = with pkgs; [\n    # Misc\n    yazi\n  ];\n}\n")
+	if err := os.WriteFile(path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m.tasks = []runner.Task{{ID: "hms", Available: func(runner.Context) bool { return true }, Steps: []runner.Step{{
+		Mode: runner.ExecutionInteractive, Retryable: true,
+		Cmd: func(runner.Context) (string, []string) { return "fixture-hms", []string{"--safe"} },
+	}}}}
+	m.searchPackage = func(query string) packages.SearchResult {
+		if query != "lazydocker" {
+			t.Fatalf("query=%q", query)
+		}
+		return packages.SearchResult{Candidates: []packages.Candidate{{
+			Provider: packages.ProviderNix, Kind: packages.KindPackage, ID: "lazydocker", Name: "lazydocker",
+		}}}
+	}
+	m.applyPackage = func(proposal packages.Proposal) (packages.AppliedEdit, error) {
+		if proposal.Target.Path != path {
+			t.Fatalf("apply path=%q", proposal.Target.Path)
+		}
+		return packages.Apply(proposal)
+	}
+	rebuilds := 0
+	m.terminalExec = func(item runner.WorkItem, _ time.Time) tea.Cmd {
+		rebuilds++
+		if runner.CmdLabel(item) != "fixture-hms --safe" {
+			t.Fatalf("rebuild=%q", runner.CmdLabel(item))
+		}
+		return func() tea.Msg { return stepDoneMsg{elapsed: time.Second} }
+	}
+	verifications := 0
+	m.verifyPackage = func(spec packages.VerifySpec) packages.VerifyResult {
+		verifications++
+		got, err := os.ReadFile(path)
+		if err != nil || !strings.Contains(string(got), "lazydocker") {
+			t.Fatalf("verify saw declaration=%q err=%v", got, err)
+		}
+		return packages.VerifyResult{OK: true, Path: "/fixture/bin/lazydocker", Detail: "fixture executable verified"}
+	}
+
+	m.openPackageFlow()
+	m.packageFlow.query.SetValue("lazydocker")
+	next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+	next, _ = m.Update(cmd())
+	m = next.(Model)
+	for range 3 {
+		next, cmd = m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+		m = next.(Model)
+		if cmd != nil {
+			t.Fatalf("pre-review command=%v", cmd)
+		}
+	}
+	if m.screen != screenReview || m.reviewed.Package == nil {
+		t.Fatalf("screen=%v reviewed=%#v", m.screen, m.reviewed)
+	}
+	if got, err := os.ReadFile(path); err != nil || !reflect.DeepEqual(got, original) {
+		t.Fatalf("fixture changed before confirmation: %q err=%v", got, err)
+	}
+
+	cmd = m.confirmReviewedPlan()
+	next, cmd = m.Update(cmd())
+	m = next.(Model)
+	if cmd == nil || rebuilds != 1 || verifications != 0 {
+		t.Fatalf("after apply cmd=%v rebuilds=%d verifies=%d", cmd, rebuilds, verifications)
+	}
+	next, cmd = m.Update(cmd())
+	m = next.(Model)
+	if cmd == nil || verifications != 0 {
+		t.Fatalf("after rebuild cmd=%v verifies=%d", cmd, verifications)
+	}
+	next, cmd = m.Update(cmd())
+	m = next.(Model)
+	if cmd != nil || m.screen != screenResult || m.mode != modeDone || m.runErr != nil || rebuilds != 1 || verifications != 1 {
+		t.Fatalf("cmd=%v screen=%v mode=%v err=%v rebuilds=%d verifies=%d", cmd, m.screen, m.mode, m.runErr, rebuilds, verifications)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || !strings.Contains(string(got), "lazydocker") {
+		t.Fatalf("final declaration=%q err=%v", got, err)
+	}
+}
+
+func TestPackageVerificationFailureEntersResultAndKeepsDeclaration(t *testing.T) {
+	m := testPackageModel(t)
+	path := filepath.Join(m.runCtx.Repo, "packages.nix")
+	if err := os.WriteFile(path, []byte("declared\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wantErr := errors.New("fixture executable missing")
+	m.screen, m.mode = screenRunning, modeRunning
+	m.runStart = time.Now()
+	m.reviewed = reviewedPlan{Package: &packageReview{Result: nil, Applied: &packages.AppliedEdit{Path: path}}}
+
+	next, cmd := m.Update(packageVerifiedMsg{result: packages.VerifyResult{Detail: "missing", Err: wantErr}})
+	got := next.(Model)
+	if cmd != nil || got.screen != screenResult || got.mode != modeDone || !errors.Is(got.runErr, wantErr) {
+		t.Fatalf("cmd=%v screen=%v mode=%v err=%v", cmd, got.screen, got.mode, got.runErr)
+	}
+	if current, err := os.ReadFile(path); err != nil || string(current) != "declared\n" {
+		t.Fatalf("verification failure changed declaration: %q err=%v", current, err)
+	}
+}
+
+func TestPackageRetryReviewsFailedTailWithoutReapplyingDeclaration(t *testing.T) {
+	m := testPackageModel(t)
+	items := []runner.WorkItem{
+		{Name: "completed", Retryable: true},
+		{Name: "fixture-rebuild", Args: []string{"--safe"}, Mode: runner.ExecutionInteractive, Retryable: true},
+	}
+	applied := packages.AppliedEdit{Path: "/fixture/packages.nix", Before: []byte("before"), After: []byte("after")}
+	m.screen, m.mode = screenResult, modeDone
+	m.runErr = errors.New("fixture rebuild failed")
+	m.queue = cloneWorkItems(items)
+	m.reviewed = reviewedPlan{
+		Action: "hms",
+		Items:  cloneWorkItems(items),
+		Package: &packageReview{
+			Proposal: packages.Proposal{Target: packages.Target{ApplyAction: "hms"}},
+			Applied:  &applied,
+			Verify:   packages.VerifySpec{Executable: "fixture"},
+		},
+	}
+	m.stepResults = []stepResult{
+		{Item: items[0], Status: history.StatusSuccess},
+		{Item: items[1], Status: history.StatusFailure, Err: m.runErr},
+	}
+	applyCalled := false
+	m.applyPackage = func(packages.Proposal) (packages.AppliedEdit, error) {
+		applyCalled = true
+		return packages.AppliedEdit{}, nil
+	}
+	rebuildCalled := false
+	m.terminalExec = func(item runner.WorkItem, _ time.Time) tea.Cmd {
+		rebuildCalled = true
+		return func() tea.Msg { return stepDoneMsg{} }
+	}
+
+	next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	got := next.(Model)
+	if cmd != nil || got.screen != screenReview || got.reviewed.Package == nil || got.reviewed.Package.Applied == nil || len(got.reviewed.Items) != 1 {
+		t.Fatalf("cmd=%v screen=%v reviewed=%#v", cmd, got.screen, got.reviewed)
+	}
+	next, cmd = got.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	confirmed := next.(Model)
+	if cmd == nil || !rebuildCalled || applyCalled || confirmed.screen != screenRunning || confirmed.mode != modeRunning {
+		t.Fatalf("cmd=%v rebuild=%v apply=%v screen=%v mode=%v", cmd, rebuildCalled, applyCalled, confirmed.screen, confirmed.mode)
+	}
+}
+
+func TestPackageReviewClonesProposalVerifyAndAppliedSnapshots(t *testing.T) {
+	m := testPackageModel(t)
+	original := []byte("original")
+	proposed := []byte("proposed")
+	args := []string{"--version"}
+	proposal := packages.Proposal{Original: original, Proposed: proposed, Target: packages.Target{ApplyAction: "hms"}}
+	verify := packages.VerifySpec{Executable: "fixture", VersionArgs: args}
+	m.buildPackageReview(proposal, verify)
+	original[0], proposed[0], args[0] = 'X', 'Y', "mutated"
+	if string(m.reviewed.Package.Proposal.Original) != "original" || string(m.reviewed.Package.Proposal.Proposed) != "proposed" || m.reviewed.Package.Verify.VersionArgs[0] != "--version" {
+		t.Fatalf("review aliases input: %#v", m.reviewed.Package)
+	}
+
+	captured := packages.Proposal{}
+	m.applyPackage = func(got packages.Proposal) (packages.AppliedEdit, error) {
+		captured = got
+		return packages.AppliedEdit{}, nil
+	}
+	cmd := m.confirmReviewedPlan()
+	m.reviewed.Package.Proposal.Original[0] = 'Z'
+	_ = cmd()
+	if string(captured.Original) != "original" {
+		t.Fatalf("scheduled apply aliases review: %q", captured.Original)
 	}
 }
 
@@ -599,19 +1266,19 @@ func TestFullyProvisionedDarwinMaintenanceFits80By24(t *testing.T) {
 	}
 }
 
-func TestHomeNavigationSkipsLockedPackageAndRoutesAvailableEntries(t *testing.T) {
+func TestHomeNavigationRoutesAvailableEntries(t *testing.T) {
 	m := testGuidedModel()
 
 	next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyDown})
 	got := next.(Model)
-	if cmd != nil || got.screen != screenHome || got.homeCursor != 2 {
+	if cmd != nil || got.screen != screenHome || got.homeCursor != 1 {
 		t.Fatalf("down: cmd=%v screen=%v cursor=%d", cmd, got.screen, got.homeCursor)
 	}
 
 	next, cmd = m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
 	got = next.(Model)
-	if cmd != nil || got.screen != screenHome {
-		t.Fatalf("locked shortcut: cmd=%v screen=%v", cmd, got.screen)
+	if cmd != nil || got.screen != screenPackage {
+		t.Fatalf("package shortcut: cmd=%v screen=%v", cmd, got.screen)
 	}
 
 	next, cmd = m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
@@ -1288,7 +1955,7 @@ func TestHomeNumericShortcutsUseLaunchEntries(t *testing.T) {
 		wantScreen screen
 	}{
 		{key: '1', wantScreen: screenMaintenance},
-		{key: '2', wantScreen: screenHome},
+		{key: '2', wantScreen: screenPackage},
 		{key: '3', wantScreen: screenInspect},
 	}
 	for _, tt := range tests {

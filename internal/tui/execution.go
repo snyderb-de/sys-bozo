@@ -62,9 +62,21 @@ func (m Model) hasAvailableSelection() bool {
 }
 
 func (m *Model) confirmReviewedPlan() tea.Cmd {
+	if m.reviewed.Package != nil {
+		m.beginReviewedRun()
+		if m.reviewed.Package.Applied != nil && !m.reviewed.Package.Revert {
+			return m.advanceQueue()
+		}
+		return m.applyPackageCmd(m.reviewed.Package.Proposal)
+	}
 	if len(m.reviewed.Items) == 0 {
 		return nil
 	}
+	m.beginReviewedRun()
+	return tea.Batch(m.advanceQueue(), m.spinner.Tick)
+}
+
+func (m *Model) beginReviewedRun() {
 	m.queue = cloneWorkItems(m.reviewed.Items)
 	m.queuePos = 0
 	m.mode = modeRunning
@@ -79,7 +91,6 @@ func (m *Model) confirmReviewedPlan() tea.Cmd {
 	m.logLines = nil
 	m.logFollow = true
 	m.logVP = viewport.New(m.logWidth(), m.logHeight())
-	return tea.Batch(m.advanceQueue(), m.spinner.Tick)
 }
 
 func cloneWorkItems(items []runner.WorkItem) []runner.WorkItem {
@@ -154,6 +165,18 @@ func (m Model) runSudoPreflight(sudoBin string) tea.Cmd {
 
 func (m *Model) advanceQueue() tea.Cmd {
 	if m.queuePos >= len(m.queue) {
+		if m.reviewed.Package != nil && m.reviewed.Package.Applied != nil && !m.reviewed.Package.verificationStarted {
+			m.reviewed.Package = clonePackageReview(m.reviewed.Package)
+			if m.reviewed.Package.Revert {
+				elapsed := time.Since(m.runStart)
+				m.logLines = append(m.logLines, logLine{kind: logSuccess, text: "  ✓ previous declaration restored"})
+				m.finishRun(nil, false, elapsed)
+				return nil
+			}
+			m.reviewed.Package.verificationStarted = true
+			m.logLines = append(m.logLines, logLine{kind: logHeader, text: "  ● verify package"})
+			return m.verifyPackageCmd(m.reviewed.Package.Verify)
+		}
 		elapsed := time.Since(m.runStart)
 		m.logLines = append(m.logLines, logLine{kind: logHeader, text: ""})
 		m.logLines = append(m.logLines, logLine{kind: logSuccess,

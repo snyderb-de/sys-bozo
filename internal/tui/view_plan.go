@@ -83,6 +83,9 @@ func (m Model) viewMaintenance() string {
 }
 
 func (m Model) viewReview() string {
+	if m.reviewed.Package != nil {
+		return m.viewPackageReview()
+	}
 	contentWidth := primaryContentWidth(m.width)
 	s := m.styles
 
@@ -241,6 +244,18 @@ func (m Model) viewResult() string {
 		s.label.Render("HISTORY ") + statusText(s, strings.ToUpper(string(historyStatus)), kind),
 		"",
 	}
+	if m.reviewed.Package != nil && m.reviewed.Package.Result != nil {
+		verifyKind := statusDanger
+		verifyState := "FAILED"
+		if m.reviewed.Package.Result.OK {
+			verifyKind = statusSuccess
+			verifyState = "DONE"
+		}
+		rows = append(rows,
+			s.label.Render("VERIFY ")+statusText(s, verifyState, verifyKind)+"  "+s.text.Render(truncateVisible(m.reviewed.Package.Result.Detail, max(1, contentWidth-20))),
+			"",
+		)
+	}
 	if m.resultLogVisible {
 		rows = append(rows, majorRule(s, contentWidth, false), "", s.label.Render("OUTPUT"), m.logVP.View(), "", majorRule(s, contentWidth, false), "", s.muted.Render(m.resultFooter(true)))
 		return primaryFrame(s, m.width, strings.Join(rows, "\n"))
@@ -278,6 +293,9 @@ func (m Model) viewResult() string {
 	}
 	if m.runErr != nil && !renderedError {
 		rows = append(rows, resultErrorRows(s, m.runErr.Error(), contentWidth, m.height > 0 && m.height <= 24)...)
+	}
+	if m.revertErr != nil {
+		rows = append(rows, resultErrorRows(s, "revert review unavailable: "+m.revertErr.Error(), contentWidth, m.height > 0 && m.height <= 24)...)
 	}
 	rows = append(rows, "", majorRule(s, contentWidth, false), "", s.muted.Render(m.resultFooter(false)))
 	return primaryFrame(s, m.width, strings.Join(rows, "\n"))
@@ -335,6 +353,9 @@ func (m Model) resultFooter(logVisible bool) string {
 	}
 	if _, ok := m.retryStart(); ok {
 		parts = append(parts, "R REVIEW RETRY")
+	}
+	if m.packageCanRevert() {
+		parts = append(parts, "V REVIEW REVERT")
 	}
 	parts = append(parts, "ESCAPE BACK", "Q CLOSE")
 	return strings.Join(parts, "   ")

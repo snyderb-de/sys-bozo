@@ -38,6 +38,59 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 
+	case packageSearchMsg:
+		m.acceptPackageSearch(msg.result)
+		return m, nil
+
+	case packageAppliedMsg:
+		if msg.err != nil {
+			m.finishRun(msg.err, false, time.Since(m.runStart))
+			return m, nil
+		}
+		if m.reviewed.Package == nil {
+			err := fmt.Errorf("package apply completed without reviewed package")
+			m.finishRun(err, false, time.Since(m.runStart))
+			return m, nil
+		}
+		m.reviewed.Package = clonePackageReview(m.reviewed.Package)
+		edit := cloneAppliedEdit(msg.edit)
+		m.reviewed.Package.Applied = &edit
+		return m, m.advanceQueue()
+
+	case packageVerifiedMsg:
+		if m.reviewed.Package == nil {
+			err := fmt.Errorf("package verification completed without reviewed package")
+			m.finishRun(err, false, time.Since(m.runStart))
+			return m, nil
+		}
+		m.reviewed.Package = clonePackageReview(m.reviewed.Package)
+		result := msg.result
+		m.reviewed.Package.Result = &result
+		if !result.OK {
+			err := result.Err
+			if err == nil {
+				err = fmt.Errorf("package verification failed: %s", result.Detail)
+			}
+			m.finishRun(err, false, time.Since(m.runStart))
+			return m, nil
+		}
+		m.finishRun(nil, false, time.Since(m.runStart))
+		return m, nil
+
+	case packageEditorDoneMsg:
+		if msg.err != nil {
+			m.packageFlow.err = fmt.Errorf("package editor handoff: %w", msg.err)
+			return m, nil
+		}
+		if string(msg.original) == string(msg.proposed) {
+			m.packageFlow.err = fmt.Errorf("package editor made no changes")
+			return m, nil
+		}
+		proposal := packageReplacementProposal(msg.target, msg.original, msg.proposed)
+		m.packageFlow.proposal = clonePackageProposal(proposal)
+		m.buildPackageReview(proposal, packageVerifySpec(msg.candidate, m.runCtx.BrewBin))
+		return m, nil
+
 	case lineMsg:
 		line := classifyLine(msg.text)
 		m.logLines = append(m.logLines, line)
@@ -140,6 +193,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.openHomeEntry(0)
 			return m, nil
 		case "2":
+			m.openHomeEntry(1)
 			return m, nil
 		case "3":
 			m.openHomeEntry(2)
@@ -148,6 +202,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.openHomeEntry(m.homeCursor)
 			return m, nil
 		}
+	}
+	if m.screen == screenPackage {
+		return m.handlePackageKey(msg)
 	}
 	if m.screen == screenInspect {
 		switch msg.String() {
@@ -206,6 +263,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.prepareResultRetry()
 			}
 			return m, nil
+		case "v":
+			m.reviewPackageRevert()
+			return m, nil
 		case "esc":
 			m.closeResult()
 			return m, nil
@@ -241,7 +301,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case " ":
 			return m, nil
 		case "esc":
-			m.screen = screenMaintenance
+			if m.reviewed.Package != nil {
+				m.screen = screenPackage
+				m.packageFlow.stage = packagePlacement
+			} else {
+				m.screen = screenMaintenance
+			}
 			m.reviewed = reviewedPlan{}
 			return m, nil
 		}
@@ -343,7 +408,7 @@ func consumesLegacyRoute(active screen, key string) bool {
 	case "tab", "shift+tab", "right", "left":
 		switch active {
 		case screenHome, screenMaintenance, screenReview, screenRunning, screenResult,
-			screenInspect, screenConfig, screenAudit, screenDoctor, screenHistory:
+			screenInspect, screenConfig, screenAudit, screenDoctor, screenHistory, screenPackage:
 			return true
 		}
 	case "1", "2", "3", "4", "5":
@@ -353,7 +418,7 @@ func consumesLegacyRoute(active screen, key string) bool {
 		case screenInspect:
 			return key == "5"
 		case screenMaintenance, screenReview, screenRunning, screenResult,
-			screenConfig, screenAudit, screenDoctor, screenHistory:
+			screenConfig, screenAudit, screenDoctor, screenHistory, screenPackage:
 			return true
 		}
 	}
@@ -401,6 +466,8 @@ func (m *Model) openHomeEntry(index int) {
 	switch homeEntries[index].target {
 	case screenMaintenance:
 		m.openMaintenance()
+	case screenPackage:
+		m.openPackageFlow()
 	case screenInspect:
 		for i, tab := range m.tabs {
 			if tab == "Config" {
@@ -413,7 +480,7 @@ func (m *Model) openHomeEntry(index int) {
 }
 
 func homeEntryLocked(index int) bool {
-	return index < 0 || index >= len(homeEntries) || homeEntries[index].number == "02"
+	return index < 0 || index >= len(homeEntries)
 }
 
 func (m *Model) nextTab() {
@@ -492,10 +559,15 @@ func (m *Model) prepareResultRetry() {
 		return
 	}
 	action := m.reviewed.Action
+	packagePlan := clonePackageReview(m.reviewed.Package)
+	if packagePlan != nil {
+		packagePlan.Result = nil
+		packagePlan.verificationStarted = false
+	}
 	retryItems := cloneWorkItems(m.queue[start:])
 	m.mode = modeView
 	m.screen = screenReview
-	m.reviewed = reviewedPlan{Action: action, Items: retryItems}
+	m.reviewed = reviewedPlan{Action: action, Items: retryItems, Package: packagePlan}
 	m.queue = nil
 	m.queuePos = 0
 	m.runErr = nil
@@ -503,6 +575,7 @@ func (m *Model) prepareResultRetry() {
 	m.runElapsed = 0
 	m.stepResults = nil
 	m.resultLogVisible = false
+	m.revertErr = nil
 	m.logLines = nil
 }
 
@@ -519,6 +592,7 @@ func (m Model) retryStart() (int, bool) {
 }
 
 func (m *Model) closeResult() {
+	packageResult := m.reviewed.Package != nil
 	m.mode = modeView
 	m.logLines = nil
 	m.queue = nil
@@ -530,5 +604,10 @@ func (m *Model) closeResult() {
 	m.resultLogVisible = false
 	m.selected = map[string]bool{}
 	m.reviewed = reviewedPlan{}
+	if packageResult {
+		m.screen = screenHome
+		m.packageFlow = packageFlow{}
+		return
+	}
 	m.syncScreenToTab()
 }
