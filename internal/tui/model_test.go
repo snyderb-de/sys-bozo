@@ -11,6 +11,8 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	"github.com/snyderb-de/sys-bozo/internal/runner"
 	"github.com/snyderb-de/sys-bozo/internal/system"
@@ -35,6 +37,70 @@ func cmpWorkItems(got, want []runner.WorkItem) string {
 		return fmt.Sprintf("got %#v, want %#v", got, want)
 	}
 	return ""
+}
+
+func TestLayoutWidthTargets100AndCaps140(t *testing.T) {
+	for _, tc := range []struct{ input, want int }{{72, 72}, {80, 80}, {100, 100}, {160, 140}} {
+		if got := layoutWidth(tc.input); got != tc.want {
+			t.Fatalf("layoutWidth(%d)=%d want %d", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestNoColorStylesRenderSemanticLabelsWithoutANSI(t *testing.T) {
+	previousProfile := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(previousProfile) })
+
+	s := newUIStyles(true)
+	out := s.active.Render("03 ACTIVE") + " " + s.success.Render("DONE") + " " + s.danger.Render("TTY")
+	if strings.Contains(out, "\x1b[") {
+		t.Fatalf("NO_COLOR output contains ANSI: %q", out)
+	}
+	for _, want := range []string{"03 ACTIVE", "DONE", "TTY"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing %q: %q", want, out)
+		}
+	}
+}
+
+func TestStatusTextPreservesNoColorSemanticLabels(t *testing.T) {
+	s := newUIStyles(true)
+	tests := []struct {
+		text string
+		kind statusKind
+	}{
+		{"LOCKED", statusMuted},
+		{"DIRTY", statusAttention},
+		{"ACTIVE", statusActive},
+		{"DONE", statusSuccess},
+		{"TTY", statusDanger},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.text, func(t *testing.T) {
+			got := statusText(s, tt.text, tt.kind)
+			if got != tt.text {
+				t.Fatalf("statusText(%q, %d)=%q", tt.text, tt.kind, got)
+			}
+			if strings.Contains(got, "\x1b[") {
+				t.Fatalf("NO_COLOR output contains ANSI: %q", got)
+			}
+		})
+	}
+}
+
+func TestNumberedRowAlignsRenderedStatusByVisibleWidth(t *testing.T) {
+	s := newUIStyles(true)
+	status := statusText(s, "READY", statusSuccess)
+	got := numberedRow(s, "03", "INSPECT SYSTEM", status, 40, false)
+
+	if lipgloss.Width(got) != 40 {
+		t.Fatalf("row width=%d want 40: %q", lipgloss.Width(got), got)
+	}
+	if !strings.HasSuffix(got, "READY") {
+		t.Fatalf("status is not right-aligned: %q", got)
+	}
 }
 
 func TestSplitPreservesAuditConfigAndDoctorViews(t *testing.T) {

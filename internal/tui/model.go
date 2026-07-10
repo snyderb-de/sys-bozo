@@ -93,6 +93,7 @@ type Model struct {
 	runCtx runner.Context
 	tasks  []runner.Task
 	screen screen
+	styles uiStyles
 
 	homeCursor    int
 	inspectCursor int
@@ -144,6 +145,7 @@ func New() Model {
 		runCtx:       ctx,
 		tasks:        tasks,
 		screen:       screenHome,
+		styles:       newUIStyles(os.Getenv("NO_COLOR") != ""),
 		selected:     map[string]bool{},
 		tabs:         []string{"Dashboard", "Actions", "Config", "Audit", "Doctor"},
 		logFollow:    true,

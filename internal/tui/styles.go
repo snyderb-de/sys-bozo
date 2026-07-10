@@ -9,6 +9,45 @@ import (
 	"github.com/snyderb-de/sys-bozo/internal/system"
 )
 
+// uiStyles contains semantic roles for the Monolith/Afterburner visual system.
+// Existing screens keep their legacy styles until they migrate to this system.
+type uiStyles struct {
+	major, title, label, text, muted         lipgloss.Style
+	attention, active, success, danger, rule lipgloss.Style
+}
+
+type statusKind uint8
+
+const (
+	statusMuted statusKind = iota
+	statusAttention
+	statusActive
+	statusSuccess
+	statusDanger
+)
+
+func newUIStyles(noColor bool) uiStyles {
+	color := func(hex string) lipgloss.TerminalColor {
+		if noColor {
+			return lipgloss.NoColor{}
+		}
+		return lipgloss.Color(hex)
+	}
+
+	return uiStyles{
+		major:     lipgloss.NewStyle().Foreground(color("#f4f7f8")).Bold(!noColor),
+		title:     lipgloss.NewStyle().Foreground(color("#dae4ea")).Bold(!noColor),
+		label:     lipgloss.NewStyle().Foreground(color("#60717c")),
+		text:      lipgloss.NewStyle().Foreground(color("#dae4ea")),
+		muted:     lipgloss.NewStyle().Foreground(color("#60717c")),
+		attention: lipgloss.NewStyle().Foreground(color("#ffcb6b")).Bold(!noColor),
+		active:    lipgloss.NewStyle().Foreground(color("#66d9ef")).Bold(!noColor),
+		success:   lipgloss.NewStyle().Foreground(color("#7ee787")).Bold(!noColor),
+		danger:    lipgloss.NewStyle().Foreground(color("#ff8f70")).Bold(!noColor),
+		rule:      lipgloss.NewStyle().Foreground(color("#27343c")),
+	}
+}
+
 // ── Palette (Tokyo Night Storm) ───────────────────────────────────────────
 
 var (
@@ -74,6 +113,52 @@ var (
 )
 
 // ── Layout helpers ────────────────────────────────────────────────────────
+
+func layoutWidth(width int) int {
+	if width <= 0 {
+		return 100
+	}
+	if width > 140 {
+		return 140
+	}
+	return width
+}
+
+func majorRule(s uiStyles, width int, active bool) string {
+	style := s.rule
+	if active {
+		style = s.active
+	}
+	return style.Render(strings.Repeat("━", max(1, width)))
+}
+
+func statusText(s uiStyles, text string, kind statusKind) string {
+	style := s.muted
+	switch kind {
+	case statusAttention:
+		style = s.attention
+	case statusActive:
+		style = s.active
+	case statusSuccess:
+		style = s.success
+	case statusDanger:
+		style = s.danger
+	}
+	return style.Render(text)
+}
+
+func numberedRow(s uiStyles, number, label, renderedStatus string, width int, active bool) string {
+	numberStyle := s.muted
+	labelStyle := s.text
+	if active {
+		numberStyle = s.active
+		labelStyle = s.active
+	}
+
+	left := numberStyle.Render(number) + " " + labelStyle.Render(label)
+	gap := max(1, width-lipgloss.Width(left)-lipgloss.Width(renderedStatus))
+	return left + strings.Repeat(" ", gap) + renderedStatus
+}
 
 func (m Model) logHeight() int {
 	bodyH := m.height - 10
