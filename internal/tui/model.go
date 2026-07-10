@@ -161,6 +161,7 @@ type Model struct {
 
 	activeScanner *bufio.Scanner
 	activeWait    func() error
+	terminalExec  func(runner.WorkItem, time.Time) tea.Cmd
 
 	auditItems []system.AuditItem
 	auditReady bool
@@ -181,13 +182,14 @@ func New() Model {
 	sp.Style = lipgloss.NewStyle().Foreground(clrCyan)
 
 	return Model{
-		facts:       system.Probe(),
-		runCtx:      ctx,
-		tasks:       tasks,
-		tabs:        []string{"Dashboard", "Actions", "Config", "Audit", "Doctor"},
-		logFollow:   true,
-		spinner:     sp,
-		configFiles: buildConfigFiles(ctx),
+		facts:        system.Probe(),
+		runCtx:       ctx,
+		tasks:        tasks,
+		tabs:         []string{"Dashboard", "Actions", "Config", "Audit", "Doctor"},
+		logFollow:    true,
+		spinner:      sp,
+		configFiles:  buildConfigFiles(ctx),
+		terminalExec: runInteractiveWork,
 	}
 }
 
@@ -500,6 +502,12 @@ func (m Model) openEditor(path string) tea.Cmd {
 	})
 }
 
+func runInteractiveWork(item runner.WorkItem, start time.Time) tea.Cmd {
+	return tea.ExecProcess(runner.Command(item), func(err error) tea.Msg {
+		return stepDoneMsg{err: err, elapsed: time.Since(start)}
+	})
+}
+
 func (m Model) availableTasks() []runner.Task {
 	var out []runner.Task
 	for _, t := range m.tasks {
@@ -546,6 +554,20 @@ func (m *Model) advanceQueue() tea.Cmd {
 		text: "    $ " + runner.CmdLabel(item)})
 
 	m.stepStart = time.Now()
+	if item.Mode == runner.ExecutionInteractive {
+		m.logLines = append(m.logLines, logLine{
+			kind: logOutput,
+			text: "  ! terminal handoff — input stays outside sys-bozo",
+		})
+		m.logVP.SetContent(m.renderLog())
+		m.logVP.GotoBottom()
+		execInteractive := m.terminalExec
+		if execInteractive == nil {
+			execInteractive = runInteractiveWork
+		}
+		return execInteractive(item, m.stepStart)
+	}
+
 	scanner, wait, err := runner.StartWork(item)
 	if err != nil {
 		m.logLines = append(m.logLines, logLine{kind: logError,

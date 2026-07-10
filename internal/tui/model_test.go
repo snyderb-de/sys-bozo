@@ -1,8 +1,10 @@
 package tui
 
 import (
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -110,5 +112,34 @@ func TestDashboardIsCompact(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("dashboard missing %q:\n%s", want, out)
 		}
+	}
+}
+
+func TestAdvanceQueueUsesTerminalHandoffForInteractiveWork(t *testing.T) {
+	called := false
+	m := Model{
+		mode:  modeRunning,
+		queue: []runner.WorkItem{{Name: "sudo", Args: []string{"-v"}, Mode: runner.ExecutionInteractive}},
+		terminalExec: func(item runner.WorkItem, start time.Time) tea.Cmd {
+			called = true
+			return func() tea.Msg { return stepDoneMsg{elapsed: time.Second} }
+		},
+	}
+
+	cmd := m.advanceQueue()
+	if !called || cmd == nil {
+		t.Fatal("interactive work did not use terminal handoff")
+	}
+	if m.activeScanner != nil {
+		t.Fatal("interactive work must not create captured scanner")
+	}
+}
+
+func TestInteractiveFailureStopsQueueAndRestoresDoneState(t *testing.T) {
+	m := Model{mode: modeRunning, runAction: "brew", runStart: time.Now()}
+	next, _ := m.Update(stepDoneMsg{err: errors.New("exit status 1"), elapsed: time.Second})
+	got := next.(Model)
+	if got.mode != modeDone || !strings.Contains(got.renderLog(), "exit status 1") {
+		t.Fatalf("mode=%v log=%q", got.mode, got.renderLog())
 	}
 }
