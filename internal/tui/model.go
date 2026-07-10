@@ -110,6 +110,26 @@ const (
 	modeDone
 )
 
+type screen uint8
+
+const (
+	screenHome screen = iota
+	screenMaintenance
+	screenReview
+	screenRunning
+	screenResult
+	screenInspect
+	screenConfig
+	screenAudit
+	screenDoctor
+	screenHistory
+)
+
+type reviewedPlan struct {
+	Action string
+	Items  []runner.WorkItem
+}
+
 // ── Config file entry ─────────────────────────────────────────────────────
 
 type configFile struct {
@@ -140,6 +160,12 @@ type Model struct {
 	facts  system.Facts
 	runCtx runner.Context
 	tasks  []runner.Task
+	screen screen
+
+	homeCursor    int
+	inspectCursor int
+	selected      map[string]bool
+	reviewed      reviewedPlan
 
 	tabs   []string
 	tab    int
@@ -169,7 +195,7 @@ type Model struct {
 	// Config tab
 	configFiles   []configFile
 	configCursor  int
-	applyPrompt   bool  // show apply-after-edit prompt
+	applyPrompt   bool // show apply-after-edit prompt
 	applyEditPath string
 }
 
@@ -185,12 +211,58 @@ func New() Model {
 		facts:        system.Probe(),
 		runCtx:       ctx,
 		tasks:        tasks,
+		screen:       screenHome,
+		selected:     map[string]bool{},
 		tabs:         []string{"Dashboard", "Actions", "Config", "Audit", "Doctor"},
 		logFollow:    true,
 		spinner:      sp,
 		configFiles:  buildConfigFiles(ctx),
 		terminalExec: runInteractiveWork,
 	}
+}
+
+func (m *Model) openMaintenance(ids ...string) {
+	m.screen = screenMaintenance
+	m.selected = map[string]bool{}
+	for _, id := range ids {
+		m.selected[id] = true
+	}
+}
+
+func (m *Model) reviewSelection() {
+	var items []runner.WorkItem
+	var ids []string
+	for _, task := range m.tasks {
+		if !m.selected[task.ID] || !task.Available(m.runCtx) {
+			continue
+		}
+		ids = append(ids, task.ID)
+		items = append(items, runner.BuildQueue(task, m.runCtx)...)
+	}
+	if len(items) == 0 {
+		return
+	}
+	m.reviewed = reviewedPlan{
+		Action: strings.Join(ids, "+"),
+		Items:  append([]runner.WorkItem(nil), items...),
+	}
+	m.screen = screenReview
+}
+
+func (m *Model) confirmReviewedPlan() tea.Cmd {
+	if len(m.reviewed.Items) == 0 {
+		return nil
+	}
+	m.queue = append([]runner.WorkItem(nil), m.reviewed.Items...)
+	m.queuePos = 0
+	m.mode = modeRunning
+	m.screen = screenRunning
+	m.runAction = m.reviewed.Action
+	m.runStart = time.Now()
+	m.logLines = nil
+	m.logFollow = true
+	m.logVP = viewport.New(m.logWidth(), m.logHeight())
+	return tea.Batch(m.advanceQueue(), m.spinner.Tick)
 }
 
 func buildConfigFiles(ctx runner.Context) []configFile {
@@ -341,17 +413,40 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch strings.ToLower(msg.String()) {
 		case "h":
 			m.applyPrompt = false
-			return m, m.startRunByID("hms")
+			m.openMaintenance("hms")
+			m.reviewSelection()
 		case "n":
 			m.applyPrompt = false
-			return m, m.startRunByID("nds")
+			m.openMaintenance("nds")
+			m.reviewSelection()
 		case "b":
 			m.applyPrompt = false
-			return m, tea.Batch(m.startRunByID("hms"), m.startRunByID("nds"))
+			m.openMaintenance("hms", "nds")
+			m.reviewSelection()
 		default:
 			m.applyPrompt = false
 		}
 		return m, nil
+	}
+
+	if m.screen == screenHome {
+		switch strings.ToLower(msg.String()) {
+		case "h":
+			m.openMaintenance("hms")
+			return m, nil
+		case "n":
+			m.openMaintenance("nds")
+			return m, nil
+		}
+	}
+	if msg.String() == "enter" || msg.String() == " " {
+		switch m.screen {
+		case screenMaintenance:
+			m.reviewSelection()
+			return m, nil
+		case screenReview:
+			return m, m.confirmReviewedPlan()
+		}
 	}
 
 	switch msg.String() {
@@ -410,7 +505,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch m.tabs[m.tab] {
 		case "Actions":
 			if m.mode == modeView {
-				return m, m.startRunAt(m.cursor)
+				avail := m.availableTasks()
+				if m.cursor < len(avail) {
+					m.openMaintenance(avail[m.cursor].ID)
+					m.reviewSelection()
+				}
+				return m, nil
 			}
 		case "Config":
 			if m.mode == modeView && m.configCursor < len(m.configFiles) {
@@ -808,7 +908,7 @@ func (m Model) viewActions(w int) string {
 		followIndicator+"  ",
 	)
 
-	logContent := styleLogPane.Width(cw).Render(logHeader+"\n"+m.logVP.View())
+	logContent := styleLogPane.Width(cw).Render(logHeader + "\n" + m.logVP.View())
 
 	return lipgloss.JoinVertical(lipgloss.Left, actionList, "", logContent)
 }

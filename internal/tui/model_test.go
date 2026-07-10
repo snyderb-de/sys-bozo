@@ -2,7 +2,9 @@ package tui
 
 import (
 	"errors"
+	"fmt"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +14,69 @@ import (
 	"github.com/snyderb-de/sys-bozo/internal/runner"
 	"github.com/snyderb-de/sys-bozo/internal/system"
 )
+
+func testGuidedModel() Model {
+	ctx := runner.Context{HomeManager: "home-manager", OS: "darwin"}
+	return Model{
+		screen:   screenHome,
+		runCtx:   ctx,
+		tasks:    runner.DefaultTasks(ctx),
+		selected: map[string]bool{},
+		terminalExec: func(runner.WorkItem, time.Time) tea.Cmd {
+			return nil
+		},
+	}
+}
+
+func cmpWorkItems(got, want []runner.WorkItem) string {
+	if !reflect.DeepEqual(got, want) {
+		return fmt.Sprintf("got %#v, want %#v", got, want)
+	}
+	return ""
+}
+
+func TestMaintenanceSelectionBuildsReviewWithoutRunning(t *testing.T) {
+	m := testGuidedModel()
+	m.openMaintenance("hms")
+	if m.screen != screenMaintenance || !m.selected["hms"] {
+		t.Fatalf("screen=%v selected=%v", m.screen, m.selected)
+	}
+
+	m.reviewSelection()
+	if m.screen != screenReview || len(m.reviewed.Items) != 1 {
+		t.Fatalf("screen=%v reviewed=%#v", m.screen, m.reviewed)
+	}
+	if m.mode == modeRunning || len(m.queue) != 0 {
+		t.Fatal("review must not start execution")
+	}
+}
+
+func TestConfirmRunsExactReviewedItems(t *testing.T) {
+	m := testGuidedModel()
+	want := runner.WorkItem{Name: "home-manager", Args: []string{"switch"}}
+	m.screen = screenReview
+	m.reviewed = reviewedPlan{Action: "hms", Items: []runner.WorkItem{want}}
+	m.terminalExec = func(runner.WorkItem, time.Time) tea.Cmd {
+		return func() tea.Msg { return stepDoneMsg{} }
+	}
+
+	cmd := m.confirmReviewedPlan()
+	if cmd == nil || m.screen != screenRunning || m.mode != modeRunning {
+		t.Fatalf("screen=%v mode=%v cmd=%v", m.screen, m.mode, cmd)
+	}
+	if diff := cmpWorkItems(m.queue, []runner.WorkItem{want}); diff != "" {
+		t.Fatal(diff)
+	}
+}
+
+func TestShortcutPreselectsWithoutExecuting(t *testing.T) {
+	m := testGuidedModel()
+	next, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
+	got := next.(Model)
+	if got.screen != screenMaintenance || !got.selected["hms"] || got.mode == modeRunning {
+		t.Fatalf("screen=%v selected=%v mode=%v", got.screen, got.selected, got.mode)
+	}
+}
 
 func testModelOnUpdatesTab() Model {
 	return Model{
