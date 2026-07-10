@@ -61,15 +61,6 @@ type Task struct {
 	Env       func(ctx Context) []string
 }
 
-// PrimeCredentials caches sudo credentials before entering the TUI so the
-// password prompt appears on a clean terminal, not mid-render.
-func PrimeCredentials(ctx Context) {
-	if ctx.DarwinRebuild == "" || ctx.OS != "darwin" {
-		return
-	}
-	_ = exec.Command("sudo", "-v").Run()
-}
-
 // WorkItem is a flattened (task, step) pair ready for execution.
 type WorkItem struct {
 	TaskLabel string

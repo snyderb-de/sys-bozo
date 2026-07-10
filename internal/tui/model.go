@@ -313,7 +313,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case sudoReadyMsg:
-		// unused: PrimeCredentials runs before TUI; kept for runSudoPreflight compatibility
+		// unused: kept for runSudoPreflight compatibility
 		_ = msg
 		return m, nil
 

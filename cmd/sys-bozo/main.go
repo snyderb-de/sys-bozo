@@ -24,7 +24,6 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		runner.PrimeCredentials(runner.Build())
 		_, err := tea.NewProgram(tui.New(), tea.WithAltScreen()).Run()
 		return err
 	}
@@ -45,6 +44,26 @@ func run(args []string) error {
 	}
 
 	return nil
+}
+
+var runInteractive = func(item runner.WorkItem) error {
+	return runner.RunInteractive(item, os.Stdin, os.Stdout, os.Stderr)
+}
+
+var startStreamed = runner.StartWork
+
+func runWorkItem(item runner.WorkItem) error {
+	if item.Mode == runner.ExecutionInteractive {
+		return runInteractive(item)
+	}
+	scanner, wait, err := startStreamed(item)
+	if err != nil {
+		return err
+	}
+	for scanner.Scan() {
+		fmt.Fprintln(os.Stdout, scanner.Text())
+	}
+	return wait()
 }
 
 func runPlan(args []string) error {
@@ -117,14 +136,7 @@ func runAction(args []string) error {
 	queue := runner.BuildQueue(*found, ctx)
 	for _, item := range queue {
 		fmt.Fprintf(os.Stderr, "$ %s\n", runner.CmdLabel(item))
-		sc, wait, err := runner.StartWork(item)
-		if err != nil {
-			return err
-		}
-		for sc.Scan() {
-			fmt.Fprintln(os.Stdout, sc.Text())
-		}
-		if err := wait(); err != nil {
+		if err := runWorkItem(item); err != nil {
 			return fmt.Errorf("%s: %w", item.Name, err)
 		}
 	}
