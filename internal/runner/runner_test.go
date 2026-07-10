@@ -3,6 +3,7 @@ package runner
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDefaultTasksIncludeTopgradeSweep(t *testing.T) {
@@ -32,6 +33,33 @@ func TestDefaultTasksIncludeTopgradeSweep(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("topgrade command missing %q: %s", want, text)
 		}
+	}
+}
+
+func TestStartWorkDrainsSingleLineLargerThanScannerLimit(t *testing.T) {
+	w := WorkItem{Name: "sh", Args: []string{"-c", `head -c 131072 /dev/zero | tr '\0' x; printf '\n'`}}
+	scanner, wait, err := StartWork(w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	var total int
+	var scanErr, waitErr error
+	go func() {
+		defer close(done)
+		for scanner.Scan() {
+			total += len(scanner.Bytes())
+		}
+		scanErr = scanner.Err()
+		waitErr = wait()
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("large output line deadlocked")
+	}
+	if scanErr != nil || waitErr != nil || total != 131072 {
+		t.Fatalf("total=%d scanErr=%v waitErr=%v", total, scanErr, waitErr)
 	}
 }
 

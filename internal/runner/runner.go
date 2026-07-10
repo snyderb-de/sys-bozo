@@ -2,6 +2,7 @@ package runner
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -441,7 +442,24 @@ func StartWork(w WorkItem) (*bufio.Scanner, func() error, error) {
 		pw.Close()
 	}()
 
-	return bufio.NewScanner(pr), func() error { return <-done }, nil
+	scanner := bufio.NewScanner(pr)
+	scanner.Split(splitLinesOrChunks)
+	return scanner, func() error { return <-done }, nil
+}
+
+const streamedOutputChunk = 32 * 1024
+
+func splitLinesOrChunks(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	if i := bytes.IndexByte(data, '\n'); i >= 0 {
+		return i + 1, data[:i], nil
+	}
+	if len(data) >= streamedOutputChunk {
+		return streamedOutputChunk, data[:streamedOutputChunk], nil
+	}
+	if atEOF && len(data) > 0 {
+		return len(data), data, nil
+	}
+	return 0, nil, nil
 }
 
 // CmdLabel returns a display string for a WorkItem's command.

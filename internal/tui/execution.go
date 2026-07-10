@@ -277,7 +277,7 @@ func (m Model) readNextLine() tea.Cmd {
 		if scanner.Scan() {
 			return lineMsg{text: scanner.Text()}
 		}
-		err := wait()
+		err := errors.Join(scanner.Err(), wait())
 		return stepDoneMsg{err: err, elapsed: time.Since(start)}
 	}
 }
