@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -41,5 +43,26 @@ func TestRunWorkItemDispatchesStreamedMode(t *testing.T) {
 	err := runWorkItem(runner.WorkItem{Mode: runner.ExecutionStreamed})
 	if err != nil || interactiveCalls != 0 || streamedCalls != 1 {
 		t.Fatalf("err=%v interactive=%d streamed=%d", err, interactiveCalls, streamedCalls)
+	}
+}
+
+func TestRunWorkItemStreamedStartErrorHasSingleCommandPrefix(t *testing.T) {
+	oldStreamed := startStreamed
+	t.Cleanup(func() { startStreamed = oldStreamed })
+	startStreamed = runner.StartWork
+
+	item := runner.WorkItem{
+		Name: filepath.Join(t.TempDir(), "missing-command"),
+		Mode: runner.ExecutionStreamed,
+	}
+	err := runWorkItem(item)
+	if err == nil {
+		t.Fatal("runWorkItem returned nil error")
+	}
+
+	got := fmt.Errorf("%s: %w", item.Name, err).Error()
+	duplicatePrefix := item.Name + ": " + item.Name + ":"
+	if strings.HasPrefix(got, duplicatePrefix) {
+		t.Fatalf("error = %q, duplicate command prefix %q", got, duplicatePrefix)
 	}
 }
