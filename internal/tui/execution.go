@@ -160,6 +160,10 @@ func (m Model) runSudoPreflight(sudoBin string) tea.Cmd {
 
 func (m *Model) advanceQueue() tea.Cmd {
 	if m.queuePos >= len(m.queue) {
+		if m.reviewed.Config != nil && m.reviewed.Config.CleanupErr != nil {
+			m.finishRun(m.reviewed.Config.CleanupErr, false, time.Since(m.runStart))
+			return nil
+		}
 		if m.reviewed.Package != nil && m.reviewed.Package.EditApplied && !m.reviewed.Package.verificationStarted {
 			m.reviewed.Package = clonePackageReview(m.reviewed.Package)
 			if m.reviewed.Package.Revert {

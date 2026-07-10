@@ -36,6 +36,7 @@ type packageFlow struct {
 	target         packages.Target
 	placingSection bool
 	err            error
+	notice         string
 }
 
 type packageReview struct {
@@ -47,6 +48,7 @@ type packageReview struct {
 	verificationStarted bool
 	Revert              bool
 	Warning             string
+	CleanupErr          error
 	DiffVP              viewport.Model
 }
 
@@ -245,7 +247,8 @@ func (m Model) handlePackagePlacementKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		proposal, err := packages.ProposeAdd(original, m.packageFlow.target, m.packageFlow.sections[m.packageFlow.section], candidate.ID)
 		if err != nil {
 			if errors.Is(err, packages.ErrAlreadyDeclared) {
-				m.packageFlow.err = fmt.Errorf("%s is already declared; no edit needed", candidate.ID)
+				m.packageFlow.err = nil
+				m.packageFlow.notice = fmt.Sprintf("%s is already declared; no edit needed", candidate.ID)
 				return m, nil
 			}
 			m.packageFlow.err = nil
@@ -368,6 +371,7 @@ func packageVerifySpec(candidate packages.Candidate, ctx runner.Context) package
 		PName:       candidate.Name,
 		Version:     candidate.Version,
 		Executable:  candidate.Executable,
+		VersionArgs: append([]string(nil), candidate.VersionArgs...),
 		BrewBin:     ctx.BrewBin,
 		NixStoreBin: ctx.NixStoreBin,
 		ProfilePath: ctx.NixProfilePath,

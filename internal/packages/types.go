@@ -71,6 +71,7 @@ type Candidate struct {
 	// Executable is populated only from trusted provider metadata. It must never
 	// be inferred from ID or Name.
 	Executable  string
+	VersionArgs []string
 	Description string
 }
 

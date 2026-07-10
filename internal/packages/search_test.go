@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -41,6 +42,7 @@ func TestSearchPreservesNixCandidateIdentity(t *testing.T) {
 		{"packages prefix", "packages.aarch64-darwin.python313Packages.requests", "python313Packages.requests"},
 		{"legacy packages prefix", "legacyPackages.aarch64-darwin.python313Packages.requests", "python313Packages.requests"},
 		{"unknown prefix", "outputs.aarch64-darwin.python313Packages.requests", "outputs.aarch64-darwin.python313Packages.requests"},
+		{"unknown system", "packages.not-a-system.python313Packages.requests", "packages.not-a-system.python313Packages.requests"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -108,7 +110,7 @@ func TestSearchSortsNixAttributesAndParsesMetadata(t *testing.T) {
 		t.Fatalf("got %#v want %#v", got.Candidates, want)
 	}
 	for i := range want {
-		if got.Candidates[i] != want[i] {
+		if !reflect.DeepEqual(got.Candidates[i], want[i]) {
 			t.Fatalf("candidate[%d]=%#v want %#v", i, got.Candidates[i], want[i])
 		}
 	}
@@ -131,7 +133,7 @@ func TestSearchParsesBrewFormulaeAndCasks(t *testing.T) {
 		t.Fatalf("got %#v want %#v", got.Candidates, want)
 	}
 	for i := range want {
-		if got.Candidates[i] != want[i] {
+		if !reflect.DeepEqual(got.Candidates[i], want[i]) {
 			t.Fatalf("candidate[%d]=%#v want %#v", i, got.Candidates[i], want[i])
 		}
 	}
@@ -172,7 +174,7 @@ func TestSearchDiscardsFailedCaskOutputAndKeepsFormula(t *testing.T) {
 		t.Fatalf("BrewErr=%v want %v", got.BrewErr, caskErr)
 	}
 	want := Candidate{Provider: ProviderBrew, Kind: KindFormula, ID: "yazi", Name: "yazi"}
-	if len(got.Candidates) != 1 || got.Candidates[0] != want {
+	if len(got.Candidates) != 1 || !reflect.DeepEqual(got.Candidates[0], want) {
 		t.Fatalf("candidates=%#v want %#v", got.Candidates, []Candidate{want})
 	}
 }

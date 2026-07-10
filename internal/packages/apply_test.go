@@ -287,6 +287,10 @@ func TestApplyRaceHooksNeverOverwriteCompetingEdits(t *testing.T) {
 			name: "old inode write after claim", stage: applyBeforeGuardRecheck, want: []byte("old-inode-write\n"),
 			hook: func(_, guard string) { _ = os.WriteFile(guard, []byte("old-inode-write\n"), 0o600) },
 		},
+		{
+			name: "installed inode write", stage: applyBeforeGuardRecheck, want: []byte("original\n"),
+			hook: func(target, _ string) { _ = os.WriteFile(target, []byte("unreviewed\n"), 0o600) },
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -343,6 +347,39 @@ func TestApplyAfterClaimHookCanObserveClaimedTarget(t *testing.T) {
 	}
 }
 
+func TestApplyClaimRejectsSymlinkSwapAndExistingGuard(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		hook func(string, string)
+	}{
+		{"symlink swap", func(target, _ string) {
+			backup := target + "-backup"
+			_ = os.Rename(target, backup)
+			_ = os.Symlink(backup, target)
+		}},
+		{"existing guard", func(_, guard string) { _ = os.WriteFile(guard, []byte("competitor\n"), 0o600) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "target")
+			original := []byte("original\n")
+			if err := os.WriteFile(path, original, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			fs := realApplyFilesystem()
+			fs.hook = func(stage applyStage, target, guard string) {
+				if stage == applyBeforeClaim {
+					tc.hook(target, guard)
+				}
+			}
+			_, err := apply(ProposeReplacement(Target{Path: path}, original, []byte("proposed\n")), fs)
+			if err == nil {
+				t.Fatal("claim conflict succeeded")
+			}
+		})
+	}
+}
+
 func TestApplySurfacesCleanupFailureAndGuardPath(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "target")
@@ -359,9 +396,12 @@ func TestApplySurfacesCleanupFailureAndGuardPath(t *testing.T) {
 		}
 		return remove(path)
 	}
-	_, err := apply(ProposeReplacement(Target{Path: path}, original, []byte("proposed\n")), fs)
+	applied, err := apply(ProposeReplacement(Target{Path: path}, original, []byte("proposed\n")), fs)
 	if !errors.Is(err, failure) || !strings.Contains(err.Error(), ".guard") {
 		t.Fatalf("err=%v", err)
+	}
+	if applied.Path != path {
+		t.Fatalf("committed edit not returned: %#v", applied)
 	}
 	got, readErr := os.ReadFile(path)
 	if readErr != nil || string(got) != "proposed\n" {

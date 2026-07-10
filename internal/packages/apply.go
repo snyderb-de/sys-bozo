@@ -55,7 +55,7 @@ func realApplyFilesystem() applyFilesystem {
 			return os.CreateTemp(dir, pattern)
 		},
 		remove:   os.Remove,
-		rename:   os.Rename,
+		rename:   renameNoReplace,
 		link:     os.Link,
 		sameFile: os.SameFile,
 		syncDir: func(dir string) error {
@@ -122,6 +122,10 @@ func apply(proposal Proposal, filesystem applyFilesystem) (applied AppliedEdit, 
 		return AppliedEdit{}, fmt.Errorf("claim declaration target: %w", err)
 	}
 	runApplyHook(filesystem, applyAfterClaim, proposal.Target.Path, guardPath)
+	claimedInfo, claimErr := filesystem.stat(guardPath)
+	if claimErr != nil || !claimedInfo.Mode().IsRegular() || !filesystem.sameFile(info, claimedInfo) {
+		return AppliedEdit{}, errors.Join(staleConflict("claimed target identity or type changed", guardPath), claimErr, restoreGuard(filesystem, guardPath, proposal.Target.Path))
+	}
 	if err := filesystem.syncDir(filepath.Dir(proposal.Target.Path)); err != nil {
 		restoreErr := restoreGuard(filesystem, guardPath, proposal.Target.Path)
 		return AppliedEdit{}, errors.Join(fmt.Errorf("sync claimed declaration directory: %w", err), restoreErr)
@@ -152,27 +156,34 @@ func apply(proposal Proposal, filesystem applyFilesystem) (applied AppliedEdit, 
 	// a write cannot overwrite the newly installed target directory entry.
 	runApplyHook(filesystem, applyBeforeGuardRecheck, proposal.Target.Path, guardPath)
 	guarded, err = filesystem.readFile(guardPath)
-	if err != nil || sha256.Sum256(guarded) != proposal.OriginalHash {
+	targetInfo, targetInfoErr := filesystem.stat(proposal.Target.Path)
+	tempInfo, tempInfoErr := filesystem.stat(tempPath)
+	installed, installedErr := filesystem.readFile(proposal.Target.Path)
+	targetValid := targetInfoErr == nil && tempInfoErr == nil && filesystem.sameFile(targetInfo, tempInfo) && installedErr == nil && sha256.Sum256(installed) == proposal.ProposedHash
+	if err != nil || sha256.Sum256(guarded) != proposal.OriginalHash || !targetValid {
 		rollbackErr := rollbackInstalled(filesystem, tempPath, guardPath, proposal.Target.Path)
 		if err != nil {
 			return AppliedEdit{}, errors.Join(staleConflict("could not recheck claimed file", guardPath), err, rollbackErr)
 		}
-		return AppliedEdit{}, errors.Join(staleConflict("old inode changed after claim", guardPath), rollbackErr)
+		return AppliedEdit{}, errors.Join(staleConflict("claimed original or installed proposal changed", guardPath), targetInfoErr, tempInfoErr, installedErr, rollbackErr)
 	}
 	if err := filesystem.remove(guardPath); err != nil {
-		return AppliedEdit{}, fmt.Errorf("remove claimed original %q: %w", guardPath, err)
+		return completedEdit(proposal, current, after, beforeHash), fmt.Errorf("remove claimed original %q: %w", guardPath, err)
 	}
 	if err := filesystem.syncDir(filepath.Dir(proposal.Target.Path)); err != nil {
-		return AppliedEdit{}, fmt.Errorf("sync declaration cleanup: %w", err)
+		return completedEdit(proposal, current, after, beforeHash), fmt.Errorf("sync declaration cleanup: %w", err)
 	}
+	return completedEdit(proposal, current, after, beforeHash), nil
+}
 
+func completedEdit(proposal Proposal, current, after []byte, beforeHash [32]byte) AppliedEdit {
 	return AppliedEdit{
 		Path:       proposal.Target.Path,
 		Before:     bytes.Clone(current),
 		After:      after,
 		BeforeHash: beforeHash,
 		AfterHash:  sha256.Sum256(after),
-	}, nil
+	}
 }
 
 func runApplyHook(filesystem applyFilesystem, stage applyStage, target, guard string) {

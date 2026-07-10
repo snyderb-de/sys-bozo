@@ -59,6 +59,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.packageApplyStale(msg.err) {
 				return m, nil
 			}
+			if msg.edit.Path != "" && m.reviewed.Package != nil {
+				m.reviewed.Package = clonePackageReview(m.reviewed.Package)
+				edit := cloneAppliedEdit(msg.edit)
+				m.reviewed.Package.Applied, m.reviewed.Package.EditApplied, m.reviewed.Package.CleanupErr = &edit, true, msg.err
+				return m, m.advanceQueue()
+			}
 			m.finishRun(msg.err, false, time.Since(m.runStart))
 			return m, nil
 		}
@@ -90,7 +96,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.finishRun(err, false, time.Since(m.runStart))
 			return m, nil
 		}
-		m.finishRun(nil, false, time.Since(m.runStart))
+		if m.reviewed.Package.CleanupErr != nil {
+			m.finishRun(m.reviewed.Package.CleanupErr, false, time.Since(m.runStart))
+		} else {
+			m.finishRun(nil, false, time.Since(m.runStart))
+		}
 		return m, nil
 
 	case packageEditorDoneMsg:
@@ -162,6 +172,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			if m.configApplyStale(msg.err) {
 				return m, nil
+			}
+			if msg.edit.Path != "" && m.reviewed.Config != nil {
+				m.reviewed.Config = cloneConfigReview(m.reviewed.Config)
+				edit := msg.edit
+				m.reviewed.Config.Applied, m.reviewed.Config.EditApplied, m.reviewed.Config.CleanupErr = &edit, true, msg.err
+				return m, m.advanceQueue()
 			}
 			m.finishRun(msg.err, false, time.Since(m.runStart))
 			return m, nil

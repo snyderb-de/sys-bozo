@@ -105,6 +105,9 @@ func (m Model) viewPackage() string {
 		if m.packageFlow.err != nil {
 			rows = append(rows, s.danger.Render(truncateVisible("! "+m.packageFlow.err.Error(), contentWidth)))
 		}
+		if m.packageFlow.notice != "" {
+			rows = append(rows, s.active.Render(truncateVisible(m.packageFlow.notice, contentWidth)))
+		}
 		rows = append(rows, "", s.muted.Render("ESCAPE BACK   ↑/↓ MOVE")+"   "+s.active.Render("ENTER SELECT"))
 	}
 	return primaryFrame(s, m.width, strings.Join(rows, "\n"))

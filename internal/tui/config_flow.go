@@ -21,6 +21,7 @@ type configReview struct {
 	Applied     *fileedit.AppliedEdit
 	EditApplied bool
 	Warning     string
+	CleanupErr  error
 	DiffVP      viewport.Model
 }
 

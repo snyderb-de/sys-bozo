@@ -288,8 +288,8 @@ func TestPackageReviewContainsDiffApplyAndVerify(t *testing.T) {
 
 func TestPackageVerifySpecUsesOnlyTrustedExecutableMetadata(t *testing.T) {
 	ctx := runner.Context{BrewBin: "brew", NixStoreBin: "nix-store", NixProfilePath: "/tmp/profile"}
-	trusted := packageVerifySpec(packages.Candidate{Provider: packages.ProviderNix, Kind: packages.KindPackage, ID: "ripgrep", Name: "ripgrep", Version: "14.1.1", Executable: "rg"}, ctx)
-	if trusted.Executable != "rg" || trusted.PName != "ripgrep" || trusted.NixStoreBin != "nix-store" || trusted.ProfilePath != "/tmp/profile" {
+	trusted := packageVerifySpec(packages.Candidate{Provider: packages.ProviderNix, Kind: packages.KindPackage, ID: "ripgrep", Name: "ripgrep", Version: "14.1.1", Executable: "rg", VersionArgs: []string{"--version"}}, ctx)
+	if trusted.Executable != "rg" || !slices.Equal(trusted.VersionArgs, []string{"--version"}) || trusted.PName != "ripgrep" || trusted.NixStoreBin != "nix-store" || trusted.ProfilePath != "/tmp/profile" {
 		t.Fatalf("trusted=%#v", trusted)
 	}
 	untrusted := packageVerifySpec(packages.Candidate{Provider: packages.ProviderBrew, Kind: packages.KindFormula, ID: "ripgrep", Name: "ripgrep"}, ctx)
@@ -733,8 +733,8 @@ func TestDuplicatePackageIsInformationalAndNeverOpensEditorOrWrites(t *testing.T
 	next, cmd := m.handlePackageKey(tea.KeyMsg{Type: tea.KeyEnter})
 	m = next.(Model)
 	got, err := os.ReadFile(path)
-	if cmd != nil || editorCalled || err != nil || !bytes.Equal(got, original) || m.packageFlow.err == nil || !strings.Contains(m.packageFlow.err.Error(), "already declared") {
-		t.Fatalf("cmd=%v editor=%v err=%v file=%q flowErr=%v", cmd, editorCalled, err, got, m.packageFlow.err)
+	if cmd != nil || editorCalled || err != nil || !bytes.Equal(got, original) || m.packageFlow.err != nil || !strings.Contains(m.packageFlow.notice, "already declared") {
+		t.Fatalf("cmd=%v editor=%v err=%v file=%q flowErr=%v notice=%q", cmd, editorCalled, err, got, m.packageFlow.err, m.packageFlow.notice)
 	}
 }
 

@@ -97,10 +97,19 @@ func searchNix(ctx context.Context, runner OutputRunner, command, query string) 
 
 func nixCandidateID(attribute string) string {
 	parts := strings.Split(attribute, ".")
-	if len(parts) >= 3 && (parts[0] == "packages" || parts[0] == "legacyPackages") && parts[1] != "" {
+	if len(parts) >= 3 && (parts[0] == "packages" || parts[0] == "legacyPackages") && knownNixSystem(parts[1]) {
 		return strings.Join(parts[2:], ".")
 	}
 	return attribute
+}
+
+func knownNixSystem(system string) bool {
+	switch system {
+	case "aarch64-darwin", "x86_64-darwin", "aarch64-linux", "x86_64-linux", "i686-linux", "armv7l-linux", "riscv64-linux", "powerpc64le-linux":
+		return true
+	default:
+		return false
+	}
 }
 
 func searchBrew(ctx context.Context, runner OutputRunner, command, query string) ([]Candidate, error) {
