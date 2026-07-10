@@ -66,3 +66,48 @@ func TestDefaultTasksIncludeFedoraSystemUpgrade(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildQueuePropagatesExecutionMode(t *testing.T) {
+	task := Task{
+		ID:        "prompting",
+		Available: func(Context) bool { return true },
+		Steps: []Step{{
+			Mode: ExecutionInteractive,
+			Cmd:  func(Context) (string, []string) { return "sudo", []string{"-v"} },
+		}},
+	}
+
+	queue := BuildQueue(task, Context{})
+	if len(queue) != 1 || queue[0].Mode != ExecutionInteractive {
+		t.Fatalf("expected interactive work item, got %#v", queue)
+	}
+}
+
+func TestPromptingDefaultStepsAreInteractive(t *testing.T) {
+	ctx := Context{
+		OS: "darwin", Hostname: "mini", BrewBin: "brew",
+		DarwinRebuild: "darwin-rebuild", SudoBin: "sudo",
+		NixBin: "nix", HomeManager: "home-manager",
+	}
+	tasks := DefaultTasks(ctx)
+
+	wantInteractive := map[string]bool{"nds": true, "ndu": true, "ndR": true, "brew": true}
+	for _, task := range tasks {
+		if !wantInteractive[task.ID] {
+			continue
+		}
+		found := false
+		for _, step := range task.Steps {
+			name, _ := step.Cmd(ctx)
+			if name == "sudo" || task.ID == "brew" && step.Title == "Upgrade Homebrew packages" {
+				found = true
+				if step.Mode != ExecutionInteractive {
+					t.Fatalf("%s prompting step is not interactive", task.ID)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("%s has no prompting step", task.ID)
+		}
+	}
+}

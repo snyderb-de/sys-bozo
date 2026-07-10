@@ -32,11 +32,19 @@ type Context struct {
 	SopsAgeKeyFile string
 }
 
+type ExecutionMode uint8
+
+const (
+	ExecutionStreamed ExecutionMode = iota
+	ExecutionInteractive
+)
+
 // Step is one command within a Task.
 type Step struct {
 	Title       string
 	Description string
 	Targets     []string
+	Mode        ExecutionMode
 	Cmd         func(ctx Context) (name string, args []string)
 }
 
@@ -70,6 +78,7 @@ type WorkItem struct {
 	Args      []string
 	Dir       string
 	EnvExtra  []string
+	Mode      ExecutionMode
 }
 
 // HMConfigKey returns the flake homeConfigurations key for this host.
@@ -159,7 +168,7 @@ func DefaultTasks(ctx Context) []Task {
 			Hint:      "after editing flake.nix",
 			Available: darwinAvail,
 			Steps: []Step{
-				{Cmd: func(c Context) (string, []string) {
+				{Mode: ExecutionInteractive, Cmd: func(c Context) (string, []string) {
 					return "sudo", []string{"-H", c.DarwinRebuild, "switch", "--flake", ".#" + c.Hostname, "--impure"}
 				}},
 			},
@@ -176,7 +185,7 @@ func DefaultTasks(ctx Context) []Task {
 			},
 			Steps: []Step{
 				{Cmd: func(c Context) (string, []string) { return c.NixBin, flakeUpdate() }},
-				{Cmd: func(c Context) (string, []string) {
+				{Mode: ExecutionInteractive, Cmd: func(c Context) (string, []string) {
 					return "sudo", []string{"-H", c.DarwinRebuild, "switch", "--flake", ".#" + c.Hostname, "--impure"}
 				}},
 			},
@@ -204,7 +213,7 @@ func DefaultTasks(ctx Context) []Task {
 			Hint:      "undo last nds if it broke something",
 			Available: darwinAvail,
 			Steps: []Step{
-				{Cmd: func(c Context) (string, []string) {
+				{Mode: ExecutionInteractive, Cmd: func(c Context) (string, []string) {
 					return "sudo", []string{"-H", c.DarwinRebuild, "--rollback"}
 				}},
 			},
@@ -263,7 +272,7 @@ func DefaultTasks(ctx Context) []Task {
 				return c.OS == "linux" && c.OSID == "fedora" && c.SudoBin != "" && c.DnfBin != ""
 			},
 			Steps: []Step{
-				{Cmd: func(c Context) (string, []string) {
+				{Mode: ExecutionInteractive, Cmd: func(c Context) (string, []string) {
 					return c.SudoBin, []string{c.DnfBin, "upgrade", "--refresh", "-y"}
 				}},
 			},
@@ -279,7 +288,7 @@ func DefaultTasks(ctx Context) []Task {
 			Available: func(c Context) bool { return c.BrewBin != "" },
 			Steps: []Step{
 				{Title: "Refresh Homebrew metadata", Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"update"} }},
-				{Title: "Upgrade Homebrew packages", Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"upgrade"} }},
+				{Title: "Upgrade Homebrew packages", Mode: ExecutionInteractive, Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"upgrade"} }},
 				{Title: "Remove unused Homebrew dependencies", Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"autoremove"} }},
 			},
 		},
@@ -330,7 +339,7 @@ func buildAllTask(ctx Context) Task {
 		desc += " → hms"
 	}
 	if ctx.DarwinRebuild != "" && ctx.OS == "darwin" {
-		steps = append(steps, Step{Cmd: func(c Context) (string, []string) {
+		steps = append(steps, Step{Mode: ExecutionInteractive, Cmd: func(c Context) (string, []string) {
 			return "sudo", []string{"-H", c.DarwinRebuild, "switch", "--flake", ".#" + c.Hostname, "--impure"}
 		}})
 		desc += " → nds"
@@ -338,7 +347,7 @@ func buildAllTask(ctx Context) Task {
 	if ctx.BrewBin != "" {
 		steps = append(steps,
 			Step{Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"update"} }},
-			Step{Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"upgrade"} }},
+			Step{Mode: ExecutionInteractive, Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"upgrade"} }},
 			Step{Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"autoremove"} }},
 		)
 		desc += " → brew"
@@ -385,6 +394,7 @@ func BuildQueue(task Task, ctx Context) []WorkItem {
 			Args:      args,
 			Dir:       dir,
 			EnvExtra:  env,
+			Mode:      step.Mode,
 		}
 	}
 	return items
