@@ -1,6 +1,9 @@
 package packages
 
-import "context"
+import (
+	"context"
+	"errors"
+)
 
 type Provider string
 
@@ -23,6 +26,30 @@ const (
 	ScopeShared   Scope = "shared"
 	ScopePlatform Scope = "platform"
 	ScopeHost     Scope = "host"
+)
+
+type Target struct {
+	Path        string
+	Assignment  string
+	Quoted      bool
+	ApplyAction string
+}
+
+type Section = string
+
+type Proposal struct {
+	Target       Target
+	Original     []byte
+	Proposed     []byte
+	OriginalHash [32]byte
+	ProposedHash [32]byte
+	Diff         string
+}
+
+var (
+	ErrAlreadyDeclared = errors.New("package already declared")
+	ErrAmbiguousTarget = errors.New("declaration target is missing or ambiguous")
+	ErrSectionNotFound = errors.New("declaration section not found")
 )
 
 type Candidate struct {
