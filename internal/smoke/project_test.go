@@ -207,3 +207,21 @@ func TestCatalogSketchMentionsCoreProfiles(t *testing.T) {
 		}
 	}
 }
+
+func TestReadmeExplainsGuidedPackageWorkflow(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(repoRoot(t), "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	readme := string(data)
+	for _, want := range []string{
+		"review every mutating plan",
+		"interactive terminal handoff",
+		"Add Package",
+		"declarative Nix or Homebrew config",
+	} {
+		if !strings.Contains(readme, want) {
+			t.Errorf("README missing %q", want)
+		}
+	}
+}

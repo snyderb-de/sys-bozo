@@ -30,9 +30,11 @@ These tests must not touch the real home directory, package managers, SSH config
 
 Runs locally without a VM.
 
-The test creates a temporary fake home, points sys-bozo at it, and verifies file output.
+Implemented tests create temporary homes and repositories, inject command and
+package-provider adapters, and verify file output without contacting real
+managers. Future installer tests can extend the same boundary.
 
-Example future shape:
+Example shape for future installer-specific integration tests:
 
 ```sh
 SYS_BOZO_HOME="$(mktemp -d)" go test ./... -run Integration
@@ -47,6 +49,74 @@ Tests:
 - real-run never writes outside allowed roots
 
 This is the safety net for "do not trash my actual machine."
+
+## Current Package And Terminal Regression Cases
+
+These cases are automated with fixture repositories, fake homes, harmless fake
+commands, and injected package-manager responses. They must not use real
+Homebrew state, Nix profiles, Home Manager generations, nix-darwin state, or
+the developer's config files.
+
+### Fake-repo package edit
+
+```sh
+go test ./internal/tui -run TestPackageWorkflowFakeRepoSmoke -count=1 -v
+```
+
+The test searches through a fake adapter, reviews a Nix insertion, applies it
+only to a temporary `DOTFILES_REPO`, runs a fake rebuild command, and verifies
+a fixture executable. It also proves the declaration is byte-for-byte
+unchanged before confirmation.
+
+### Provider partial failure
+
+```sh
+go test ./internal/packages -run 'TestSearchKeepsBrewWhenNixFails|TestSearchDiscardsFailedFormulaOutputAndKeepsCask|TestSearchDiscardsFailedCaskOutputAndKeepsFormula|TestSearchDiscardsAllBrewOutputWhenBothSearchesFail' -count=1 -v
+```
+
+Search failures are isolated by provider. Usable results survive a failed Nix,
+Brew formula, or Brew cask query; output from a failed query is discarded and
+the error remains available for the TUI warning.
+
+### Stale hash and revert
+
+```sh
+go test ./internal/packages -run 'TestApplyRejectsStaleFileAndPreservesIt|TestApplyRejectsFileChangedWhilePreparingTemporaryFile|TestProposeRevertChecksPostHashAndRestoresExactBytes' -count=1 -v
+go test ./internal/tui -run 'TestPackageRebuildFailureOffersHashGatedRevertReviewWithoutWriting|TestPackageRevertReviewRejectsStaleDeclaration|TestReversePackageRebuildRetrySkipsAppliedReverseEdit' -count=1 -v
+```
+
+Apply rejects a declaration changed after Review, including a change racing the
+atomic temporary-file preparation. Revert is offered only after an applied edit
+and failed rebuild, is checked against the exact post-edit hash, and receives
+its own diff and confirmation. A stale revert does not write.
+
+### 80x24 and `NO_COLOR`
+
+```sh
+NO_COLOR=1 PACKAGE_VISUAL_LOG=1 go test ./internal/tui -run 'TestPackageWorkflowViewsFit80x24AndPreserveNoColorSemantics|TestPackageReviewDiffViewportPreservesAndScrollsFullDiffAt80x24|TestTask5VisualSmokeFitsTargetTerminals|TestTask5NoColorHomeReviewAndResultHaveNoANSI' -count=1 -v
+```
+
+The package and maintenance screens must fit an 80-column by 24-row terminal.
+Long package diffs remain scrollable rather than being discarded. With
+`NO_COLOR`, semantic labels remain present and output contains no ANSI styling.
+
+### Interactive terminal handoff
+
+```sh
+go test ./internal/runner ./cmd/sys-bozo ./internal/tui -run 'TestRunInteractiveUsesProvidedStdio|TestRunWorkItemDispatchesInteractiveMode|TestAdvanceQueueUsesTerminalHandoffForInteractiveWork|TestInteractiveHandoffReturnAdvancesToSuccessResult|TestInteractiveFailureStopsQueueAndRestoresDoneState|TestTerminalHandoffCancellationStoresCancelledResult' -count=1 -v
+```
+
+These tests prove interactive work receives native stdin/stdout/stderr, avoids
+the captured-output scanner, and restores truthful success, failure, or
+cancellation state. An optional real-PTY restoration smoke test uses only
+`/usr/bin/printf` and a temporary home:
+
+```sh
+SYS_BOZO_PTY_SMOKE=1 go test ./internal/tui -run TestPTYTerminalHandoffSmoke -count=1 -v
+```
+
+Run that command from an actual terminal. It intentionally skips in ordinary
+non-PTY automation.
 
 ### Tier 2: Linux Container Tests
 
@@ -144,10 +214,10 @@ Tests inspect the plan first. Execution is a separate layer. This is how sys-boz
 ## First Test Milestones
 
 1. Keep current smoke tests green.
-2. Add catalog parser tests.
-3. Add profile resolver tests.
-4. Add exclusion tests.
-5. Add dry-run planner tests.
+2. Keep plan, execution, terminal-handoff, TUI, and package workflow tests green.
+3. Add catalog parser tests.
+4. Add profile resolver tests.
+5. Add exclusion tests.
 6. Add fake-home install tests.
 7. Add Linux container tests.
 8. Add macOS runner smoke tests.

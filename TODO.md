@@ -76,6 +76,8 @@
 - [x] Use Go with Bubble Tea, Bubbles, and Lip Gloss.
 - [x] Add `sys-bozo` default TUI entrypoint.
 - [x] Add non-interactive command parity for every TUI action — `sys-bozo run <action>`.
+- [x] Preview exact maintenance/package plans and require confirmation before execution.
+- [x] Preserve native interactive input with terminal handoff and restore the TUI afterward.
 - [ ] Build dashboard stats:
   - host facts
   - repo dirty state
@@ -90,11 +92,11 @@
   - Nix flake update by input/scope
   - Home Manager apply
   - nix-darwin apply
-- [ ] Build package search:
+- [x] Build package search:
   - search Nix
   - search Brew
-  - compare results
-  - ask whether package belongs in catalog/profile
+  - compare results and preserve one provider when the other fails
+  - choose placement scope and reject unsupported provider/scope pairs
   - open/edit the chosen config instead of hiding changes behind early generated variables
 - [ ] Build package move plans:
   - Brew to Nix
