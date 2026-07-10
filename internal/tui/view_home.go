@@ -9,7 +9,28 @@ import (
 
 // ── View ──────────────────────────────────────────────────────────────────
 
+var homeEntries = []struct {
+	number, label string
+	target        screen
+}{
+	{"01", "WEEKLY MAINTENANCE", screenMaintenance},
+	{"02", "ADD PACKAGE", screenHome},
+	{"03", "INSPECT SYSTEM", screenInspect},
+}
+
 func (m Model) View() string {
+	switch m.screen {
+	case screenHome:
+		return m.viewHome()
+	case screenMaintenance:
+		return m.viewMaintenance()
+	case screenReview:
+		return m.viewReview()
+	}
+	return m.viewLegacy()
+}
+
+func (m Model) viewLegacy() string {
 	w := m.width
 	if w <= 0 {
 		w = 120
@@ -24,6 +45,97 @@ func (m Model) View() string {
 	}
 
 	return styleShell.Width(inner).Render(strings.Join(parts, "\n\n"))
+}
+
+func (m Model) viewHome() string {
+	contentWidth := primaryContentWidth(m.width)
+	s := m.styles
+
+	health := statusText(s, "SYSTEM HEALTHY", statusSuccess)
+	if m.facts.DotfilesDirty > 0 || m.facts.BrewOutdated > 0 {
+		health = statusText(s, "SYSTEM NEEDS ATTENTION", statusAttention)
+	}
+
+	host := m.targetHost()
+	branch := m.facts.DotfilesBranch
+	if branch == "" {
+		branch = "unknown"
+	}
+	repo := "CLEAN"
+	repoKind := statusSuccess
+	if m.facts.DotfilesDirty > 0 {
+		repo = fmt.Sprintf("%d DIRTY", m.facts.DotfilesDirty)
+		repoKind = statusDanger
+	}
+	updates := "CURRENT"
+	updatesKind := statusSuccess
+	if m.facts.BrewOutdated > 0 {
+		updates = fmt.Sprintf("%d PENDING", m.facts.BrewOutdated)
+		updatesKind = statusAttention
+	}
+
+	rows := []string{
+		s.major.Render("SYS/BOZO"),
+		s.label.Render("WORKSTATION CONTROL"),
+		majorRule(s, contentWidth, true),
+		"",
+		s.title.Render("SYSTEM") + "  " + health,
+		"",
+		s.label.Render("HOST") + "  " + s.text.Render(host),
+		s.label.Render("BRANCH") + "  " + s.text.Render(branch),
+		s.label.Render("REPOSITORY") + "  " + statusText(s, repo, repoKind),
+		s.label.Render("UPDATES") + "  " + statusText(s, updates, updatesKind),
+		"",
+		majorRule(s, contentWidth, false),
+		"",
+	}
+
+	for i, entry := range homeEntries {
+		kind := statusMuted
+		label := "LOCKED"
+		if !homeEntryLocked(i) {
+			kind = statusSuccess
+			label = "READY"
+		}
+		rows = append(rows, numberedRow(s, entry.number, entry.label, statusText(s, label, kind), contentWidth, i == m.homeCursor && !homeEntryLocked(i)))
+	}
+	rows = append(rows, "", s.muted.Render("↑/↓ MOVE   ENTER OPEN   Q QUIT"))
+
+	return primaryFrame(s, m.width, strings.Join(rows, "\n"))
+}
+
+const primaryFramePadding = 3
+
+func primaryContentWidth(width int) int {
+	return max(1, layoutWidth(width)-primaryFramePadding*2)
+}
+
+func primaryFrame(s uiStyles, width int, content string) string {
+	return s.field.
+		Width(layoutWidth(width)).
+		Padding(1, primaryFramePadding).
+		Render(content)
+}
+
+func (m Model) targetHost() string {
+	user := m.facts.User
+	if user == "" {
+		user = m.runCtx.User
+	}
+	host := m.facts.Hostname
+	if host == "" {
+		host = m.runCtx.Hostname
+	}
+	switch {
+	case user != "" && host != "":
+		return user + "@" + host
+	case host != "":
+		return host
+	case user != "":
+		return user
+	default:
+		return "unknown"
+	}
 }
 
 func (m Model) viewHeader(w int) string {

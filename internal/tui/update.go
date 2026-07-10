@@ -135,6 +135,23 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "n":
 			m.openMaintenance("nds")
 			return m, nil
+		case "j", "down":
+			m.moveHomeCursor(1)
+			return m, nil
+		case "k", "up":
+			m.moveHomeCursor(-1)
+			return m, nil
+		case "1":
+			m.openHomeEntry(0)
+			return m, nil
+		case "2":
+			return m, nil
+		case "3":
+			m.openHomeEntry(2)
+			return m, nil
+		case "enter":
+			m.openHomeEntry(m.homeCursor)
+			return m, nil
 		}
 	}
 	if m.screen == screenReview || m.screen == screenRunning {
@@ -143,9 +160,13 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
-	if msg.String() == "enter" || msg.String() == " " {
-		switch m.screen {
-		case screenMaintenance:
+	switch m.screen {
+	case screenMaintenance:
+		switch msg.String() {
+		case " ":
+			m.toggleMaintenanceSelection()
+			return m, nil
+		case "enter":
 			if !m.hasAvailableSelection() {
 				available := m.availableTasks()
 				if m.cursor >= 0 && m.cursor < len(available) {
@@ -154,8 +175,21 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.reviewSelection()
 			return m, nil
-		case screenReview:
+		case "esc":
+			m.screen = screenHome
+			m.reviewed = reviewedPlan{}
+			return m, nil
+		}
+	case screenReview:
+		switch msg.String() {
+		case "enter":
 			return m, m.confirmReviewedPlan()
+		case " ":
+			return m, nil
+		case "esc":
+			m.screen = screenMaintenance
+			m.reviewed = reviewedPlan{}
+			return m, nil
 		}
 	}
 
@@ -264,6 +298,47 @@ func (m Model) auditCmdIfNeeded() tea.Cmd {
 }
 
 // ── Navigation ────────────────────────────────────────────────────────────
+
+func (m *Model) moveHomeCursor(delta int) {
+	if len(homeEntries) == 0 {
+		return
+	}
+	for range homeEntries {
+		m.homeCursor = (m.homeCursor + delta + len(homeEntries)) % len(homeEntries)
+		if !homeEntryLocked(m.homeCursor) {
+			return
+		}
+	}
+}
+
+func (m *Model) toggleMaintenanceSelection() {
+	available := m.availableTasks()
+	if m.cursor < 0 || m.cursor >= len(available) {
+		return
+	}
+	if m.selected == nil {
+		m.selected = map[string]bool{}
+	}
+	id := available[m.cursor].ID
+	m.selected[id] = !m.selected[id]
+}
+
+func (m *Model) openHomeEntry(index int) {
+	if index < 0 || index >= len(homeEntries) || homeEntryLocked(index) {
+		return
+	}
+	m.homeCursor = index
+	switch homeEntries[index].target {
+	case screenMaintenance:
+		m.openMaintenance()
+	case screenInspect:
+		m.screen = screenInspect
+	}
+}
+
+func homeEntryLocked(index int) bool {
+	return index < 0 || index >= len(homeEntries) || homeEntries[index].number == "02"
+}
 
 func (m *Model) nextTab() {
 	m.tab = (m.tab + 1) % len(m.tabs)

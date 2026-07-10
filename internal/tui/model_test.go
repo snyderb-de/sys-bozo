@@ -174,6 +174,171 @@ func TestSplitPreservesAuditConfigAndDoctorViews(t *testing.T) {
 	}
 }
 
+func TestHomeUsesMonolithHierarchyAt80And100Columns(t *testing.T) {
+	for _, width := range []int{80, 100} {
+		m := testGuidedModel()
+		m.width, m.height = width, 30
+		m.styles = newUIStyles(true)
+		m.facts = system.Facts{User: "bag", Hostname: "mini", DotfilesBranch: "main", BrewOutdated: 3}
+		out := m.View()
+		for _, want := range []string{"SYS/BOZO", "SYSTEM", "WEEKLY MAINTENANCE", "ADD PACKAGE", "INSPECT SYSTEM"} {
+			if !strings.Contains(out, want) {
+				t.Fatalf("width %d missing %q:\n%s", width, want, out)
+			}
+		}
+		if lipgloss.Width(out) > width {
+			t.Fatalf("width %d rendered %d", width, lipgloss.Width(out))
+		}
+	}
+}
+
+func TestReviewShowsExactCommandsAndTTYWarning(t *testing.T) {
+	m := testGuidedModel()
+	m.styles = newUIStyles(true)
+	m.screen = screenReview
+	m.reviewed = reviewedPlan{
+		Action: "brew",
+		Items: []runner.WorkItem{{
+			Name: "brew",
+			Args: []string{"upgrade"},
+			Mode: runner.ExecutionInteractive,
+		}},
+	}
+	out := m.View()
+	for _, want := range []string{"REVIEW", "brew upgrade", "TTY", "ENTER CONFIRM"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestReviewWrapsLongExactCommandWithin80Columns(t *testing.T) {
+	m := testGuidedModel()
+	m.width, m.height = 80, 30
+	m.styles = newUIStyles(true)
+	m.screen = screenReview
+	m.facts = system.Facts{User: "bag", Hostname: "mini", DotfilesDirty: 2}
+	item := runner.WorkItem{
+		Name: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-home-manager/bin/home-manager",
+		Args: []string{"switch", "--flake", ".#bag@mini"},
+		Mode: runner.ExecutionInteractive,
+	}
+	m.reviewed = reviewedPlan{Action: "hms", Items: []runner.WorkItem{item}}
+
+	out := m.View()
+	if lipgloss.Width(out) > 80 {
+		t.Fatalf("rendered width=%d want <=80:\n%s", lipgloss.Width(out), out)
+	}
+	compact := strings.Join(strings.Fields(out), "")
+	compactCommand := strings.ReplaceAll(runner.CmdLabel(item), " ", "")
+	if !strings.Contains(compact, compactCommand) {
+		t.Fatalf("wrapped output lost or reordered command characters %q:\n%s", runner.CmdLabel(item), out)
+	}
+	for _, want := range []string{"bag@mini", "DIRTY", "TTY"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestMaintenanceShowsGroupedCheckboxesAt80And100Columns(t *testing.T) {
+	for _, width := range []int{80, 100} {
+		m := testGuidedModel()
+		m.width, m.height = width, 30
+		m.styles = newUIStyles(true)
+		m.screen = screenMaintenance
+		m.selected["hms"] = true
+		out := m.View()
+		for _, want := range []string{"SELECT", "home-manager", "[x]", "hms", "SPACE TOGGLE", "ENTER REVIEW"} {
+			if !strings.Contains(out, want) {
+				t.Fatalf("width %d missing %q:\n%s", width, want, out)
+			}
+		}
+		if lipgloss.Width(out) > width {
+			t.Fatalf("width %d rendered %d", width, lipgloss.Width(out))
+		}
+	}
+}
+
+func TestMaintenanceRemainsUsableAt80By24(t *testing.T) {
+	m := testGuidedModel()
+	m.width, m.height = 80, 24
+	m.styles = newUIStyles(true)
+	m.openMaintenance("hms")
+
+	out := m.View()
+	if lines := strings.Count(out, "\n") + 1; lines > 24 {
+		t.Fatalf("rendered height=%d want <=24:\n%s", lines, out)
+	}
+	for _, want := range []string{"SELECT", "[x]", "SPACE TOGGLE", "ENTER REVIEW"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestHomeNavigationSkipsLockedPackageAndRoutesAvailableEntries(t *testing.T) {
+	m := testGuidedModel()
+
+	next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyDown})
+	got := next.(Model)
+	if cmd != nil || got.screen != screenHome || got.homeCursor != 2 {
+		t.Fatalf("down: cmd=%v screen=%v cursor=%d", cmd, got.screen, got.homeCursor)
+	}
+
+	next, cmd = m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
+	got = next.(Model)
+	if cmd != nil || got.screen != screenHome {
+		t.Fatalf("locked shortcut: cmd=%v screen=%v", cmd, got.screen)
+	}
+
+	next, cmd = m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	got = next.(Model)
+	if cmd != nil || got.screen != screenMaintenance {
+		t.Fatalf("maintenance entry: cmd=%v screen=%v", cmd, got.screen)
+	}
+
+	next, cmd = m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'3'}})
+	got = next.(Model)
+	if cmd != nil || got.screen != screenInspect {
+		t.Fatalf("inspect shortcut: cmd=%v screen=%v", cmd, got.screen)
+	}
+}
+
+func TestMaintenanceSpaceTogglesAndReviewEscapeReturnsWithoutRunning(t *testing.T) {
+	m := testGuidedModel()
+	m.openMaintenance()
+	available := m.availableTasks()
+	if len(available) == 0 {
+		t.Fatal("need available maintenance task")
+	}
+	wantID := available[0].ID
+
+	next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeySpace})
+	m = next.(Model)
+	if cmd != nil || m.screen != screenMaintenance || !m.selected[wantID] {
+		t.Fatalf("toggle: cmd=%v screen=%v selected=%v", cmd, m.screen, m.selected)
+	}
+
+	next, cmd = m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+	if cmd != nil || m.screen != screenReview || m.mode == modeRunning || m.reviewed.Action != wantID {
+		t.Fatalf("review: cmd=%v screen=%v mode=%v reviewed=%#v", cmd, m.screen, m.mode, m.reviewed)
+	}
+
+	next, cmd = m.handleKey(tea.KeyMsg{Type: tea.KeySpace})
+	m = next.(Model)
+	if cmd != nil || m.screen != screenReview || m.mode == modeRunning {
+		t.Fatalf("review space: cmd=%v screen=%v mode=%v", cmd, m.screen, m.mode)
+	}
+
+	next, cmd = m.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
+	m = next.(Model)
+	if cmd != nil || m.screen != screenMaintenance || m.mode == modeRunning || !m.selected[wantID] {
+		t.Fatalf("back: cmd=%v screen=%v mode=%v selected=%v", cmd, m.screen, m.mode, m.selected)
+	}
+}
+
 func TestMaintenanceSelectionBuildsReviewWithoutRunning(t *testing.T) {
 	m := testGuidedModel()
 	m.openMaintenance("hms")
@@ -277,8 +442,7 @@ func TestShortcutPreselectsWithoutExecuting(t *testing.T) {
 
 func TestActionsEnterReviewsCurrentAvailableTaskWithoutRunning(t *testing.T) {
 	m := testGuidedModel()
-	next, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
-	m = next.(Model)
+	m.openMaintenance()
 	available := m.availableTasks()
 	if len(available) < 2 || available[1].ID == "hms" || available[1].ID == "nds" {
 		t.Fatalf("need deterministic non-shortcut task, available=%v", available)
@@ -404,15 +568,14 @@ func TestWorkflowScreensIgnoreTabNavigation(t *testing.T) {
 	}
 }
 
-func TestShortcutsOnlyOpenMaintenanceFromHome(t *testing.T) {
+func TestHomeNumericShortcutsUseLaunchEntries(t *testing.T) {
 	tests := []struct {
 		key        rune
 		wantScreen screen
 	}{
-		{key: '2', wantScreen: screenMaintenance},
-		{key: '3', wantScreen: screenConfig},
-		{key: '4', wantScreen: screenAudit},
-		{key: '5', wantScreen: screenDoctor},
+		{key: '1', wantScreen: screenMaintenance},
+		{key: '2', wantScreen: screenHome},
+		{key: '3', wantScreen: screenInspect},
 	}
 	for _, tt := range tests {
 		t.Run(string(tt.key), func(t *testing.T) {
@@ -422,10 +585,19 @@ func TestShortcutsOnlyOpenMaintenanceFromHome(t *testing.T) {
 			if got.screen != tt.wantScreen {
 				t.Fatalf("screen=%v, want %v", got.screen, tt.wantScreen)
 			}
+		})
+	}
+}
 
-			next, _ = got.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
-			got = next.(Model)
-			if got.screen != tt.wantScreen || len(got.selected) != 0 {
+func TestMaintenanceShortcutsCannotEscapeNonHomeScreens(t *testing.T) {
+	for _, wantScreen := range []screen{screenMaintenance, screenReview, screenInspect, screenConfig, screenAudit, screenDoctor} {
+		t.Run(fmt.Sprint(wantScreen), func(t *testing.T) {
+			m := testGuidedModel()
+			m.screen = wantScreen
+
+			next, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
+			got := next.(Model)
+			if got.screen != wantScreen || len(got.selected) != 0 {
 				t.Fatalf("shortcut escaped screen: screen=%v selected=%v", got.screen, got.selected)
 			}
 		})

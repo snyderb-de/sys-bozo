@@ -6,7 +6,161 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/snyderb-de/sys-bozo/internal/runner"
 )
+
+// ── Guided planning ───────────────────────────────────────────────────────
+
+func (m Model) viewMaintenance() string {
+	contentWidth := primaryContentWidth(m.width)
+	s := m.styles
+
+	rows := []string{
+		s.major.Render("SELECT"),
+		s.label.Render("WEEKLY MAINTENANCE"),
+		majorRule(s, contentWidth, true),
+		"",
+	}
+
+	lastGroup := ""
+	availableIndex := 0
+	compact := m.height > 0 && m.height <= 30
+	for _, task := range m.tasks {
+		available := task.Available(m.runCtx)
+		if compact && !available {
+			continue
+		}
+		if task.Group != lastGroup {
+			if lastGroup != "" {
+				rows = append(rows, "")
+			}
+			rows = append(rows, s.title.Render(task.Group))
+			lastGroup = task.Group
+		}
+
+		active := available && availableIndex == m.cursor
+		marker := "  "
+		labelStyle := s.muted
+		if active {
+			marker = "> "
+			labelStyle = s.active
+		} else if available {
+			labelStyle = s.text
+		}
+
+		checkbox := "[ ]"
+		status := statusText(s, "LOCKED", statusMuted)
+		if available {
+			status = statusText(s, "READY", statusSuccess)
+		}
+		if available && m.selected[task.ID] {
+			checkbox = "[x]"
+			status = statusText(s, "SELECTED", statusActive)
+		}
+
+		left := marker + labelStyle.Render(checkbox+" "+task.Label) + "  " + s.muted.Render(task.Desc)
+		gap := max(1, contentWidth-lipgloss.Width(left)-lipgloss.Width(status))
+		rows = append(rows, left+strings.Repeat(" ", gap)+status)
+		if available {
+			availableIndex++
+		}
+	}
+
+	rows = append(rows,
+		"",
+		majorRule(s, contentWidth, false),
+		"",
+		s.muted.Render("ESCAPE BACK   SPACE TOGGLE")+"   "+s.active.Render("ENTER REVIEW"),
+	)
+
+	return primaryFrame(s, m.width, strings.Join(rows, "\n"))
+}
+
+func (m Model) viewReview() string {
+	contentWidth := primaryContentWidth(m.width)
+	s := m.styles
+
+	rows := []string{
+		s.major.Render("REVIEW"),
+		s.label.Render("IMMUTABLE EXECUTION PLAN"),
+		majorRule(s, contentWidth, true),
+		"",
+		s.label.Render("TARGET HOST") + "  " + s.text.Render(m.targetHost()),
+		s.label.Render("ACTION") + "  " + s.text.Render(m.reviewed.Action),
+	}
+	if m.facts.DotfilesDirty > 0 {
+		rows = append(rows, statusText(s, fmt.Sprintf("WARNING  DOTFILES REPOSITORY DIRTY — %d FILES", m.facts.DotfilesDirty), statusDanger))
+	}
+	rows = append(rows, "", majorRule(s, contentWidth, false), "")
+
+	for i, item := range m.reviewed.Items {
+		status := statusText(s, "READY", statusMuted)
+		if item.Mode == runner.ExecutionInteractive {
+			status = statusText(s, "TTY", statusDanger)
+		}
+		rows = append(rows, reviewCommandRows(s, fmt.Sprintf("%02d", i+1), runner.CmdLabel(item), status, contentWidth)...)
+	}
+
+	rows = append(rows,
+		"",
+		majorRule(s, contentWidth, false),
+		"",
+		s.muted.Render("ESCAPE BACK")+"   "+s.active.Render("ENTER CONFIRM"),
+	)
+
+	return primaryFrame(s, m.width, strings.Join(rows, "\n"))
+}
+
+func reviewCommandRows(s uiStyles, number, command, renderedStatus string, width int) []string {
+	prefix := "  " + s.muted.Render(number) + " "
+	commandWidth := max(1, width-lipgloss.Width(prefix)-lipgloss.Width(renderedStatus)-1)
+	lines := wrapText(command, commandWidth)
+	if len(lines) == 1 {
+		return []string{numberedRow(s, number, command, renderedStatus, width, false)}
+	}
+
+	rows := []string{prefix + s.text.Render(lines[0])}
+	continuation := strings.Repeat(" ", lipgloss.Width(prefix))
+	for _, line := range lines[1 : len(lines)-1] {
+		rows = append(rows, continuation+s.text.Render(line))
+	}
+	last := continuation + s.text.Render(lines[len(lines)-1])
+	gap := max(1, width-lipgloss.Width(last)-lipgloss.Width(renderedStatus))
+	rows = append(rows, last+strings.Repeat(" ", gap)+renderedStatus)
+	return rows
+}
+
+func wrapText(text string, width int) []string {
+	text = strings.TrimSpace(text)
+	if text == "" || width < 1 {
+		return []string{text}
+	}
+
+	var lines []string
+	for lipgloss.Width(text) > width {
+		runes := []rune(text)
+		cut, lastSpace := 0, -1
+		for i := range runes {
+			if lipgloss.Width(string(runes[:i+1])) > width {
+				break
+			}
+			cut = i + 1
+			if runes[i] == ' ' {
+				lastSpace = i
+			}
+		}
+		if lastSpace > 0 {
+			cut = lastSpace
+		}
+		if cut == 0 {
+			cut = 1
+		}
+		lines = append(lines, strings.TrimSpace(string(runes[:cut])))
+		text = strings.TrimSpace(string(runes[cut:]))
+	}
+	return append(lines, text)
+}
 
 // ── Actions ───────────────────────────────────────────────────────────────
 
