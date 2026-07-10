@@ -242,9 +242,10 @@ func (m Model) viewResult() string {
 		"",
 	}
 	if m.resultLogVisible {
-		rows = append(rows, majorRule(s, contentWidth, false), "", s.label.Render("OUTPUT"), m.logVP.View(), "", majorRule(s, contentWidth, false), "", s.muted.Render("L SUMMARY   ESCAPE BACK   Q CLOSE"))
+		rows = append(rows, majorRule(s, contentWidth, false), "", s.label.Render("OUTPUT"), m.logVP.View(), "", majorRule(s, contentWidth, false), "", s.muted.Render(m.resultFooter(true)))
 		return primaryFrame(s, m.width, strings.Join(rows, "\n"))
 	}
+	renderedError := false
 	for i, item := range m.reviewed.Items {
 		label := "WAITING"
 		rowKind := statusMuted
@@ -270,12 +271,73 @@ func (m Model) viewResult() string {
 			}
 		}
 		rows = append(rows, reviewCommandRows(s, fmt.Sprintf("%02d", i+1), command, statusText(s, label, rowKind), contentWidth)...)
+		if i < len(m.stepResults) && m.stepResults[i].Err != nil {
+			rows = append(rows, resultErrorRows(s, m.stepResults[i].Err.Error(), contentWidth, m.height > 0 && m.height <= 24)...)
+			renderedError = true
+		}
 	}
-	if m.runErr != nil {
-		rows = append(rows, "", s.danger.Render(m.runErr.Error()))
+	if m.runErr != nil && !renderedError {
+		rows = append(rows, resultErrorRows(s, m.runErr.Error(), contentWidth, m.height > 0 && m.height <= 24)...)
 	}
-	rows = append(rows, "", majorRule(s, contentWidth, false), "", s.muted.Render("L VIEW LOG   R REVIEW RETRY   ESCAPE BACK   Q CLOSE"))
+	rows = append(rows, "", majorRule(s, contentWidth, false), "", s.muted.Render(m.resultFooter(false)))
 	return primaryFrame(s, m.width, strings.Join(rows, "\n"))
+}
+
+func resultErrorRows(s uiStyles, message string, width int, compact bool) []string {
+	const marker = "    ! ERROR "
+	message = strings.Join(strings.Fields(message), " ")
+	lineWidth := max(1, width-lipgloss.Width(marker))
+	if compact {
+		return []string{s.danger.Render(marker + truncateVisible(message, lineWidth))}
+	}
+	wrapped := wrapText(message, lineWidth)
+	const maxErrorRows = 3
+	if len(wrapped) > maxErrorRows {
+		wrapped = wrapped[:maxErrorRows]
+		wrapped[maxErrorRows-1] = truncateVisible(wrapped[maxErrorRows-1]+"…", lineWidth)
+	}
+	rows := make([]string, 0, len(wrapped))
+	for i, line := range wrapped {
+		prefix := strings.Repeat(" ", lipgloss.Width(marker))
+		if i == 0 {
+			prefix = marker
+		}
+		rows = append(rows, s.danger.Render(prefix+line))
+	}
+	return rows
+}
+
+func truncateVisible(text string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if lipgloss.Width(text) <= width {
+		return text
+	}
+	if width == 1 {
+		return "…"
+	}
+	runes := []rune(text)
+	cut := 0
+	for i := range runes {
+		if lipgloss.Width(string(runes[:i+1])) > width-1 {
+			break
+		}
+		cut = i + 1
+	}
+	return string(runes[:cut]) + "…"
+}
+
+func (m Model) resultFooter(logVisible bool) string {
+	parts := []string{"L VIEW LOG"}
+	if logVisible {
+		parts[0] = "L SUMMARY"
+	}
+	if _, ok := m.retryStart(); ok {
+		parts = append(parts, "R REVIEW RETRY")
+	}
+	parts = append(parts, "ESCAPE BACK", "Q CLOSE")
+	return strings.Join(parts, "   ")
 }
 
 func (m Model) resultHistoryStatus() history.Status {
@@ -382,16 +444,17 @@ func (m Model) viewActions(w int) string {
 
 func (m Model) renderLog() string {
 	var sb strings.Builder
+	s := m.styles
 	for _, line := range m.logLines {
 		switch line.kind {
 		case logHeader:
-			sb.WriteString(styleBold.Foreground(clrGold).Render(line.text))
+			sb.WriteString(s.attention.Render(line.text))
 		case logCmd:
-			sb.WriteString(styleCmd.Render(line.text))
+			sb.WriteString(s.muted.Render(line.text))
 		case logSuccess:
-			sb.WriteString(styleGood.Render(line.text))
+			sb.WriteString(s.success.Render(line.text))
 		case logError:
-			sb.WriteString(styleErr.Render(line.text))
+			sb.WriteString(s.danger.Render(line.text))
 		default:
 			sb.WriteString(line.text)
 		}

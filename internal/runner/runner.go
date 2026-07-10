@@ -45,6 +45,7 @@ type Step struct {
 	Description string
 	Targets     []string
 	Mode        ExecutionMode
+	Retryable   bool
 	Cmd         func(ctx Context) (name string, args []string)
 }
 
@@ -70,6 +71,7 @@ type WorkItem struct {
 	Dir       string
 	EnvExtra  []string
 	Mode      ExecutionMode
+	Retryable bool
 }
 
 // HMConfigKey returns the flake homeConfigurations key for this host.
@@ -134,8 +136,10 @@ func Build() Context {
 	}
 }
 
-func flakeSwitch(ctx Context) []string { return []string{"switch", "--flake", ".#" + HMConfigKey(ctx.User, ctx.Hostname)} }
-func flakeUpdate() []string            { return []string{"flake", "update"} }
+func flakeSwitch(ctx Context) []string {
+	return []string{"switch", "--flake", ".#" + HMConfigKey(ctx.User, ctx.Hostname)}
+}
+func flakeUpdate() []string { return []string{"flake", "update"} }
 
 // DefaultTasks returns all known actions in display order.
 func DefaultTasks(ctx Context) []Task {
@@ -159,7 +163,7 @@ func DefaultTasks(ctx Context) []Task {
 			Hint:      "after editing flake.nix",
 			Available: darwinAvail,
 			Steps: []Step{
-				{Mode: ExecutionInteractive, Cmd: func(c Context) (string, []string) {
+				{Mode: ExecutionInteractive, Retryable: true, Cmd: func(c Context) (string, []string) {
 					return "sudo", []string{"-H", c.DarwinRebuild, "switch", "--flake", ".#" + c.Hostname, "--impure"}
 				}},
 			},
@@ -175,8 +179,8 @@ func DefaultTasks(ctx Context) []Task {
 				return c.NixBin != "" && c.DarwinRebuild != "" && c.OS == "darwin"
 			},
 			Steps: []Step{
-				{Cmd: func(c Context) (string, []string) { return c.NixBin, flakeUpdate() }},
-				{Mode: ExecutionInteractive, Cmd: func(c Context) (string, []string) {
+				{Retryable: true, Cmd: func(c Context) (string, []string) { return c.NixBin, flakeUpdate() }},
+				{Mode: ExecutionInteractive, Retryable: true, Cmd: func(c Context) (string, []string) {
 					return "sudo", []string{"-H", c.DarwinRebuild, "switch", "--flake", ".#" + c.Hostname, "--impure"}
 				}},
 			},
@@ -190,7 +194,7 @@ func DefaultTasks(ctx Context) []Task {
 			Hint:      "preview what nds would change in Homebrew",
 			Available: func(c Context) bool { return c.OS == "darwin" && c.NixBin != "" },
 			Steps: []Step{
-				{Cmd: func(c Context) (string, []string) {
+				{Retryable: true, Cmd: func(c Context) (string, []string) {
 					return "bash", []string{filepath.Join(c.Repo, "scripts", "nds-dryrun"), c.Hostname}
 				}},
 			},
@@ -219,21 +223,21 @@ func DefaultTasks(ctx Context) []Task {
 			Hint:      "after editing home.nix",
 			Available: hmAvail,
 			Steps: []Step{
-				{Cmd: func(c Context) (string, []string) { return c.HomeManager, flakeSwitch(c) }},
+				{Retryable: true, Cmd: func(c Context) (string, []string) { return c.HomeManager, flakeSwitch(c) }},
 			},
 			Dir: repo,
 			Env: hmEnv,
 		},
 		{
-			ID:    "hmu",
-			Group: "home-manager",
-			Label: "hmu",
-			Desc:  "update inputs + apply user profile",
-			Hint:  "weekly pull or before home.nix changes",
+			ID:        "hmu",
+			Group:     "home-manager",
+			Label:     "hmu",
+			Desc:      "update inputs + apply user profile",
+			Hint:      "weekly pull or before home.nix changes",
 			Available: func(c Context) bool { return c.NixBin != "" && c.HomeManager != "" },
 			Steps: []Step{
-				{Cmd: func(c Context) (string, []string) { return c.NixBin, flakeUpdate() }},
-				{Cmd: func(c Context) (string, []string) { return c.HomeManager, flakeSwitch(c) }},
+				{Retryable: true, Cmd: func(c Context) (string, []string) { return c.NixBin, flakeUpdate() }},
+				{Retryable: true, Cmd: func(c Context) (string, []string) { return c.HomeManager, flakeSwitch(c) }},
 			},
 			Dir: repo,
 			Env: hmEnv,
@@ -263,7 +267,7 @@ func DefaultTasks(ctx Context) []Task {
 				return c.OS == "linux" && c.OSID == "fedora" && c.SudoBin != "" && c.DnfBin != ""
 			},
 			Steps: []Step{
-				{Mode: ExecutionInteractive, Cmd: func(c Context) (string, []string) {
+				{Mode: ExecutionInteractive, Retryable: true, Cmd: func(c Context) (string, []string) {
 					return c.SudoBin, []string{c.DnfBin, "upgrade", "--refresh", "-y"}
 				}},
 			},
@@ -278,22 +282,22 @@ func DefaultTasks(ctx Context) []Task {
 			Hint:      "sync GUI apps and brew-only packages",
 			Available: func(c Context) bool { return c.BrewBin != "" },
 			Steps: []Step{
-				{Title: "Refresh Homebrew metadata", Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"update"} }},
-				{Title: "Upgrade Homebrew packages", Mode: ExecutionInteractive, Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"upgrade"} }},
-				{Title: "Remove unused Homebrew dependencies", Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"autoremove"} }},
+				{Title: "Refresh Homebrew metadata", Retryable: true, Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"update"} }},
+				{Title: "Upgrade Homebrew packages", Mode: ExecutionInteractive, Retryable: true, Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"upgrade"} }},
+				{Title: "Remove unused Homebrew dependencies", Retryable: true, Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"autoremove"} }},
 			},
 		},
 
 		// ── misc ─────────────────────────────────────────────────────────
 		{
-			ID:    "topgrade",
-			Group: "misc",
-			Label: "topgrade",
-			Desc:  "ecosystem sweep",
-			Hint:  "update tool ecosystems not owned by other tasks",
+			ID:        "topgrade",
+			Group:     "misc",
+			Label:     "topgrade",
+			Desc:      "ecosystem sweep",
+			Hint:      "update tool ecosystems not owned by other tasks",
 			Available: func(c Context) bool { return c.Topgrade != "" },
 			Steps: []Step{
-				{Cmd: func(c Context) (string, []string) {
+				{Retryable: true, Cmd: func(c Context) (string, []string) {
 					return c.Topgrade, []string{
 						"--yes",
 						"--skip-notify",
@@ -323,23 +327,23 @@ func buildAllTask(ctx Context) Task {
 	desc := "update inputs"
 
 	if ctx.NixBin != "" {
-		steps = append(steps, Step{Cmd: func(c Context) (string, []string) { return c.NixBin, flakeUpdate() }})
+		steps = append(steps, Step{Retryable: true, Cmd: func(c Context) (string, []string) { return c.NixBin, flakeUpdate() }})
 	}
 	if ctx.HomeManager != "" {
-		steps = append(steps, Step{Cmd: func(c Context) (string, []string) { return c.HomeManager, flakeSwitch(c) }})
+		steps = append(steps, Step{Retryable: true, Cmd: func(c Context) (string, []string) { return c.HomeManager, flakeSwitch(c) }})
 		desc += " → hms"
 	}
 	if ctx.DarwinRebuild != "" && ctx.OS == "darwin" {
-		steps = append(steps, Step{Mode: ExecutionInteractive, Cmd: func(c Context) (string, []string) {
+		steps = append(steps, Step{Mode: ExecutionInteractive, Retryable: true, Cmd: func(c Context) (string, []string) {
 			return "sudo", []string{"-H", c.DarwinRebuild, "switch", "--flake", ".#" + c.Hostname, "--impure"}
 		}})
 		desc += " → nds"
 	}
 	if ctx.BrewBin != "" {
 		steps = append(steps,
-			Step{Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"update"} }},
-			Step{Mode: ExecutionInteractive, Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"upgrade"} }},
-			Step{Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"autoremove"} }},
+			Step{Retryable: true, Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"update"} }},
+			Step{Mode: ExecutionInteractive, Retryable: true, Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"upgrade"} }},
+			Step{Retryable: true, Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"autoremove"} }},
 		)
 		desc += " → brew"
 	}
@@ -386,6 +390,7 @@ func BuildQueue(task Task, ctx Context) []WorkItem {
 			Dir:       dir,
 			EnvExtra:  env,
 			Mode:      step.Mode,
+			Retryable: step.Retryable,
 		}
 	}
 	return items

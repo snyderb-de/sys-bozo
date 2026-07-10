@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -116,15 +115,24 @@ func runInteractiveWork(item runner.WorkItem, start time.Time) tea.Cmd {
 }
 
 func terminalWorkCancelled(err error) bool {
-	if errors.Is(err, context.Canceled) {
-		return true
-	}
 	var exitErr *exec.ExitError
 	if !errors.As(err, &exitErr) {
 		return false
 	}
 	status, ok := exitErr.Sys().(syscall.WaitStatus)
-	return ok && status.Signaled()
+	if !ok {
+		return false
+	}
+	return terminalStatusCancelled(status)
+}
+
+func terminalStatusCancelled(status syscall.WaitStatus) bool {
+	if status.Signaled() {
+		signal := status.Signal()
+		return signal == syscall.SIGINT || signal == syscall.SIGTERM
+	}
+	exitCode := status.ExitStatus()
+	return exitCode == 130 || exitCode == 143
 }
 
 func (m Model) availableTasks() []runner.Task {

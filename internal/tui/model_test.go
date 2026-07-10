@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -278,7 +279,8 @@ func TestResultShowsCompletedFailedAndElapsed(t *testing.T) {
 	m.styles = newUIStyles(true)
 	m.screen = screenResult
 	m.mode = modeDone
-	m.reviewed = reviewedPlan{Action: "all", Items: []runner.WorkItem{{Name: "nix"}, {Name: "brew"}, {Name: "topgrade"}}}
+	m.reviewed = reviewedPlan{Action: "all", Items: []runner.WorkItem{{Name: "nix"}, {Name: "brew", Retryable: true}, {Name: "topgrade"}}}
+	m.queue = cloneWorkItems(m.reviewed.Items)
 	m.queuePos = 1
 	m.runErr = errors.New("exit status 1")
 	m.runElapsed = 5 * time.Second
@@ -309,22 +311,72 @@ func TestResultShowsCompletedFailedAndElapsed(t *testing.T) {
 	}
 }
 
-func TestResultRetryReturnsToReviewWithoutExecuting(t *testing.T) {
+func TestResultRetryReviewsFailedTailWithoutExecuting(t *testing.T) {
 	m := testGuidedModel()
+	items := []runner.WorkItem{
+		{Name: "completed", Args: []string{"one"}, EnvExtra: []string{"A=one"}, Retryable: true},
+		{Name: "failed", Args: []string{"two"}, EnvExtra: []string{"B=two"}, Mode: runner.ExecutionInteractive, Retryable: true},
+		{Name: "waiting", Args: []string{"three"}, EnvExtra: []string{"C=three"}, Retryable: true},
+	}
 	m.screen = screenResult
 	m.mode = modeDone
-	m.reviewed = reviewedPlan{Action: "fixture", Items: []runner.WorkItem{{Name: "fixture-command"}}}
-	m.queue = cloneWorkItems(m.reviewed.Items)
+	m.reviewed = reviewedPlan{Action: "fixture", Items: cloneWorkItems(items)}
+	m.queue = cloneWorkItems(items)
 	m.queuePos = 1
 	m.runErr = errors.New("exit status 1")
+	m.stepResults = []stepResult{
+		{Item: items[0], Status: history.StatusSuccess, Duration: time.Second},
+		{Item: items[1], Status: history.StatusFailure, Duration: time.Second, Err: m.runErr},
+	}
+	called := false
+	m.terminalExec = func(runner.WorkItem, time.Time) tea.Cmd {
+		called = true
+		return func() tea.Msg { return stepDoneMsg{} }
+	}
 
 	next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
 	got := next.(Model)
 	if cmd != nil || got.screen != screenReview || got.mode != modeView || len(got.queue) != 0 || got.queuePos != 0 || got.runErr != nil {
 		t.Fatalf("cmd=%v screen=%v mode=%v queue=%v queuePos=%d runErr=%v", cmd, got.screen, got.mode, got.queue, got.queuePos, got.runErr)
 	}
-	if got.reviewed.Action != "fixture" || len(got.reviewed.Items) != 1 {
+	wantTail := items[1:]
+	if got.reviewed.Action != "fixture" || cmpWorkItems(got.reviewed.Items, wantTail) != "" {
 		t.Fatalf("retry lost reviewed plan: %#v", got.reviewed)
+	}
+	m.queue[1].Args[0] = "mutated-source"
+	m.queue[2].EnvExtra[0] = "C=mutated"
+	if diff := cmpWorkItems(got.reviewed.Items, wantTail); diff != "" {
+		t.Fatalf("retry plan aliases original queue: %s", diff)
+	}
+	if called {
+		t.Fatal("retry key executed work")
+	}
+
+	next, cmd = got.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	confirmed := next.(Model)
+	if cmd == nil || confirmed.mode != modeRunning || confirmed.screen != screenRunning || !called {
+		t.Fatalf("confirmation cmd=%v mode=%v screen=%v called=%v", cmd, confirmed.mode, confirmed.screen, called)
+	}
+}
+
+func TestResultNonRetryableFailureHidesAndIgnoresRetry(t *testing.T) {
+	item := runner.WorkItem{Name: "rollback", Retryable: false}
+	m := testGuidedModel()
+	m.styles = newUIStyles(true)
+	m.screen = screenResult
+	m.mode = modeDone
+	m.reviewed = reviewedPlan{Action: "hmr", Items: []runner.WorkItem{item}}
+	m.queue = []runner.WorkItem{item}
+	m.runErr = errors.New("exit status 1")
+	m.stepResults = []stepResult{{Item: item, Status: history.StatusFailure, Duration: time.Second, Err: m.runErr}}
+
+	if out := m.View(); strings.Contains(out, "R REVIEW RETRY") {
+		t.Fatalf("non-retryable result exposed retry:\n%s", out)
+	}
+	next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	got := next.(Model)
+	if cmd != nil || got.screen != screenResult || got.mode != modeDone || len(got.queue) != 1 || len(got.reviewed.Items) != 1 {
+		t.Fatalf("cmd=%v screen=%v mode=%v queue=%v reviewed=%#v", cmd, got.screen, got.mode, got.queue, got.reviewed)
 	}
 }
 
@@ -340,6 +392,84 @@ func TestResultEscapeReturnsWithoutExecuting(t *testing.T) {
 	got := next.(Model)
 	if cmd != nil || got.mode != modeView || got.screen != screenMaintenance || len(got.queue) != 0 || len(got.reviewed.Items) != 0 {
 		t.Fatalf("cmd=%v mode=%v screen=%v queue=%v reviewed=%#v", cmd, got.mode, got.screen, got.queue, got.reviewed)
+	}
+}
+
+func TestResultRendersStepErrorAdjacentWithoutDuplicate(t *testing.T) {
+	items := []runner.WorkItem{{Name: "completed"}, {Name: "failed", Args: []string{"--two"}}, {Name: "waiting"}}
+	stepErr := errors.New("step two exploded with fixture details")
+	m := testGuidedModel()
+	m.width, m.height = 100, 36
+	m.styles = newUIStyles(true)
+	m.screen = screenResult
+	m.mode = modeDone
+	m.reviewed = reviewedPlan{Action: "fixture", Items: items}
+	m.queue = cloneWorkItems(items)
+	m.runErr = stepErr
+	m.stepResults = []stepResult{
+		{Item: items[0], Status: history.StatusSuccess, Duration: time.Second},
+		{Item: items[1], Status: history.StatusFailure, Duration: 2 * time.Second, Err: stepErr},
+	}
+
+	out := m.View()
+	failedAt := strings.Index(out, "failed --two")
+	errorAt := strings.Index(out, "! ERROR step two exploded")
+	waitingAt := strings.Index(out, "waiting")
+	if failedAt < 0 || errorAt <= failedAt || waitingAt <= errorAt {
+		t.Fatalf("step error is not adjacent to failed row:\n%s", out)
+	}
+	if strings.Count(out, stepErr.Error()) != 1 {
+		t.Fatalf("step error rendered more than once:\n%s", out)
+	}
+	if lipgloss.Width(out) > 100 {
+		t.Fatalf("width=%d want <=100:\n%s", lipgloss.Width(out), out)
+	}
+}
+
+func TestCompactResultTruncatesStepErrorToOneMarkedLine(t *testing.T) {
+	item := runner.WorkItem{Name: "failed", Retryable: true}
+	stepErr := errors.New(strings.Repeat("very-long-fixture-error-", 8))
+	m := testGuidedModel()
+	m.width, m.height = 80, 24
+	m.styles = newUIStyles(true)
+	m.screen = screenResult
+	m.mode = modeDone
+	m.reviewed = reviewedPlan{Action: "fixture", Items: []runner.WorkItem{item}}
+	m.queue = []runner.WorkItem{item}
+	m.runErr = stepErr
+	m.stepResults = []stepResult{{Item: item, Status: history.StatusFailure, Duration: time.Second, Err: stepErr}}
+
+	out := m.View()
+	if !strings.Contains(out, "! ERROR ") || !strings.Contains(out, "…") {
+		t.Fatalf("compact error missing marker or truncation:\n%s", out)
+	}
+	if strings.Count(out, "! ERROR ") != 1 {
+		t.Fatalf("compact error used multiple rows:\n%s", out)
+	}
+	if width, height := lipgloss.Width(out), strings.Count(out, "\n")+1; width > 80 || height > 24 {
+		t.Fatalf("size=%dx%d want <=80x24:\n%s", width, height, out)
+	}
+}
+
+func TestNormalResultCapsLongStepErrorRows(t *testing.T) {
+	item := runner.WorkItem{Name: "failed", Retryable: true}
+	stepErr := errors.New(strings.Repeat("overflow-fixture detail ", 120))
+	m := testGuidedModel()
+	m.width, m.height = 100, 36
+	m.styles = newUIStyles(true)
+	m.screen = screenResult
+	m.mode = modeDone
+	m.reviewed = reviewedPlan{Action: "fixture", Items: []runner.WorkItem{item}}
+	m.queue = []runner.WorkItem{item}
+	m.runErr = stepErr
+	m.stepResults = []stepResult{{Item: item, Status: history.StatusFailure, Duration: time.Second, Err: stepErr}}
+
+	out := m.View()
+	if !strings.Contains(out, "! ERROR ") || !strings.Contains(out, "…") {
+		t.Fatalf("normal error missing marker or capped ellipsis:\n%s", out)
+	}
+	if width, height := lipgloss.Width(out), strings.Count(out, "\n")+1; width > 100 || height > 36 {
+		t.Fatalf("size=%dx%d want <=100x36:\n%s", width, height, out)
 	}
 }
 
@@ -587,6 +717,35 @@ func TestHistoryRendersNewestTwentyEntries(t *testing.T) {
 	}
 }
 
+func TestCompactHistoryTruncatesLongActionsToOneRow(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for i := 0; i < 14; i++ {
+		history.Append(history.Entry{
+			Ts:     time.Unix(int64(i+1), 0),
+			Action: fmt.Sprintf("combined-%02d-", i) + strings.Repeat("very-long-action+", 8),
+			Secs:   time.Second.Seconds(),
+			OK:     true,
+			Status: history.StatusSuccess,
+		})
+	}
+	m := testGuidedModel()
+	m.width, m.height = 80, 24
+	m.styles = newUIStyles(true)
+	m.screen = screenHistory
+
+	out := m.View()
+	if strings.Count(out, "…") != 14 {
+		t.Fatalf("compact history did not truncate each action exactly once:\n%s", out)
+	}
+	if !strings.Contains(out, "ESCAPE BACK") {
+		t.Fatalf("compact history lost footer:\n%s", out)
+	}
+	if width, height := lipgloss.Width(out), strings.Count(out, "\n")+1; width > 80 || height > 24 {
+		t.Fatalf("size=%dx%d want <=80x24:\n%s", width, height, out)
+	}
+}
+
 func TestInspectChildScreensUseMonolithRulesWithoutCards(t *testing.T) {
 	m := testGuidedModel()
 	m.width, m.height = 100, 36
@@ -699,8 +858,8 @@ func TestTask5VisualSmokeFitsTargetTerminals(t *testing.T) {
 	}
 	base.auditItems[0] = system.AuditItem{Name: "ssh config", Detail: "unmanaged", Description: "fixture explanation", Fix: "fixture fix"}
 	items := []runner.WorkItem{
-		{Name: "fixture-stream", Args: []string{"--safe"}},
-		{Name: "fixture-terminal", Args: []string{"--safe"}, Mode: runner.ExecutionInteractive},
+		{Name: "fixture-stream", Args: []string{"--safe"}, Retryable: true},
+		{Name: "fixture-terminal", Args: []string{"--safe"}, Mode: runner.ExecutionInteractive, Retryable: true},
 	}
 	base.reviewed = reviewedPlan{Action: "fixture", Items: cloneWorkItems(items)}
 	base.queue = cloneWorkItems(items)
@@ -727,6 +886,7 @@ func TestTask5VisualSmokeFitsTargetTerminals(t *testing.T) {
 		}},
 		{"result-log", screenResult, func(m *Model) {
 			m.mode, m.queuePos, m.runErr, m.resultLogVisible = modeDone, 1, errors.New("exit status 1"), true
+			m.stepResults = []stepResult{{Item: items[0], Status: history.StatusSuccess, Duration: 2 * time.Second}, {Item: items[1], Status: history.StatusFailure, Duration: 3 * time.Second, Err: m.runErr}}
 		}},
 		{"inspect", screenInspect, nil},
 		{"config", screenConfig, nil},
@@ -776,6 +936,37 @@ func TestTask5NoColorHomeReviewAndResultHaveNoANSI(t *testing.T) {
 		out := m.View()
 		if strings.Contains(out, "\x1b[") {
 			t.Fatalf("screen %v contains ANSI:\n%q", target, out)
+		}
+	}
+}
+
+func TestNoColorResultLogAddsNoANSI(t *testing.T) {
+	previousProfile := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(previousProfile) })
+
+	m := testGuidedModel()
+	m.width, m.height = 100, 30
+	m.styles = newUIStyles(true)
+	m.screen = screenResult
+	m.mode = modeDone
+	m.resultLogVisible = true
+	m.logLines = []logLine{
+		{kind: logHeader, text: "HEADER FIXTURE"},
+		{kind: logCmd, text: "$ fixture --safe"},
+		{kind: logSuccess, text: "SUCCESS FIXTURE"},
+		{kind: logError, text: "ERROR FIXTURE"},
+	}
+	m.logVP = viewport.New(m.logWidth(), m.logHeight())
+	m.logVP.SetContent(m.renderLog())
+
+	out := m.View()
+	if strings.Contains(out, "\x1b[") {
+		t.Fatalf("NO_COLOR Result log contains ANSI: %q", out)
+	}
+	for _, want := range []string{"HEADER FIXTURE", "$ fixture --safe", "SUCCESS FIXTURE", "ERROR FIXTURE"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("Result log missing %q:\n%s", want, out)
 		}
 	}
 }
@@ -1112,6 +1303,43 @@ func TestHomeNumericShortcutsUseLaunchEntries(t *testing.T) {
 	}
 }
 
+func TestHomeConsumesHiddenLegacyRoutes(t *testing.T) {
+	keys := []tea.KeyMsg{
+		{Type: tea.KeyTab},
+		{Type: tea.KeyShiftTab},
+		{Type: tea.KeyRight},
+		{Type: tea.KeyLeft},
+		{Type: tea.KeyRunes, Runes: []rune{'4'}},
+		{Type: tea.KeyRunes, Runes: []rune{'5'}},
+	}
+	for _, key := range keys {
+		t.Run(key.String(), func(t *testing.T) {
+			m := testGuidedModel()
+			m.tab = 0
+			next, cmd := m.handleKey(key)
+			got := next.(Model)
+			if cmd != nil || got.screen != screenHome || got.tab != 0 || got.homeCursor != 0 {
+				t.Fatalf("key=%q cmd=%v screen=%v tab=%d cursor=%d", key.String(), cmd, got.screen, got.tab, got.homeCursor)
+			}
+		})
+	}
+}
+
+func TestHomeQuitKeysStillQuit(t *testing.T) {
+	for _, key := range []tea.KeyMsg{{Type: tea.KeyRunes, Runes: []rune{'q'}}, {Type: tea.KeyCtrlC}} {
+		t.Run(key.String(), func(t *testing.T) {
+			m := testGuidedModel()
+			_, cmd := m.handleKey(key)
+			if cmd == nil {
+				t.Fatalf("key=%q returned nil", key.String())
+			}
+			if _, ok := cmd().(tea.QuitMsg); !ok {
+				t.Fatalf("key=%q did not quit", key.String())
+			}
+		})
+	}
+}
+
 func TestMaintenanceShortcutsCannotEscapeNonHomeScreens(t *testing.T) {
 	for _, wantScreen := range []screen{screenMaintenance, screenReview, screenInspect, screenConfig, screenAudit, screenDoctor} {
 		t.Run(fmt.Sprint(wantScreen), func(t *testing.T) {
@@ -1140,25 +1368,28 @@ func TestClosingCompletedRunRestoresActiveTabScreen(t *testing.T) {
 	}
 }
 
-func testModelOnUpdatesTab() Model {
+func testModelOnAuditScreen() Model {
 	return Model{
-		tab:  1,
-		tabs: []string{"Dashboard", "Updates", "Audit", "Doctor"},
-		mode: modeView,
+		screen: screenAudit,
+		tab:    2,
+		tabs:   []string{"Dashboard", "Updates", "Audit", "Doctor"},
+		mode:   modeView,
 	}
 }
 
-func TestTabIntoAuditStartsScan(t *testing.T) {
-	m := testModelOnUpdatesTab()
+func TestInspectEntryStartsAuditScan(t *testing.T) {
+	m := testGuidedModel()
+	m.screen = screenInspect
+	m.inspectCursor = 1
 
-	next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyTab})
+	next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 	model := next.(Model)
 
-	if model.tabs[model.tab] != "Audit" {
-		t.Fatalf("expected Audit tab, got %q", model.tabs[model.tab])
+	if model.screen != screenAudit {
+		t.Fatalf("expected Audit screen, got %v", model.screen)
 	}
 	if cmd == nil {
-		t.Fatal("expected entering Audit with tab to start audit scan")
+		t.Fatal("expected entering Audit to start audit scan")
 	}
 }
 
@@ -1167,8 +1398,7 @@ func TestRefreshOnAuditRestartsScan(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("DOTFILES_REPO", t.TempDir())
 	t.Setenv("PATH", t.TempDir())
-	m := testModelOnUpdatesTab()
-	m.tab = 2
+	m := testModelOnAuditScreen()
 	m.auditReady = true
 
 	next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
@@ -1183,8 +1413,7 @@ func TestRefreshOnAuditRestartsScan(t *testing.T) {
 }
 
 func TestAuditViewShowsFailureGuidance(t *testing.T) {
-	m := testModelOnUpdatesTab()
-	m.tab = 2
+	m := testModelOnAuditScreen()
 	m.auditReady = true
 	m.auditItems = []system.AuditItem{
 		{
@@ -1398,6 +1627,33 @@ func TestTerminalHandoffCancellationStoresCancelledResult(t *testing.T) {
 	got.styles = newUIStyles(true)
 	if out := got.View(); !strings.Contains(out, "CANCELLED") {
 		t.Fatalf("cancelled result missing status:\n%s", out)
+	}
+}
+
+func TestTerminalWorkCancelledOnlyRecognizesUserCancellation(t *testing.T) {
+	tests := []struct {
+		name   string
+		status syscall.WaitStatus
+		want   bool
+	}{
+		{"interrupt", syscall.WaitStatus(syscall.SIGINT), true},
+		{"terminate", syscall.WaitStatus(syscall.SIGTERM), true},
+		{"exit-130", syscall.WaitStatus(130 << 8), true},
+		{"exit-143", syscall.WaitStatus(143 << 8), true},
+		{"segfault", syscall.WaitStatus(syscall.SIGSEGV), false},
+		{"abort", syscall.WaitStatus(syscall.SIGABRT), false},
+		{"kill", syscall.WaitStatus(syscall.SIGKILL), false},
+		{"ordinary-failure", syscall.WaitStatus(1 << 8), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := terminalStatusCancelled(tt.status); got != tt.want {
+				t.Fatalf("terminalStatusCancelled(%#x)=%v want %v", uint32(tt.status), got, tt.want)
+			}
+		})
+	}
+	if terminalWorkCancelled(errors.New("signal: interrupt")) {
+		t.Fatal("plain error without process status classified as cancellation")
 	}
 }
 

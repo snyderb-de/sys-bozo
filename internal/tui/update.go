@@ -164,8 +164,6 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "esc":
 			m.screen = screenHome
 			return m, nil
-		case "tab", "right", "shift+tab", "left", "5":
-			return m, nil
 		}
 	}
 	if m.screen == screenConfig || m.screen == screenAudit || m.screen == screenDoctor || m.screen == screenHistory {
@@ -196,8 +194,6 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "esc":
 			m.screen = screenInspect
 			return m, nil
-		case "tab", "right", "shift+tab", "left", "1", "2", "3", "4", "5":
-			return m, nil
 		}
 	}
 	if m.screen == screenResult {
@@ -206,7 +202,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.resultLogVisible = !m.resultLogVisible
 			return m, nil
 		case "r":
-			if len(m.reviewed.Items) > 0 {
+			if _, ok := m.retryStart(); ok {
 				m.prepareResultRetry()
 			}
 			return m, nil
@@ -215,11 +211,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
-	if m.screen == screenMaintenance || m.screen == screenReview || m.screen == screenRunning || m.screen == screenResult {
-		switch msg.String() {
-		case "tab", "right", "shift+tab", "left", "1", "2", "3", "4", "5":
-			return m, nil
-		}
+	if consumesLegacyRoute(m.screen, msg.String()) {
+		return m, nil
 	}
 	switch m.screen {
 	case screenMaintenance:
@@ -343,6 +336,28 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+func consumesLegacyRoute(active screen, key string) bool {
+	switch key {
+	case "tab", "shift+tab", "right", "left":
+		switch active {
+		case screenHome, screenMaintenance, screenReview, screenRunning, screenResult,
+			screenInspect, screenConfig, screenAudit, screenDoctor, screenHistory:
+			return true
+		}
+	case "1", "2", "3", "4", "5":
+		switch active {
+		case screenHome:
+			return key == "4" || key == "5"
+		case screenInspect:
+			return key == "5"
+		case screenMaintenance, screenReview, screenRunning, screenResult,
+			screenConfig, screenAudit, screenDoctor, screenHistory:
+			return true
+		}
+	}
+	return false
 }
 
 func (m Model) auditCmdIfNeeded() tea.Cmd {
@@ -472,8 +487,15 @@ func (m *Model) openInspectEntry(index int) tea.Cmd {
 }
 
 func (m *Model) prepareResultRetry() {
+	start, ok := m.retryStart()
+	if !ok {
+		return
+	}
+	action := m.reviewed.Action
+	retryItems := cloneWorkItems(m.queue[start:])
 	m.mode = modeView
 	m.screen = screenReview
+	m.reviewed = reviewedPlan{Action: action, Items: retryItems}
 	m.queue = nil
 	m.queuePos = 0
 	m.runErr = nil
@@ -482,6 +504,18 @@ func (m *Model) prepareResultRetry() {
 	m.stepResults = nil
 	m.resultLogVisible = false
 	m.logLines = nil
+}
+
+func (m Model) retryStart() (int, bool) {
+	limit := min(len(m.stepResults), len(m.queue))
+	for i := 0; i < limit; i++ {
+		status := m.stepResults[i].Status
+		if status != history.StatusFailure && status != history.StatusCancelled {
+			continue
+		}
+		return i, m.queue[i].Retryable
+	}
+	return 0, false
 }
 
 func (m *Model) closeResult() {

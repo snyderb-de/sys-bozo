@@ -83,6 +83,53 @@ func TestBuildQueuePropagatesExecutionMode(t *testing.T) {
 	}
 }
 
+func TestBuildQueuePropagatesRetryable(t *testing.T) {
+	task := Task{
+		ID:        "safe-retry",
+		Available: func(Context) bool { return true },
+		Steps: []Step{{
+			Retryable: true,
+			Cmd:       func(Context) (string, []string) { return "fixture", []string{"--safe"} },
+		}},
+	}
+
+	queue := BuildQueue(task, Context{})
+	if len(queue) != 1 || !queue[0].Retryable {
+		t.Fatalf("retryable metadata not propagated: %#v", queue)
+	}
+}
+
+func TestDefaultTaskRetryPolicyIsExplicit(t *testing.T) {
+	ctx := Context{
+		OS: "darwin", Hostname: "mini", BrewBin: "brew", DarwinRebuild: "darwin-rebuild",
+		SudoBin: "sudo", NixBin: "nix", HomeManager: "home-manager", Topgrade: "topgrade",
+	}
+	wantRetryable := map[string][]bool{
+		"nds": {true}, "ndu": {true, true}, "ndsd": {true}, "ndR": {false},
+		"hms": {true}, "hmu": {true, true}, "hmr": {false},
+		"fedora-upgrade": {true}, "brew": {true, true, true}, "topgrade": {true},
+		"all": {true, true, true, true, true, true},
+	}
+	for _, task := range DefaultTasks(ctx) {
+		want, known := wantRetryable[task.ID]
+		if !known {
+			t.Fatalf("default task %q has no explicit retry policy", task.ID)
+		}
+		if len(task.Steps) != len(want) {
+			t.Fatalf("task %s has %d steps, retry policy covers %d", task.ID, len(task.Steps), len(want))
+		}
+		for i, step := range task.Steps {
+			if step.Retryable != want[i] {
+				t.Fatalf("task %s step %d retryable=%v want %v", task.ID, i, step.Retryable, want[i])
+			}
+		}
+		delete(wantRetryable, task.ID)
+	}
+	if len(wantRetryable) != 0 {
+		t.Fatalf("retry policy references missing default tasks: %v", wantRetryable)
+	}
+}
+
 func TestPromptingDefaultStepsAreInteractive(t *testing.T) {
 	ctx := Context{
 		OS: "darwin", Hostname: "mini", BrewBin: "brew",

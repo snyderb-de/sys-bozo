@@ -59,8 +59,11 @@ func (m Model) viewHistory() string {
 		if status != history.StatusSuccess {
 			kind = statusDanger
 		}
+		renderedStatus := statusText(s, strings.ToUpper(string(status)), kind)
 		label := entry.Ts.Local().Format("2006-01-02 15:04") + "  " + entry.Action + "  " + formatRunElapsed(time.Duration(entry.Secs*float64(time.Second)))
-		rows = append(rows, numberedRow(s, fmt.Sprintf("%02d", i+1), label, statusText(s, strings.ToUpper(string(status)), kind), contentWidth, false))
+		labelWidth := max(1, contentWidth-6-lipgloss.Width(renderedStatus))
+		label = truncateVisible(label, labelWidth)
+		rows = append(rows, numberedRow(s, fmt.Sprintf("%02d", i+1), label, renderedStatus, contentWidth, false))
 	}
 	footer := "ESCAPE BACK"
 	if visible < len(entries) {
