@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -17,17 +18,22 @@ func Verify(ctx context.Context, runner OutputRunner, lookup PathLookup, spec Ve
 		if spec.Kind != KindPackage {
 			return verificationFailure("unsupported Nix package kind %q", spec.Kind)
 		}
-		if spec.Executable == "" {
-			return verificationFailure("verification requires an executable for provider %q", spec.Provider)
+		if spec.Executable != "" {
+			return verifyExecutable(ctx, runner, lookup, spec)
 		}
-		return verifyExecutable(ctx, runner, lookup, spec)
+		return verifyNixProfileReference(ctx, runner, spec)
 	case ProviderBrew:
 		switch spec.Kind {
 		case KindFormula:
-			if spec.Executable != "" {
-				return verifyExecutable(ctx, runner, lookup, spec)
+			receipt := verifyBrewReceipt(ctx, runner, spec, KindFormula)
+			if !receipt.OK || spec.Executable == "" {
+				return receipt
 			}
-			return verifyBrewReceipt(ctx, runner, spec, KindFormula)
+			executable := verifyExecutable(ctx, runner, lookup, spec)
+			if executable.OK {
+				executable.Detail = receipt.Detail + "; " + executable.Detail
+			}
+			return executable
 		case KindCask:
 			return verifyBrewCask(ctx, runner, lookup, spec)
 		default:
@@ -36,6 +42,27 @@ func Verify(ctx context.Context, runner OutputRunner, lookup PathLookup, spec Ve
 	default:
 		return verificationFailure("unsupported package provider %q", spec.Provider)
 	}
+}
+
+func verifyNixProfileReference(ctx context.Context, runner OutputRunner, spec VerifySpec) VerifyResult {
+	if spec.NixStoreBin == "" || spec.ProfilePath == "" || spec.PName == "" || spec.Version == "" {
+		return verificationFailure("Nix provider evidence requires nix-store binary, profile path, pname, and version")
+	}
+	if runner == nil {
+		return verificationFailure("Nix provider evidence requires a command runner")
+	}
+	output, err := runner.Output(ctx, spec.NixStoreBin, "-q", "--references", spec.ProfilePath)
+	if err != nil {
+		return VerifyResult{Detail: fmt.Sprintf("Nix direct profile references for %q could not be queried", spec.ProfilePath), Err: err}
+	}
+	wantSuffix := "-" + spec.PName + "-" + spec.Version
+	for _, line := range strings.Split(string(output), "\n") {
+		ref := strings.TrimSpace(line)
+		if ref != "" && strings.HasSuffix(filepath.Base(ref), wantSuffix) {
+			return VerifyResult{OK: true, Path: ref, Detail: fmt.Sprintf("Nix direct profile reference for %s %s verified", spec.PName, spec.Version)}
+		}
+	}
+	return verificationFailure("Nix direct profile reference for %s %s was not found", spec.PName, spec.Version)
 }
 
 func verifyBrewCask(ctx context.Context, runner OutputRunner, lookup PathLookup, spec VerifySpec) VerifyResult {

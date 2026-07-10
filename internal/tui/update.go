@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/snyderb-de/sys-bozo/internal/fileedit"
 	"github.com/snyderb-de/sys-bozo/internal/history"
 	"github.com/snyderb-de/sys-bozo/internal/packages"
 	"github.com/snyderb-de/sys-bozo/internal/runner"
@@ -35,17 +37,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.logVP.GotoBottom()
 		}
 		m.resizePackageDiffViewport()
+		m.resizeConfigDiffViewport()
 		return m, nil
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 
 	case packageSearchMsg:
+		if msg.requestID != m.packageSearchRequest {
+			return m, nil
+		}
+		if m.packageSearchCancel != nil {
+			m.packageSearchCancel()
+			m.packageSearchCancel = nil
+		}
 		m.acceptPackageSearch(msg.result)
 		return m, nil
 
 	case packageAppliedMsg:
 		if msg.err != nil {
+			if m.packageApplyStale(msg.err) {
+				return m, nil
+			}
 			m.finishRun(msg.err, false, time.Since(m.runStart))
 			return m, nil
 		}
@@ -90,7 +103,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		proposal := packages.ProposeReplacement(msg.target, msg.original, msg.proposed)
-		m.buildPackageReview(proposal, packageVerifySpec(msg.candidate, m.runCtx.BrewBin))
+		m.buildPackageReview(proposal, packageVerifySpec(msg.candidate, m.runCtx))
 		return m, nil
 
 	case lineMsg:
@@ -128,12 +141,40 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.auditReady = true
 		return m, nil
 
-	case editorDoneMsg:
-		if msg.err == nil {
-			m.applyPrompt = true
-			m.applyEditPath = msg.path
+	case configEditorDoneMsg:
+		m.screen = screenConfig
+		if msg.err != nil {
+			m.configNotice = "editor failed: " + msg.err.Error()
+			m.applyPrompt = false
+			return m, nil
 		}
+		if bytes.Equal(msg.original, msg.proposed) {
+			m.configNotice = "editor made no changes; target left untouched"
+			m.applyPrompt = false
+			return m, nil
+		}
+		m.pendingConfig = fileedit.ProposeReplacement(msg.file.path, msg.original, msg.proposed)
+		m.configNotice = "choose rebuild queue for reviewed edit"
+		m.applyPrompt = true
 		return m, nil
+
+	case configAppliedMsg:
+		if msg.err != nil {
+			if m.configApplyStale(msg.err) {
+				return m, nil
+			}
+			m.finishRun(msg.err, false, time.Since(m.runStart))
+			return m, nil
+		}
+		if m.reviewed.Config == nil {
+			m.finishRun(fmt.Errorf("config apply completed without reviewed edit"), false, time.Since(m.runStart))
+			return m, nil
+		}
+		m.reviewed.Config = cloneConfigReview(m.reviewed.Config)
+		edit := msg.edit
+		m.reviewed.Config.Applied = &edit
+		m.reviewed.Config.EditApplied = true
+		return m, m.advanceQueue()
 
 	case sudoReadyMsg:
 		// unused: kept for runSudoPreflight compatibility
@@ -163,14 +204,11 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.applyPrompt {
 		switch strings.ToLower(msg.String()) {
 		case "h":
-			m.applyPrompt = false
-			m.openMaintenance("hms")
+			m.buildConfigReview(m.pendingConfig, "hms")
 		case "n":
-			m.applyPrompt = false
-			m.openMaintenance("nds")
+			m.buildConfigReview(m.pendingConfig, "nds")
 		case "b":
-			m.applyPrompt = false
-			m.openMaintenance("hms", "nds")
+			m.buildConfigReview(m.pendingConfig, "hms", "nds")
 		default:
 			m.applyPrompt = false
 		}
@@ -236,7 +274,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case "enter", " ":
 				if m.configCursor >= 0 && m.configCursor < len(m.configFiles) {
-					return m, m.openEditor(m.configFiles[m.configCursor].path)
+					m.configNotice = "editing temporary copy; real target remains unchanged"
+					return m, m.openConfigEditor(m.configFiles[m.configCursor])
 				}
 				return m, nil
 			}
@@ -297,6 +336,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	case screenReview:
+		if m.reviewed.Config != nil && m.scrollConfigDiff(msg.String()) {
+			return m, nil
+		}
 		if m.reviewed.Package != nil && m.scrollPackageDiff(msg.String()) {
 			return m, nil
 		}
@@ -306,7 +348,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case " ":
 			return m, nil
 		case "esc":
-			if m.reviewed.Package != nil {
+			if m.reviewed.Config != nil {
+				m.screen = screenConfig
+			} else if m.reviewed.Package != nil {
 				m.screen = screenPackage
 				m.packageFlow.stage = packagePlacement
 			} else {
@@ -380,7 +424,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		case "Config":
 			if m.mode == modeView && m.configCursor < len(m.configFiles) {
-				return m, m.openEditor(m.configFiles[m.configCursor].path)
+				return m, m.openConfigEditor(m.configFiles[m.configCursor])
 			}
 		}
 
@@ -409,25 +453,36 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func consumesLegacyRoute(active screen, key string) bool {
-	switch key {
-	case "tab", "shift+tab", "right", "left":
-		switch active {
-		case screenHome, screenMaintenance, screenReview, screenRunning, screenResult,
-			screenInspect, screenConfig, screenAudit, screenDoctor, screenHistory, screenPackage:
-			return true
-		}
-	case "1", "2", "3", "4", "5":
-		switch active {
-		case screenHome:
-			return key == "4" || key == "5"
-		case screenInspect:
-			return key == "5"
-		case screenMaintenance, screenReview, screenRunning, screenResult,
-			screenConfig, screenAudit, screenDoctor, screenHistory, screenPackage:
-			return true
-		}
+	policy, owned := legacyRoutePolicy[active]
+	if !owned {
+		return false
+	}
+	if key == "tab" || key == "shift+tab" || key == "right" || key == "left" {
+		return policy.blockTabs
+	}
+	if len(key) == 1 && key[0] >= '1' && key[0] <= '5' {
+		return key[0]-'0' > byte(policy.localDigitCount)
 	}
 	return false
+}
+
+type legacyRouteStatePolicy struct {
+	blockTabs       bool
+	localDigitCount int
+}
+
+var legacyRoutePolicy = map[screen]legacyRouteStatePolicy{
+	screenHome:        {blockTabs: true, localDigitCount: 3},
+	screenInspect:     {blockTabs: true, localDigitCount: 4},
+	screenMaintenance: {blockTabs: true},
+	screenReview:      {blockTabs: true},
+	screenRunning:     {blockTabs: true},
+	screenResult:      {blockTabs: true},
+	screenConfig:      {blockTabs: true},
+	screenAudit:       {blockTabs: true},
+	screenDoctor:      {blockTabs: true},
+	screenHistory:     {blockTabs: true},
+	screenPackage:     {blockTabs: true},
 }
 
 func (m Model) auditCmdIfNeeded() tea.Cmd {

@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"bytes"
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -8,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -18,6 +21,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
+	"github.com/snyderb-de/sys-bozo/internal/fileedit"
 	"github.com/snyderb-de/sys-bozo/internal/history"
 	"github.com/snyderb-de/sys-bozo/internal/packages"
 	"github.com/snyderb-de/sys-bozo/internal/runner"
@@ -46,7 +50,8 @@ func testPackageModel(t *testing.T) Model {
 	t.Setenv("DOTFILES_REPO", repo)
 	m := testGuidedModel()
 	m.runCtx.Repo = repo
-	m.searchPackage = func(string) packages.SearchResult { return packages.SearchResult{} }
+	m.searchPackage = func(context.Context, string) packages.SearchResult { return packages.SearchResult{} }
+	m.packageSearchTimeout = time.Second
 	m.applyPackage = func(packages.Proposal) (packages.AppliedEdit, error) { return packages.AppliedEdit{}, nil }
 	m.verifyPackage = func(packages.VerifySpec) packages.VerifyResult { return packages.VerifyResult{OK: true} }
 	m.proposePackageRevert = func(packages.AppliedEdit) (packages.Proposal, error) { return packages.Proposal{}, nil }
@@ -76,6 +81,191 @@ func TestPackageSearchDefaultsToNixAndDoesNotWrite(t *testing.T) {
 	}
 }
 
+func TestConfigEditUsesTempResultAndAppliesOnlyAfterReviewedConfirmation(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	m := testGuidedModel()
+	m.styles = newUIStyles(true)
+	m.width, m.height = 80, 24
+	repo := t.TempDir()
+	t.Setenv("DOTFILES_REPO", repo)
+	path := filepath.Join(repo, "flake.nix")
+	original := []byte("{\n  value = \"before\";\n}\n")
+	proposed := []byte("{\n  value = \"after\";\n}\n")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m.runCtx.Repo = repo
+	m.configFiles = []configFile{{label: "flake.nix", path: path}}
+	m.screen = screenConfig
+	m.tasks = []runner.Task{{ID: "hms", Available: func(runner.Context) bool { return true }, Steps: []runner.Step{{Mode: runner.ExecutionInteractive, Retryable: true, Cmd: func(runner.Context) (string, []string) { return "fixture-hms", []string{"--safe"} }}}}}
+	editorCalls := 0
+	m.configEditor = func(request configEditorRequest) tea.Cmd {
+		editorCalls++
+		if request.file.path != path || !bytes.Equal(request.original, original) {
+			t.Fatalf("request=%#v", request)
+		}
+		if got, _ := os.ReadFile(path); !bytes.Equal(got, original) {
+			t.Fatalf("target changed before editor: %q", got)
+		}
+		return func() tea.Msg {
+			return configEditorDoneMsg{file: request.file, original: request.original, proposed: proposed}
+		}
+	}
+	applyCalls := 0
+	m.applyConfig = func(proposal fileedit.Proposal) (fileedit.AppliedEdit, error) {
+		applyCalls++
+		return fileedit.Apply(proposal)
+	}
+	rebuilds := 0
+	m.terminalExec = func(item runner.WorkItem, _ time.Time) tea.Cmd {
+		rebuilds++
+		if runner.CmdLabel(item) != "fixture-hms --safe" {
+			t.Fatalf("item=%q", runner.CmdLabel(item))
+		}
+		return func() tea.Msg { return stepDoneMsg{elapsed: time.Millisecond} }
+	}
+
+	next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+	if cmd == nil || editorCalls != 1 {
+		t.Fatalf("cmd=%v editor=%d", cmd, editorCalls)
+	}
+	if got, _ := os.ReadFile(path); !bytes.Equal(got, original) {
+		t.Fatalf("target changed during editor handoff: %q", got)
+	}
+	next, _ = m.Update(cmd())
+	m = next.(Model)
+	if !m.applyPrompt || applyCalls != 0 {
+		t.Fatalf("prompt=%v apply=%d", m.applyPrompt, applyCalls)
+	}
+	if got, _ := os.ReadFile(path); !bytes.Equal(got, original) {
+		t.Fatalf("target changed before rebuild choice: %q", got)
+	}
+	next, cmd = m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
+	m = next.(Model)
+	if cmd != nil || m.screen != screenReview || m.reviewed.Config == nil {
+		t.Fatalf("cmd=%v screen=%v review=%#v", cmd, m.screen, m.reviewed)
+	}
+	view := m.View()
+	for _, want := range []string{"REVIEW/CONFIG", "-  value = \"before\";", "fixture-hms --safe", "ENTER CONFIRM"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("missing %q:\n%s", want, view)
+		}
+	}
+	plusSeen := strings.Contains(view, "+  value = \"after\";")
+	for !plusSeen && !m.reviewed.Config.DiffVP.AtBottom() {
+		next, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyDown})
+		m = next.(Model)
+		plusSeen = strings.Contains(m.View(), "+  value = \"after\";")
+	}
+	if !plusSeen {
+		t.Fatal("full proposed diff was not accessible at 80x24")
+	}
+	if got, _ := os.ReadFile(path); !bytes.Equal(got, original) {
+		t.Fatalf("target changed before confirmation: %q", got)
+	}
+	cmd = m.confirmReviewedPlan()
+	if cmd == nil || applyCalls != 0 {
+		t.Fatalf("cmd=%v apply=%d", cmd, applyCalls)
+	}
+	next, cmd = m.Update(cmd())
+	m = next.(Model)
+	if applyCalls != 1 || rebuilds != 1 || cmd == nil {
+		t.Fatalf("apply=%d rebuild=%d cmd=%v", applyCalls, rebuilds, cmd)
+	}
+	if got, _ := os.ReadFile(path); !bytes.Equal(got, proposed) {
+		t.Fatalf("target after confirm=%q", got)
+	}
+	next, cmd = m.Update(cmd())
+	m = next.(Model)
+	if cmd != nil || m.screen != screenResult || m.runErr != nil {
+		t.Fatalf("cmd=%v screen=%v err=%v", cmd, m.screen, m.runErr)
+	}
+}
+
+func TestConfigEditorFailureAndNoChangeReturnSafely(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		msg  configEditorDoneMsg
+		want string
+	}{
+		{"failure", configEditorDoneMsg{err: errors.New("editor stopped")}, "editor failed"},
+		{"unchanged", configEditorDoneMsg{original: []byte("same"), proposed: []byte("same")}, "no changes"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := testGuidedModel()
+			m.screen = screenConfig
+			next, cmd := m.Update(tc.msg)
+			m = next.(Model)
+			if cmd != nil || m.screen != screenConfig || m.applyPrompt || !strings.Contains(m.configNotice, tc.want) {
+				t.Fatalf("cmd=%v screen=%v prompt=%v notice=%q", cmd, m.screen, m.applyPrompt, m.configNotice)
+			}
+		})
+	}
+}
+
+func TestConfigEditorCommandReceivesSameContentTempPathOnly(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("EDITOR", "code --wait")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "flake.nix")
+	original, proposed := []byte("before\n"), []byte("after\n")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := testGuidedModel()
+	m.screen = screenConfig
+	capturedPath := ""
+	m.configExecProcess = func(cmd *exec.Cmd, done tea.ExecCallback) tea.Cmd {
+		if len(cmd.Args) != 3 || !slices.Equal(cmd.Args[:2], []string{"code", "--wait"}) {
+			t.Fatalf("argv=%#v", cmd.Args)
+		}
+		capturedPath = cmd.Args[2]
+		if capturedPath == path || filepath.Dir(capturedPath) == dir {
+			t.Fatalf("editor received real/in-repo path: %q", capturedPath)
+		}
+		if got, err := os.ReadFile(capturedPath); err != nil || !bytes.Equal(got, original) {
+			t.Fatalf("temp=%q err=%v", got, err)
+		}
+		return func() tea.Msg {
+			if err := os.WriteFile(capturedPath, proposed, 0o600); err != nil {
+				return done(err)
+			}
+			return done(nil)
+		}
+	}
+	cmd := m.openConfigEditor(configFile{label: "flake.nix", path: path})
+	if cmd == nil || capturedPath == "" {
+		t.Fatalf("cmd=%v path=%q", cmd, capturedPath)
+	}
+	msg := cmd()
+	if _, err := os.Stat(capturedPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("temp cleanup err=%v", err)
+	}
+	if got, err := os.ReadFile(path); err != nil || !bytes.Equal(got, original) {
+		t.Fatalf("target=%q err=%v", got, err)
+	}
+	next, _ := m.Update(msg)
+	m = next.(Model)
+	if !m.applyPrompt || !bytes.Equal(m.pendingConfig.Proposed, proposed) {
+		t.Fatalf("prompt=%v proposal=%q", m.applyPrompt, m.pendingConfig.Proposed)
+	}
+}
+
+func TestConfigStaleApplyStaysInReviewWithProposal(t *testing.T) {
+	m := testGuidedModel()
+	m.styles = newUIStyles(true)
+	m.width, m.height = 80, 24
+	proposal := fileedit.ProposeReplacement("/tmp/fixture", []byte("old\n"), []byte("new\n"))
+	m.reviewed = reviewedPlan{Action: "config:hms", Items: []runner.WorkItem{{Name: "fixture"}}, Config: &configReview{Proposal: proposal}}
+	m.screen, m.mode, m.runStart = screenRunning, modeRunning, time.Now()
+	next, cmd := m.Update(configAppliedMsg{err: fileedit.ErrStaleFile})
+	m = next.(Model)
+	if cmd != nil || m.screen != screenReview || m.mode != modeView || m.reviewed.Config == nil || !strings.Contains(m.reviewed.Config.Warning, "refresh") {
+		t.Fatalf("cmd=%v screen=%v mode=%v review=%#v", cmd, m.screen, m.mode, m.reviewed.Config)
+	}
+}
+
 func TestPackageReviewContainsDiffApplyAndVerify(t *testing.T) {
 	m := testPackageModel(t)
 	m.styles = newUIStyles(true)
@@ -93,6 +283,18 @@ func TestPackageReviewContainsDiffApplyAndVerify(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q:\n%s", want, out)
 		}
+	}
+}
+
+func TestPackageVerifySpecUsesOnlyTrustedExecutableMetadata(t *testing.T) {
+	ctx := runner.Context{BrewBin: "brew", NixStoreBin: "nix-store", NixProfilePath: "/tmp/profile"}
+	trusted := packageVerifySpec(packages.Candidate{Provider: packages.ProviderNix, Kind: packages.KindPackage, ID: "ripgrep", Name: "ripgrep", Version: "14.1.1", Executable: "rg"}, ctx)
+	if trusted.Executable != "rg" || trusted.PName != "ripgrep" || trusted.NixStoreBin != "nix-store" || trusted.ProfilePath != "/tmp/profile" {
+		t.Fatalf("trusted=%#v", trusted)
+	}
+	untrusted := packageVerifySpec(packages.Candidate{Provider: packages.ProviderBrew, Kind: packages.KindFormula, ID: "ripgrep", Name: "ripgrep"}, ctx)
+	if untrusted.Executable != "" || untrusted.BrewBin != "brew" {
+		t.Fatalf("untrusted=%#v", untrusted)
 	}
 }
 
@@ -121,7 +323,7 @@ func TestConfirmPackageReviewAppliesOnlyAfterConfirmation(t *testing.T) {
 func TestHomeAddPackageRunsInjectedSearchAndDefaultsToNix(t *testing.T) {
 	m := testPackageModel(t)
 	called := false
-	m.searchPackage = func(query string) packages.SearchResult {
+	m.searchPackage = func(_ context.Context, query string) packages.SearchResult {
 		called = true
 		if query != "lazydocker" {
 			t.Fatalf("query=%q", query)
@@ -154,6 +356,94 @@ func TestHomeAddPackageRunsInjectedSearchAndDefaultsToNix(t *testing.T) {
 	}
 	if len(m.queue) != 0 || m.mode == modeRunning {
 		t.Fatal("search executed package work")
+	}
+}
+
+func TestPackageSearchEscapeAndQuitCancelBlockingProvider(t *testing.T) {
+	for _, key := range []tea.KeyMsg{{Type: tea.KeyEsc}, {Type: tea.KeyRunes, Runes: []rune{'q'}}, {Type: tea.KeyCtrlC}} {
+		t.Run(key.String(), func(t *testing.T) {
+			m := testPackageModel(t)
+			started := make(chan context.Context, 1)
+			m.searchPackage = func(ctx context.Context, _ string) packages.SearchResult {
+				started <- ctx
+				<-ctx.Done()
+				return packages.SearchResult{NixErr: ctx.Err(), BrewErr: ctx.Err()}
+			}
+			m.openPackageFlow()
+			m.packageFlow.query.SetValue("fixture")
+			next, cmd := m.handlePackageKey(tea.KeyMsg{Type: tea.KeyEnter})
+			m = next.(Model)
+			done := make(chan tea.Msg, 1)
+			go func() { done <- cmd() }()
+			ctx := <-started
+
+			next, quitCmd := m.handlePackageKey(key)
+			m = next.(Model)
+			select {
+			case <-ctx.Done():
+			case <-time.After(time.Second):
+				t.Fatal("search context was not cancelled")
+			}
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("search command leaked after cancellation")
+			}
+			if key.Type == tea.KeyEsc {
+				if quitCmd != nil || m.packageFlow.stage != packageSearch {
+					t.Fatalf("cmd=%v stage=%v", quitCmd, m.packageFlow.stage)
+				}
+			} else if quitCmd == nil {
+				t.Fatal("quit did not return tea.Quit")
+			}
+		})
+	}
+}
+
+func TestStartingNewPackageSearchCancelsOldAndIgnoresLateResult(t *testing.T) {
+	m := testPackageModel(t)
+	oldCtx, oldCancel := context.WithCancel(context.Background())
+	m.packageSearchCancel = oldCancel
+	m.packageSearchRequest = 7
+	m.packageFlow = newPackageFlow(m.width)
+	m.packageFlow.query.SetValue("new")
+	m.searchPackage = func(context.Context, string) packages.SearchResult { return packages.SearchResult{} }
+	next, cmd := m.handlePackageKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+	if cmd == nil || oldCtx.Err() != context.Canceled || m.packageSearchRequest != 8 {
+		t.Fatalf("cmd=%v old=%v id=%d", cmd, oldCtx.Err(), m.packageSearchRequest)
+	}
+
+	late := packageSearchMsg{requestID: 7, result: packages.SearchResult{Candidates: []packages.Candidate{{ID: "late"}}}}
+	next, nextCmd := m.Update(late)
+	m = next.(Model)
+	if nextCmd != nil || m.packageFlow.stage != packageSearching || len(m.packageFlow.result.Candidates) != 0 {
+		t.Fatalf("stage=%v result=%#v", m.packageFlow.stage, m.packageFlow.result)
+	}
+	m.cancelPackageSearch()
+}
+
+func TestPackageSearchTimeoutIsVisibleAndRestoresNavigation(t *testing.T) {
+	m := testPackageModel(t)
+	m.styles = newUIStyles(true)
+	m.width, m.height = 80, 24
+	m.packageSearchTimeout = 10 * time.Millisecond
+	m.searchPackage = func(ctx context.Context, _ string) packages.SearchResult {
+		<-ctx.Done()
+		return packages.SearchResult{NixErr: ctx.Err(), BrewErr: ctx.Err()}
+	}
+	m.openPackageFlow()
+	m.packageFlow.query.SetValue("fixture")
+	next, cmd := m.handlePackageKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+	next, _ = m.Update(cmd())
+	m = next.(Model)
+	if m.packageFlow.stage != packageChoose {
+		t.Fatalf("stage=%v", m.packageFlow.stage)
+	}
+	out := m.View()
+	if !strings.Contains(out, "deadline exceeded") || !strings.Contains(out, "ESCAPE SEARCH") {
+		t.Fatalf("timeout not visible/navigation missing:\n%s", out)
 	}
 }
 
@@ -196,7 +486,7 @@ func TestPackagePlacementBuildsProposalWithoutWritingAndDefaultsMisc(t *testing.
 	if !strings.Contains(m.reviewed.Package.Proposal.Diff, "+    lazydocker") {
 		t.Fatalf("diff=%q", m.reviewed.Package.Proposal.Diff)
 	}
-	if m.reviewed.Package.Verify.Provider != packages.ProviderNix || m.reviewed.Package.Verify.Executable != "lazydocker" {
+	if m.reviewed.Package.Verify.Provider != packages.ProviderNix || m.reviewed.Package.Verify.Executable != "" || m.reviewed.Package.Verify.PName != "lazydocker" {
 		t.Fatalf("verify=%#v", m.reviewed.Package.Verify)
 	}
 	got, err := os.ReadFile(path)
@@ -423,6 +713,31 @@ func TestAmbiguousPackageTargetUsesInjectedEditorAndResumesReviewWithoutWriting(
 	}
 }
 
+func TestDuplicatePackageIsInformationalAndNeverOpensEditorOrWrites(t *testing.T) {
+	m := testPackageModel(t)
+	path := filepath.Join(m.runCtx.Repo, "home", "modules", "packages.nix")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original := []byte("home.packages = [\n  # Misc\n  yazi\n];\n")
+	if err := os.WriteFile(path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	editorCalled := false
+	m.packageEditor = func(packageEditorRequest) tea.Cmd { editorCalled = true; return nil }
+	m.screen = screenPackage
+	m.packageFlow = packageFlow{
+		stage: packagePlacement, placingSection: true, target: packages.Target{Path: path, Assignment: "home.packages", ApplyAction: "hms"},
+		sections: []string{"Misc"}, result: packages.SearchResult{Candidates: []packages.Candidate{{Provider: packages.ProviderNix, Kind: packages.KindPackage, ID: "yazi"}}},
+	}
+	next, cmd := m.handlePackageKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+	got, err := os.ReadFile(path)
+	if cmd != nil || editorCalled || err != nil || !bytes.Equal(got, original) || m.packageFlow.err == nil || !strings.Contains(m.packageFlow.err.Error(), "already declared") {
+		t.Fatalf("cmd=%v editor=%v err=%v file=%q flowErr=%v", cmd, editorCalled, err, got, m.packageFlow.err)
+	}
+}
+
 func TestNixHostEditorHandoffUsesEngineTargetOnDarwinAndLinux(t *testing.T) {
 	for _, tc := range []struct {
 		goos, hostname, file, action string
@@ -614,6 +929,11 @@ func TestPackageWorkflowViewsFit80x24AndPreserveNoColorSemantics(t *testing.T) {
 			}}}}}
 			m.buildPackageReview(proposal, packages.VerifySpec{Provider: packages.ProviderNix, Kind: packages.KindPackage, Executable: "lazydocker"})
 		}, []string{"REVIEW/PACKAGE", "lazydocker", "home-manager", "VERIFY", "ENTER CONFIRM"}},
+		{"config review", func(m *Model) {
+			m.reviewed = reviewedPlan{Action: "config:hms", Items: []runner.WorkItem{{Name: "home-manager", Args: []string{"switch", "--flake", ".#fixture"}}}, Config: &configReview{Proposal: fileedit.ProposeReplacement("/fixture/flake.nix", []byte("before\n"), []byte("after\n"))}}
+			m.screen = screenReview
+			m.initConfigDiffViewport()
+		}, []string{"REVIEW/CONFIG", "before", "home-manager", "ENTER CONFIRM"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -730,7 +1050,7 @@ func TestPackageWorkflowFakeRepoSmoke(t *testing.T) {
 		Mode: runner.ExecutionInteractive, Retryable: true,
 		Cmd: func(runner.Context) (string, []string) { return "fixture-hms", []string{"--safe"} },
 	}}}}
-	m.searchPackage = func(query string) packages.SearchResult {
+	m.searchPackage = func(_ context.Context, query string) packages.SearchResult {
 		if query != "lazydocker" {
 			t.Fatalf("query=%q", query)
 		}
@@ -825,6 +1145,28 @@ func TestPackageVerificationFailureEntersResultAndKeepsDeclaration(t *testing.T)
 	}
 }
 
+func TestStalePackageApplyStaysInReviewForwardAndReverse(t *testing.T) {
+	for _, reverse := range []bool{false, true} {
+		t.Run(fmt.Sprintf("reverse=%v", reverse), func(t *testing.T) {
+			m := testPackageModel(t)
+			m.styles = newUIStyles(true)
+			m.width, m.height = 80, 24
+			m.screen, m.mode, m.runStart = screenRunning, modeRunning, time.Now()
+			m.reviewed = reviewedPlan{Action: "hms", Items: []runner.WorkItem{{Name: "fixture"}}, Package: &packageReview{
+				Proposal: packages.Proposal{Target: packages.Target{Path: "/tmp/packages.nix"}, Diff: "--- original\n+++ proposed\n-old\n+new\n"}, Revert: reverse,
+			}}
+			next, cmd := m.Update(packageAppliedMsg{err: packages.ErrStaleFile})
+			m = next.(Model)
+			if cmd != nil || m.screen != screenReview || m.mode != modeView || m.reviewed.Package == nil || !strings.Contains(m.reviewed.Package.Warning, "refresh") {
+				t.Fatalf("cmd=%v screen=%v mode=%v review=%#v", cmd, m.screen, m.mode, m.reviewed.Package)
+			}
+			if out := m.View(); !strings.Contains(out, "file changed") || !strings.Contains(out, "ENTER CONFIRM") {
+				t.Fatalf("warning/review missing:\n%s", out)
+			}
+		})
+	}
+}
+
 func TestPackageRetryReviewsFailedTailWithoutReapplyingDeclaration(t *testing.T) {
 	m := testPackageModel(t)
 	items := []runner.WorkItem{
@@ -864,6 +1206,12 @@ func TestPackageRetryReviewsFailedTailWithoutReapplyingDeclaration(t *testing.T)
 	got := next.(Model)
 	if cmd != nil || got.screen != screenReview || got.reviewed.Package == nil || got.reviewed.Package.Applied == nil || len(got.reviewed.Items) != 1 {
 		t.Fatalf("cmd=%v screen=%v reviewed=%#v", cmd, got.screen, got.reviewed)
+	}
+	got.styles = newUIStyles(true)
+	got.width, got.height = 80, 24
+	out := got.View()
+	if !strings.Contains(out, "EDIT CONTEXT") || !strings.Contains(out, "DONE") || !strings.Contains(out, "fixture-rebuild --safe") || strings.Contains(out, "completed") {
+		t.Fatalf("retry review does not match pending tail:\n%s", out)
 	}
 	next, cmd = got.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 	confirmed := next.(Model)
@@ -914,6 +1262,11 @@ func TestReversePackageRebuildRetrySkipsAppliedReverseEdit(t *testing.T) {
 	m = next.(Model)
 	if m.screen != screenReview || m.reviewed.Package == nil || !m.reviewed.Package.Revert {
 		t.Fatalf("retry review=%#v screen=%v", m.reviewed.Package, m.screen)
+	}
+	m.styles = newUIStyles(true)
+	m.width, m.height = 80, 24
+	if out := m.View(); !strings.Contains(out, "EDIT CONTEXT") || !strings.Contains(out, "DONE") || !strings.Contains(out, "fixture-hms --safe") {
+		t.Fatalf("reverse retry review mismatch:\n%s", out)
 	}
 
 	cmd = m.confirmReviewedPlan()
@@ -1694,7 +2047,7 @@ func TestInspectChildScreensUseMonolithRulesWithoutCards(t *testing.T) {
 	}
 }
 
-func TestConfigApplyChoiceReturnsToSelectWithoutExecuting(t *testing.T) {
+func TestConfigApplyChoiceBuildsReviewWithoutExecuting(t *testing.T) {
 	for _, tc := range []struct {
 		key  rune
 		want []string
@@ -1707,15 +2060,20 @@ func TestConfigApplyChoiceReturnsToSelectWithoutExecuting(t *testing.T) {
 			m := testGuidedModel()
 			m.screen = screenConfig
 			m.applyPrompt = true
+			m.pendingConfig = fileedit.ProposeReplacement("/tmp/fixture", []byte("old\n"), []byte("new\n"))
+			m.tasks = []runner.Task{
+				{ID: "hms", Available: func(runner.Context) bool { return true }, Steps: []runner.Step{{Cmd: func(runner.Context) (string, []string) { return "fixture-hms", nil }}}},
+				{ID: "nds", Available: func(runner.Context) bool { return true }, Steps: []runner.Step{{Cmd: func(runner.Context) (string, []string) { return "fixture-nds", nil }}}},
+			}
 
 			next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{tc.key}})
 			got := next.(Model)
-			if cmd != nil || got.screen != screenMaintenance || got.mode == modeRunning || len(got.queue) != 0 || len(got.reviewed.Items) != 0 {
+			if cmd != nil || got.screen != screenReview || got.mode == modeRunning || len(got.queue) != 0 || len(got.reviewed.Items) != len(tc.want) || got.reviewed.Config == nil {
 				t.Fatalf("cmd=%v screen=%v mode=%v queue=%v reviewed=%#v", cmd, got.screen, got.mode, got.queue, got.reviewed)
 			}
-			for _, id := range tc.want {
-				if !got.selected[id] {
-					t.Fatalf("choice %q missing selection %q: %v", tc.key, id, got.selected)
+			for i, id := range tc.want {
+				if got.reviewed.Items[i].Name != "fixture-"+id {
+					t.Fatalf("choice %q item=%#v want %q", tc.key, got.reviewed.Items[i], id)
 				}
 			}
 		})

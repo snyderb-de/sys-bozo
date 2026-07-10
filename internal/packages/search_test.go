@@ -11,11 +11,13 @@ import (
 )
 
 type fakeOutputRunner struct {
-	responses map[string]struct {
-		out string
-		err error
-	}
-	calls *[]string
+	responses map[string]fakeOutputResponse
+	calls     *[]string
+}
+
+type fakeOutputResponse struct {
+	out string
+	err error
 }
 
 func (f fakeOutputRunner) Output(_ context.Context, name string, args ...string) ([]byte, error) {
@@ -30,11 +32,33 @@ func (f fakeOutputRunner) Output(_ context.Context, name string, args ...string)
 	return []byte(response.out), response.err
 }
 
-func TestSearchCombinesProvidersAndDefaultsToNix(t *testing.T) {
-	runner := fakeOutputRunner{responses: map[string]struct {
-		out string
-		err error
+func TestSearchPreservesNixCandidateIdentity(t *testing.T) {
+	tests := []struct {
+		name, attribute, want string
 	}{
+		{"simple", "hello", "hello"},
+		{"nested", "python313Packages.requests", "python313Packages.requests"},
+		{"packages prefix", "packages.aarch64-darwin.python313Packages.requests", "python313Packages.requests"},
+		{"legacy packages prefix", "legacyPackages.aarch64-darwin.python313Packages.requests", "python313Packages.requests"},
+		{"unknown prefix", "outputs.aarch64-darwin.python313Packages.requests", "outputs.aarch64-darwin.python313Packages.requests"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := fakeOutputRunner{responses: map[string]fakeOutputResponse{
+				"nix search --json nixpkgs fixture": {out: fmt.Sprintf(`{%q:{"pname":"requests","version":"1.0"}}`, tt.attribute)},
+				"brew search --formula fixture":     {},
+				"brew search --cask fixture":        {},
+			}}
+			got := Search(context.Background(), runner, "nix", "brew", "fixture")
+			if len(got.Candidates) != 1 || got.Candidates[0].ID != tt.want {
+				t.Fatalf("candidate=%#v want ID %q", got.Candidates, tt.want)
+			}
+		})
+	}
+}
+
+func TestSearchCombinesProvidersAndDefaultsToNix(t *testing.T) {
+	runner := fakeOutputRunner{responses: map[string]fakeOutputResponse{
 		"nix search --json nixpkgs lazydocker": {out: `{"legacyPackages.aarch64-darwin.lazydocker":{"pname":"lazydocker","version":"0.24.1","description":"Docker TUI"}}`},
 		"brew search --formula lazydocker":     {out: "lazydocker\n"},
 		"brew search --cask lazydocker":        {out: ""},
@@ -51,10 +75,7 @@ func TestSearchCombinesProvidersAndDefaultsToNix(t *testing.T) {
 }
 
 func TestSearchKeepsBrewWhenNixFails(t *testing.T) {
-	runner := fakeOutputRunner{responses: map[string]struct {
-		out string
-		err error
-	}{
+	runner := fakeOutputRunner{responses: map[string]fakeOutputResponse{
 		"nix search --json nixpkgs yazi": {err: errors.New("nix unavailable")},
 		"brew search --formula yazi":     {out: "yazi\n"},
 		"brew search --cask yazi":        {out: ""},
@@ -68,10 +89,7 @@ func TestSearchKeepsBrewWhenNixFails(t *testing.T) {
 }
 
 func TestSearchSortsNixAttributesAndParsesMetadata(t *testing.T) {
-	runner := fakeOutputRunner{responses: map[string]struct {
-		out string
-		err error
-	}{
+	runner := fakeOutputRunner{responses: map[string]fakeOutputResponse{
 		"nix search --json nixpkgs tool": {out: `{
 			"legacyPackages.aarch64-darwin.zed":{"pname":"zed-editor","version":"0.204.4","description":"Code editor"},
 			"legacyPackages.aarch64-darwin.alpha":{"pname":"alpha","version":"1.2.3","description":"First tool"}
@@ -97,10 +115,7 @@ func TestSearchSortsNixAttributesAndParsesMetadata(t *testing.T) {
 }
 
 func TestSearchParsesBrewFormulaeAndCasks(t *testing.T) {
-	runner := fakeOutputRunner{responses: map[string]struct {
-		out string
-		err error
-	}{
+	runner := fakeOutputRunner{responses: map[string]fakeOutputResponse{
 		"nix search --json nixpkgs ghost": {out: `{}`},
 		"brew search --formula ghost":     {out: "ghostscript\nghostty => ghostty@tip\n\n"},
 		"brew search --cask ghost":        {out: "ghostty\n"},
@@ -124,10 +139,7 @@ func TestSearchParsesBrewFormulaeAndCasks(t *testing.T) {
 
 func TestSearchDiscardsFailedFormulaOutputAndKeepsCask(t *testing.T) {
 	formulaErr := errors.New("brew formula search unavailable")
-	runner := fakeOutputRunner{responses: map[string]struct {
-		out string
-		err error
-	}{
+	runner := fakeOutputRunner{responses: map[string]fakeOutputResponse{
 		"nix search --json nixpkgs ghostty": {out: `{"legacyPackages.aarch64-darwin.ghostty":{"pname":"ghostty","version":"1.1.3","description":"Terminal emulator"}}`},
 		"brew search --formula ghostty":     {out: "failed-formula-output\n", err: formulaErr},
 		"brew search --cask ghostty":        {out: "ghostty\n"},
@@ -148,10 +160,7 @@ func TestSearchDiscardsFailedFormulaOutputAndKeepsCask(t *testing.T) {
 
 func TestSearchDiscardsFailedCaskOutputAndKeepsFormula(t *testing.T) {
 	caskErr := errors.New("brew cask search unavailable")
-	runner := fakeOutputRunner{responses: map[string]struct {
-		out string
-		err error
-	}{
+	runner := fakeOutputRunner{responses: map[string]fakeOutputResponse{
 		"nix search --json nixpkgs yazi": {out: `{}`},
 		"brew search --formula yazi":     {out: "yazi\n"},
 		"brew search --cask yazi":        {out: "failed-cask-output\n", err: caskErr},
@@ -171,10 +180,7 @@ func TestSearchDiscardsFailedCaskOutputAndKeepsFormula(t *testing.T) {
 func TestSearchDiscardsAllBrewOutputWhenBothSearchesFail(t *testing.T) {
 	formulaErr := errors.New("brew formula search unavailable")
 	caskErr := errors.New("brew cask search unavailable")
-	runner := fakeOutputRunner{responses: map[string]struct {
-		out string
-		err error
-	}{
+	runner := fakeOutputRunner{responses: map[string]fakeOutputResponse{
 		"nix search --json nixpkgs tool": {out: `{}`},
 		"brew search --formula tool":     {out: "failed-formula-output\n", err: formulaErr},
 		"brew search --cask tool":        {out: "failed-cask-output\n", err: caskErr},

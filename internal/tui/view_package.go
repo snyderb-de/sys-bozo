@@ -166,7 +166,16 @@ func (m Model) viewPackageReview() string {
 		"",
 	}
 	rows = append(rows, fileRows...)
-	rows = append(rows, "", s.label.Render(diffPosition), diffVP.View())
+	if packagePlan.Warning != "" {
+		rows = append(rows, s.danger.Render("WARNING  "+packagePlan.Warning))
+	}
+	editStatus := statusText(s, "READY", statusMuted)
+	editLabel := diffPosition
+	if packagePlan.EditApplied {
+		editStatus = statusText(s, "DONE", statusSuccess)
+		editLabel = "EDIT CONTEXT  " + strings.TrimPrefix(diffPosition, "DIFF  ")
+	}
+	rows = append(rows, "", s.label.Render(editLabel)+"  "+editStatus, diffVP.View())
 	rows = append(rows, "", s.label.Render("APPLY"))
 	rows = append(rows, commandRows...)
 	rows = append(rows,

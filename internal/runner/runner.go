@@ -25,6 +25,8 @@ type Context struct {
 	SudoBin        string
 	DnfBin         string
 	NixBin         string
+	NixStoreBin    string
+	NixProfilePath string
 	BrewBin        string
 	HomeManager    string
 	DarwinRebuild  string
@@ -35,6 +37,8 @@ type Context struct {
 type ExecutionMode uint8
 
 const (
+	// ExecutionStreamed is the zero value: output is captured and streamed
+	// into the TUI without terminal ownership or interactive input.
 	ExecutionStreamed ExecutionMode = iota
 	ExecutionInteractive
 )
@@ -128,6 +132,8 @@ func Build() Context {
 		SudoBin:        sudoBin,
 		DnfBin:         findExe("dnf", "/usr/bin/dnf5"),
 		NixBin:         findExe("nix", "/nix/var/nix/profiles/default/bin/nix"),
+		NixStoreBin:    findExe("nix-store", "/nix/var/nix/profiles/default/bin/nix-store"),
+		NixProfilePath: filepath.Join(home, ".nix-profile"),
 		BrewBin:        findExe("brew", "/opt/homebrew/bin/brew", "/usr/local/bin/brew"),
 		HomeManager:    findExe("home-manager", hmFallbacks...),
 		DarwinRebuild:  findExe("darwin-rebuild", "/run/current-system/sw/bin/darwin-rebuild"),

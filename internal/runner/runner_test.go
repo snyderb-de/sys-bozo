@@ -138,7 +138,7 @@ func TestPromptingDefaultStepsAreInteractive(t *testing.T) {
 	}
 	tasks := DefaultTasks(ctx)
 
-	wantInteractive := map[string]bool{"nds": true, "ndu": true, "ndR": true, "brew": true}
+	wantInteractive := map[string]bool{"nds": true, "ndu": true, "ndR": true, "fedora-upgrade": true, "brew": true, "all": true}
 	for _, task := range tasks {
 		if !wantInteractive[task.ID] {
 			continue
@@ -156,6 +156,44 @@ func TestPromptingDefaultStepsAreInteractive(t *testing.T) {
 		if !found {
 			t.Fatalf("%s has no prompting step", task.ID)
 		}
+	}
+}
+
+func TestExecutionModeClassificationCoversFedoraAndCombinedPaths(t *testing.T) {
+	tests := []struct {
+		name string
+		ctx  Context
+		want map[string][]ExecutionMode
+	}{
+		{
+			name: "fedora",
+			ctx:  Context{OS: "linux", OSID: "fedora", NixBin: "nix", HomeManager: "home-manager", SudoBin: "sudo", DnfBin: "dnf", BrewBin: "brew"},
+			want: map[string][]ExecutionMode{"fedora-upgrade": {ExecutionInteractive}, "all": {ExecutionStreamed, ExecutionStreamed, ExecutionStreamed, ExecutionInteractive, ExecutionStreamed}},
+		},
+		{
+			name: "darwin",
+			ctx:  Context{OS: "darwin", Hostname: "mini", NixBin: "nix", HomeManager: "home-manager", DarwinRebuild: "darwin-rebuild", BrewBin: "brew"},
+			want: map[string][]ExecutionMode{"all": {ExecutionStreamed, ExecutionStreamed, ExecutionInteractive, ExecutionStreamed, ExecutionInteractive, ExecutionStreamed}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, task := range DefaultTasks(tt.ctx) {
+				want, ok := tt.want[task.ID]
+				if !ok {
+					continue
+				}
+				queue := BuildQueue(task, tt.ctx)
+				if len(queue) != len(want) {
+					t.Fatalf("task=%s queue=%d want=%d", task.ID, len(queue), len(want))
+				}
+				for i := range want {
+					if queue[i].Mode != want[i] {
+						t.Fatalf("task=%s step=%d mode=%v want=%v", task.ID, i, queue[i].Mode, want[i])
+					}
+				}
+			}
+		})
 	}
 }
 

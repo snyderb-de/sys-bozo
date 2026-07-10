@@ -94,7 +94,10 @@ func (m Model) viewConfig() string {
 	}
 
 	if m.applyPrompt {
-		rows = append(rows, "", s.attention.Render("APPLY CHANGES?"), s.muted.Render("H HMS   N NDS   B BOTH   ANY OTHER KEY SKIPS"))
+		rows = append(rows, "", s.attention.Render("CHOOSE REVIEWED REBUILD"), s.muted.Render("H HMS   N NDS   B BOTH   ANY OTHER KEY SKIPS"))
+	}
+	if m.configNotice != "" {
+		rows = append(rows, "", s.muted.Render(truncateVisible(m.configNotice, contentWidth)))
 	}
 	rows = append(rows, "", majorRule(s, contentWidth, false), "", s.muted.Render("ESCAPE BACK   J/K MOVE   ENTER EDIT"))
 	return primaryFrame(s, m.width, strings.Join(rows, "\n"))

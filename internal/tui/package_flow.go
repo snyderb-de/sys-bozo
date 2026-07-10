@@ -1,10 +1,13 @@
 package tui
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -43,10 +46,27 @@ type packageReview struct {
 	Result              *packages.VerifyResult
 	verificationStarted bool
 	Revert              bool
+	Warning             string
 	DiffVP              viewport.Model
 }
 
-type packageSearchMsg struct{ result packages.SearchResult }
+func (m *Model) packageApplyStale(err error) bool {
+	if !errors.Is(err, packages.ErrStaleFile) || m.reviewed.Package == nil {
+		return false
+	}
+	m.reviewed.Package = clonePackageReview(m.reviewed.Package)
+	m.reviewed.Package.Warning = "file changed; refresh and review again before applying"
+	m.mode, m.screen = modeView, screenReview
+	m.queue, m.queuePos = nil, 0
+	m.runErr = nil
+	m.initPackageDiffViewport()
+	return true
+}
+
+type packageSearchMsg struct {
+	requestID uint64
+	result    packages.SearchResult
+}
 type packageAppliedMsg struct {
 	edit packages.AppliedEdit
 	err  error
@@ -99,13 +119,34 @@ func (m Model) handlePackageKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if search == nil {
 				return m, nil
 			}
+			if m.packageSearchCancel != nil {
+				m.packageSearchCancel()
+			}
+			m.packageSearchRequest++
+			requestID := m.packageSearchRequest
+			base, baseCancel := context.WithCancel(context.Background())
+			timeout := m.packageSearchTimeout
+			if timeout <= 0 {
+				timeout = 30 * time.Second
+			}
+			searchCtx, timeoutCancel := context.WithTimeout(base, timeout)
+			m.packageSearchCancel = func() { timeoutCancel(); baseCancel() }
 			m.packageFlow.stage = packageSearching
-			return m, func() tea.Msg { return packageSearchMsg{result: search(query)} }
+			return m, func() tea.Msg { return packageSearchMsg{requestID: requestID, result: search(searchCtx, query)} }
 		}
 		var cmd tea.Cmd
 		m.packageFlow.query, cmd = m.packageFlow.query.Update(msg)
 		return m, cmd
 	case packageSearching:
+		switch msg.String() {
+		case "esc":
+			m.cancelPackageSearch()
+			m.packageFlow = newPackageFlow(m.width)
+			return m, nil
+		case "q", "ctrl+c":
+			m.cancelPackageSearch()
+			return m, tea.Quit
+		}
 		return m, nil
 	case packageChoose:
 		n := len(m.packageFlow.result.Candidates)
@@ -130,6 +171,14 @@ func (m Model) handlePackageKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handlePackagePlacementKey(msg)
 	}
 	return m, nil
+}
+
+func (m *Model) cancelPackageSearch() {
+	if m.packageSearchCancel != nil {
+		m.packageSearchCancel()
+		m.packageSearchCancel = nil
+	}
+	m.packageSearchRequest++
 }
 
 var packageScopes = []packages.Scope{packages.ScopeShared, packages.ScopePlatform, packages.ScopeHost}
@@ -195,10 +244,14 @@ func (m Model) handlePackagePlacementKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		proposal, err := packages.ProposeAdd(original, m.packageFlow.target, m.packageFlow.sections[m.packageFlow.section], candidate.ID)
 		if err != nil {
+			if errors.Is(err, packages.ErrAlreadyDeclared) {
+				m.packageFlow.err = fmt.Errorf("%s is already declared; no edit needed", candidate.ID)
+				return m, nil
+			}
 			m.packageFlow.err = nil
 			return m, m.openPackageEditor(packageEditorRequest{target: m.packageFlow.target, original: original, candidate: candidate})
 		}
-		m.buildPackageReview(proposal, packageVerifySpec(candidate, m.runCtx.BrewBin))
+		m.buildPackageReview(proposal, packageVerifySpec(candidate, m.runCtx))
 	}
 	return m, nil
 }
@@ -280,7 +333,12 @@ func (m Model) openPackageEditor(request packageEditorRequest) tea.Cmd {
 	if editor == "" {
 		editor = "vi"
 	}
-	cmd := exec.Command(editor, tempPath)
+	argv, err := parseEditorArgv(editor)
+	if err != nil {
+		_ = os.Remove(tempPath)
+		return func() tea.Msg { return packageEditorDoneMsg{err: err} }
+	}
+	cmd := exec.Command(argv[0], append(argv[1:], tempPath)...)
 	return tea.ExecProcess(cmd, func(editorErr error) tea.Msg {
 		defer os.Remove(tempPath)
 		if editorErr != nil {
@@ -302,18 +360,17 @@ func (m Model) selectedPackageCandidate() (packages.Candidate, bool) {
 	return m.packageFlow.result.Candidates[selected], true
 }
 
-func packageVerifySpec(candidate packages.Candidate, brewBin string) packages.VerifySpec {
+func packageVerifySpec(candidate packages.Candidate, ctx runner.Context) packages.VerifySpec {
 	spec := packages.VerifySpec{
-		Provider: candidate.Provider,
-		Kind:     candidate.Kind,
-		Token:    candidate.ID,
-		BrewBin:  brewBin,
-	}
-	if candidate.Provider == packages.ProviderNix || candidate.Kind == packages.KindFormula {
-		spec.Executable = candidate.Name
-		if spec.Executable == "" {
-			spec.Executable = candidate.ID
-		}
+		Provider:    candidate.Provider,
+		Kind:        candidate.Kind,
+		Token:       candidate.ID,
+		PName:       candidate.Name,
+		Version:     candidate.Version,
+		Executable:  candidate.Executable,
+		BrewBin:     ctx.BrewBin,
+		NixStoreBin: ctx.NixStoreBin,
+		ProfilePath: ctx.NixProfilePath,
 	}
 	return spec
 }
@@ -455,6 +512,9 @@ func packageVerificationLabel(spec packages.VerifySpec) string {
 		return fmt.Sprintf("executable %s on PATH", spec.Executable)
 	}
 	if spec.Token != "" {
+		if spec.Provider == packages.ProviderNix {
+			return fmt.Sprintf("nix direct profile reference for %s %s", spec.PName, spec.Version)
+		}
 		return fmt.Sprintf("%s %s receipt", spec.Provider, spec.Token)
 	}
 	return "package availability"

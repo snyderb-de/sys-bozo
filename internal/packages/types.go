@@ -63,11 +63,14 @@ var (
 )
 
 type Candidate struct {
-	Provider    Provider
-	Kind        Kind
-	ID          string
-	Name        string
-	Version     string
+	Provider Provider
+	Kind     Kind
+	ID       string
+	Name     string
+	Version  string
+	// Executable is populated only from trusted provider metadata. It must never
+	// be inferred from ID or Name.
+	Executable  string
 	Description string
 }
 
@@ -82,10 +85,14 @@ type VerifySpec struct {
 	Provider    Provider
 	Kind        Kind
 	Token       string
+	PName       string
+	Version     string
 	Executable  string
 	VersionArgs []string
 	AppPath     string
 	BrewBin     string
+	NixStoreBin string
+	ProfilePath string
 }
 
 type VerifyResult struct {

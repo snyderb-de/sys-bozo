@@ -82,14 +82,10 @@ func searchNix(ctx context.Context, runner OutputRunner, command, query string) 
 	candidates := make([]Candidate, 0, len(attributes))
 	for _, attribute := range attributes {
 		pkg := packages[attribute]
-		id := attribute
-		if separator := strings.LastIndexByte(attribute, '.'); separator >= 0 {
-			id = attribute[separator+1:]
-		}
 		candidates = append(candidates, Candidate{
 			Provider:    ProviderNix,
 			Kind:        KindPackage,
-			ID:          id,
+			ID:          nixCandidateID(attribute),
 			Name:        pkg.PName,
 			Version:     pkg.Version,
 			Description: pkg.Description,
@@ -97,6 +93,14 @@ func searchNix(ctx context.Context, runner OutputRunner, command, query string) 
 	}
 
 	return candidates, nil
+}
+
+func nixCandidateID(attribute string) string {
+	parts := strings.Split(attribute, ".")
+	if len(parts) >= 3 && (parts[0] == "packages" || parts[0] == "legacyPackages") && parts[1] != "" {
+		return strings.Join(parts[2:], ".")
+	}
+	return attribute
 }
 
 func searchBrew(ctx context.Context, runner OutputRunner, command, query string) ([]Candidate, error) {

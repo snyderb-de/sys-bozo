@@ -31,11 +31,84 @@ func TestVerifyCLIRequiresResolvedExecutable(t *testing.T) {
 	}
 }
 
+func TestVerifyNixWithoutTrustedExecutableUsesDirectProfileReference(t *testing.T) {
+	calls := []string{}
+	runner := fakeOutputRunner{responses: map[string]fakeOutputResponse{
+		"nix-store -q --references /tmp/profile": {out: "/nix/store/aaa-bash-5.2\n/nix/store/bbb-ripgrep-14.1.1\n"},
+	}, calls: &calls}
+
+	got := Verify(context.Background(), runner, nil, VerifySpec{
+		Provider: ProviderNix, Kind: KindPackage, Token: "ripgrep",
+		PName: "ripgrep", Version: "14.1.1", NixStoreBin: "nix-store", ProfilePath: "/tmp/profile",
+	})
+
+	if !got.OK || !strings.Contains(got.Detail, "direct profile reference") {
+		t.Fatalf("got %#v", got)
+	}
+	if want := []string{"nix-store -q --references /tmp/profile"}; !slices.Equal(calls, want) {
+		t.Fatalf("calls=%#v want %#v", calls, want)
+	}
+}
+
+func TestVerifyNixNestedAttrDoesNotGuessPnameExecutable(t *testing.T) {
+	calls := []string{}
+	lookupCalls := 0
+	runner := fakeOutputRunner{responses: map[string]fakeOutputResponse{
+		"nix-store -q --references /tmp/profile": {out: "/nix/store/bbb-requests-2.32.4\n"},
+	}, calls: &calls}
+
+	got := Verify(context.Background(), runner, func(string) (string, error) {
+		lookupCalls++
+		return "/wrong", nil
+	}, VerifySpec{
+		Provider: ProviderNix, Kind: KindPackage, Token: "python313Packages.requests",
+		PName: "requests", Version: "2.32.4", NixStoreBin: "nix-store", ProfilePath: "/tmp/profile",
+	})
+
+	if !got.OK || lookupCalls != 0 || len(calls) != 1 {
+		t.Fatalf("got=%#v lookupCalls=%d calls=%#v", got, lookupCalls, calls)
+	}
+}
+
+func TestVerifyNixWithoutProviderEvidenceFailsClosed(t *testing.T) {
+	for _, spec := range []VerifySpec{
+		{Provider: ProviderNix, Kind: KindPackage, PName: "ripgrep", Version: "14.1.1", ProfilePath: "/tmp/profile"},
+		{Provider: ProviderNix, Kind: KindPackage, PName: "ripgrep", Version: "14.1.1", NixStoreBin: "nix-store"},
+		{Provider: ProviderNix, Kind: KindPackage, NixStoreBin: "nix-store", ProfilePath: "/tmp/profile"},
+	} {
+		got := Verify(context.Background(), fakeOutputRunner{}, nil, spec)
+		if got.OK || got.Err == nil || !strings.Contains(got.Detail, "evidence") {
+			t.Fatalf("spec=%#v got=%#v", spec, got)
+		}
+	}
+}
+
+func TestVerifyBrewFormulaWithTrustedExecutableRequiresReceiptAndExecutable(t *testing.T) {
+	calls := []string{}
+	runner := fakeOutputRunner{responses: map[string]fakeOutputResponse{
+		"brew list --formula --versions ripgrep": {out: "ripgrep 14.1.1\n"},
+		"/test/bin/rg --version":                 {out: "ripgrep 14.1.1\n"},
+	}, calls: &calls}
+	got := Verify(context.Background(), runner, func(name string) (string, error) {
+		if name != "rg" {
+			t.Fatalf("lookup=%q", name)
+		}
+		return "/test/bin/rg", nil
+	}, VerifySpec{
+		Provider: ProviderBrew, Kind: KindFormula, Token: "ripgrep", BrewBin: "brew",
+		Executable: "rg", VersionArgs: []string{"--version"},
+	})
+	if !got.OK {
+		t.Fatalf("got %#v", got)
+	}
+	want := []string{"brew list --formula --versions ripgrep", "/test/bin/rg --version"}
+	if !slices.Equal(calls, want) {
+		t.Fatalf("calls=%#v want %#v", calls, want)
+	}
+}
+
 func TestVerifyBrewCaskRequiresReceiptAndArtifact(t *testing.T) {
-	runner := fakeOutputRunner{responses: map[string]struct {
-		out string
-		err error
-	}{
+	runner := fakeOutputRunner{responses: map[string]fakeOutputResponse{
 		"brew list --cask --versions zed": {out: "zed 0.190.0\n"},
 	}}
 	lookup := func(string) (string, error) { return "", exec.ErrNotFound }
@@ -61,10 +134,7 @@ func TestVerifyBrewCaskRequiresReceiptAndArtifact(t *testing.T) {
 func TestVerifyBrewCaskWithExecutableRequiresReceipt(t *testing.T) {
 	calls := []string{}
 	runner := fakeOutputRunner{
-		responses: map[string]struct {
-			out string
-			err error
-		}{
+		responses: map[string]fakeOutputResponse{
 			"/test/bin/zed --version": {out: "Zed 0.190.0\n"},
 		},
 		calls: &calls,
@@ -97,10 +167,7 @@ func TestVerifyBrewCaskWithExecutableRequiresReceipt(t *testing.T) {
 func TestVerifyBrewCaskWithExecutableRequiresEveryConfiguredCheck(t *testing.T) {
 	calls := []string{}
 	runner := fakeOutputRunner{
-		responses: map[string]struct {
-			out string
-			err error
-		}{
+		responses: map[string]fakeOutputResponse{
 			"brew list --cask --versions zed": {out: "zed 0.190.0\n"},
 			"/test/bin/zed --version":         {out: "Zed 0.190.0\n"},
 		},
@@ -137,10 +204,7 @@ func TestVerifyBrewCaskWithExecutableRequiresEveryConfiguredCheck(t *testing.T) 
 
 func TestVerifyCLIRequiresSuccessfulVersionCommand(t *testing.T) {
 	versionErr := errors.New("version failed")
-	runner := fakeOutputRunner{responses: map[string]struct {
-		out string
-		err error
-	}{
+	runner := fakeOutputRunner{responses: map[string]fakeOutputResponse{
 		"/test/bin/yazi --version": {err: versionErr},
 	}}
 	lookup := func(string) (string, error) { return "/test/bin/yazi", nil }
@@ -193,10 +257,7 @@ func TestVerifyRejectsVersionArgsWithoutExecutableBeforeOtherChecks(t *testing.T
 		t.Run(string(spec.Kind), func(t *testing.T) {
 			calls := []string{}
 			runner := fakeOutputRunner{
-				responses: map[string]struct {
-					out string
-					err error
-				}{
+				responses: map[string]fakeOutputResponse{
 					"brew list --formula --versions yazi": {out: "yazi 25.5.31\n"},
 					"brew list --cask --versions zed":     {out: "zed 0.190.0\n"},
 				},
@@ -237,10 +298,7 @@ func TestVerifyRejectsIncoherentProviderKind(t *testing.T) {
 }
 
 func TestVerifyBrewFormulaRequiresNonemptyReceipt(t *testing.T) {
-	runner := fakeOutputRunner{responses: map[string]struct {
-		out string
-		err error
-	}{
+	runner := fakeOutputRunner{responses: map[string]fakeOutputResponse{
 		"brew list --formula --versions yazi": {},
 	}}
 
@@ -259,10 +317,7 @@ func TestVerifyBrewFormulaRequiresNonemptyReceipt(t *testing.T) {
 func TestVerifyBrewFormulaAcceptsNonemptyReceipt(t *testing.T) {
 	calls := []string{}
 	runner := fakeOutputRunner{
-		responses: map[string]struct {
-			out string
-			err error
-		}{
+		responses: map[string]fakeOutputResponse{
 			"brew list --formula --versions yazi": {out: "yazi 25.5.31\n"},
 		},
 		calls: &calls,
@@ -285,10 +340,7 @@ func TestVerifyBrewFormulaAcceptsNonemptyReceipt(t *testing.T) {
 
 func TestVerifyBrewCaskFailsWhenArtifactIsMissing(t *testing.T) {
 	calls := []string{}
-	runner := fakeOutputRunner{responses: map[string]struct {
-		out string
-		err error
-	}{
+	runner := fakeOutputRunner{responses: map[string]fakeOutputResponse{
 		"brew list --cask --versions zed": {out: "zed 0.190.0\n"},
 		"/test/bin/zed --version":         {out: "Zed 0.190.0\n"},
 	}, calls: &calls}

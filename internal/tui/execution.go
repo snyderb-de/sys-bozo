@@ -3,7 +3,6 @@ package tui
 import (
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 	"syscall"
@@ -62,6 +61,13 @@ func (m Model) hasAvailableSelection() bool {
 }
 
 func (m *Model) confirmReviewedPlan() tea.Cmd {
+	if m.reviewed.Config != nil {
+		m.beginReviewedRun()
+		if m.reviewed.Config.EditApplied {
+			return m.advanceQueue()
+		}
+		return m.applyConfigCmd(m.reviewed.Config.Proposal)
+	}
 	if m.reviewed.Package != nil {
 		m.beginReviewedRun()
 		if m.reviewed.Package.EditApplied {
@@ -107,17 +113,6 @@ func cloneWorkItems(items []runner.WorkItem) []runner.WorkItem {
 }
 
 // ── Run logic ─────────────────────────────────────────────────────────────
-
-func (m Model) openEditor(path string) tea.Cmd {
-	editor := os.Getenv("EDITOR")
-	if editor == "" {
-		editor = "vi"
-	}
-	cmd := exec.Command(editor, path)
-	return tea.ExecProcess(cmd, func(err error) tea.Msg {
-		return editorDoneMsg{path: path, err: err}
-	})
-}
 
 func runInteractiveWork(item runner.WorkItem, start time.Time) tea.Cmd {
 	return tea.ExecProcess(runner.Command(item), func(err error) tea.Msg {

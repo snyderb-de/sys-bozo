@@ -245,6 +245,130 @@ func TestApplyRejectsFileChangedWhilePreparingTemporaryFile(t *testing.T) {
 	assertNoApplyTemps(t, dir)
 }
 
+func TestApplyRejectsSymlinkAndNonRegularTargets(t *testing.T) {
+	dir := t.TempDir()
+	original := []byte("original\n")
+	regular := filepath.Join(dir, "regular")
+	if err := os.WriteFile(regular, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	symlink := filepath.Join(dir, "symlink")
+	if err := os.Symlink(regular, symlink); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{symlink, dir} {
+		_, err := Apply(ProposeReplacement(Target{Path: path}, original, []byte("proposed\n")))
+		if err == nil || errors.Is(err, ErrStaleFile) {
+			t.Fatalf("path=%q err=%v", path, err)
+		}
+	}
+	got, err := os.ReadFile(regular)
+	if err != nil || !bytes.Equal(got, original) {
+		t.Fatalf("regular=%q err=%v", got, err)
+	}
+}
+
+func TestApplyRaceHooksNeverOverwriteCompetingEdits(t *testing.T) {
+	tests := []struct {
+		name  string
+		stage applyStage
+		hook  func(string, string)
+		want  []byte
+	}{
+		{
+			name: "before claim", stage: applyBeforeClaim, want: []byte("before-claim\n"),
+			hook: func(target, _ string) { _ = os.WriteFile(target, []byte("before-claim\n"), 0o600) },
+		},
+		{
+			name: "competing target before install", stage: applyBeforeInstall, want: []byte("competitor\n"),
+			hook: func(target, _ string) { _ = os.WriteFile(target, []byte("competitor\n"), 0o600) },
+		},
+		{
+			name: "old inode write after claim", stage: applyBeforeGuardRecheck, want: []byte("old-inode-write\n"),
+			hook: func(_, guard string) { _ = os.WriteFile(guard, []byte("old-inode-write\n"), 0o600) },
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "target")
+			original := []byte("original\n")
+			if err := os.WriteFile(path, original, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			fs := realApplyFilesystem()
+			fs.hook = func(stage applyStage, target, guard string) {
+				if stage == tt.stage {
+					tt.hook(target, guard)
+				}
+			}
+			_, err := apply(ProposeReplacement(Target{Path: path}, original, []byte("proposed\n")), fs)
+			if !errors.Is(err, ErrStaleFile) {
+				t.Fatalf("err=%v", err)
+			}
+			got, readErr := os.ReadFile(path)
+			if readErr != nil || !bytes.Equal(got, tt.want) {
+				t.Fatalf("target=%q err=%v want=%q", got, readErr, tt.want)
+			}
+		})
+	}
+}
+
+func TestApplyAfterClaimHookCanObserveClaimedTarget(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "target")
+	original := []byte("original\n")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	seen := false
+	fs := realApplyFilesystem()
+	fs.hook = func(stage applyStage, target, guard string) {
+		if stage != applyAfterClaim {
+			return
+		}
+		seen = true
+		if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("target still exists: %v", err)
+		}
+		if got, err := os.ReadFile(guard); err != nil || !bytes.Equal(got, original) {
+			t.Fatalf("guard=%q err=%v", got, err)
+		}
+	}
+	if _, err := apply(ProposeReplacement(Target{Path: path}, original, []byte("proposed\n")), fs); err != nil {
+		t.Fatal(err)
+	}
+	if !seen {
+		t.Fatal("after-claim hook not called")
+	}
+}
+
+func TestApplySurfacesCleanupFailureAndGuardPath(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "target")
+	original := []byte("original\n")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	failure := errors.New("cleanup failed")
+	fs := realApplyFilesystem()
+	remove := fs.remove
+	fs.remove = func(path string) error {
+		if strings.HasSuffix(path, ".guard") {
+			return failure
+		}
+		return remove(path)
+	}
+	_, err := apply(ProposeReplacement(Target{Path: path}, original, []byte("proposed\n")), fs)
+	if !errors.Is(err, failure) || !strings.Contains(err.Error(), ".guard") {
+		t.Fatalf("err=%v", err)
+	}
+	got, readErr := os.ReadFile(path)
+	if readErr != nil || string(got) != "proposed\n" {
+		t.Fatalf("target=%q err=%v", got, readErr)
+	}
+}
+
 type concurrentEditApplyTempFile struct {
 	applyTempFile
 	onClose func() error

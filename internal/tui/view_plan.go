@@ -83,6 +83,9 @@ func (m Model) viewMaintenance() string {
 }
 
 func (m Model) viewReview() string {
+	if m.reviewed.Config != nil {
+		return m.viewConfigReview()
+	}
 	if m.reviewed.Package != nil {
 		return m.viewPackageReview()
 	}

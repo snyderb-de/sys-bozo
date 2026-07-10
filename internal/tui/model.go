@@ -14,6 +14,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/snyderb-de/sys-bozo/internal/fileedit"
 	"github.com/snyderb-de/sys-bozo/internal/history"
 	"github.com/snyderb-de/sys-bozo/internal/packages"
 	"github.com/snyderb-de/sys-bozo/internal/runner"
@@ -67,6 +68,7 @@ type reviewedPlan struct {
 	Action  string
 	Items   []runner.WorkItem
 	Package *packageReview
+	Config  *configReview
 }
 
 type stepResult struct {
@@ -94,11 +96,15 @@ type stepDoneMsg struct {
 }
 type auditReadyMsg struct{ items []system.AuditItem }
 type sudoReadyMsg struct{ err error }
-type editorDoneMsg struct {
-	path string
-	err  error
+type configEditorRequest struct {
+	file     configFile
+	original []byte
 }
-type applyChoiceMsg struct{ key string }
+type configEditorDoneMsg struct {
+	file               configFile
+	original, proposed []byte
+	err                error
+}
 
 // ── Model ─────────────────────────────────────────────────────────────────
 
@@ -146,13 +152,20 @@ type Model struct {
 	auditReady bool
 
 	// Config tab
-	configFiles   []configFile
-	configCursor  int
-	applyPrompt   bool // show apply-after-edit prompt
-	applyEditPath string
+	configFiles       []configFile
+	configCursor      int
+	applyPrompt       bool // choose reviewed rebuild after temp-file edit
+	pendingConfig     fileedit.Proposal
+	configNotice      string
+	configEditor      func(configEditorRequest) tea.Cmd
+	configExecProcess func(*exec.Cmd, tea.ExecCallback) tea.Cmd
+	applyConfig       func(fileedit.Proposal) (fileedit.AppliedEdit, error)
 
 	packageFlow          packageFlow
-	searchPackage        func(string) packages.SearchResult
+	searchPackage        func(context.Context, string) packages.SearchResult
+	packageSearchCancel  context.CancelFunc
+	packageSearchRequest uint64
+	packageSearchTimeout time.Duration
 	applyPackage         func(packages.Proposal) (packages.AppliedEdit, error)
 	verifyPackage        func(packages.VerifySpec) packages.VerifyResult
 	proposePackageRevert func(packages.AppliedEdit) (packages.Proposal, error)
@@ -166,8 +179,8 @@ func New() Model {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(clrCyan)
-	searchPackage := func(query string) packages.SearchResult {
-		return packages.Search(context.Background(), packages.ExecRunner{}, ctx.NixBin, ctx.BrewBin, query)
+	searchPackage := func(searchCtx context.Context, query string) packages.SearchResult {
+		return packages.Search(searchCtx, packages.ExecRunner{}, ctx.NixBin, ctx.BrewBin, query)
 	}
 	verifyPackage := func(spec packages.VerifySpec) packages.VerifyResult {
 		return packages.Verify(context.Background(), packages.ExecRunner{}, exec.LookPath, spec)
@@ -186,9 +199,11 @@ func New() Model {
 		configFiles:          buildConfigFiles(ctx),
 		terminalExec:         runInteractiveWork,
 		searchPackage:        searchPackage,
+		packageSearchTimeout: 30 * time.Second,
 		applyPackage:         packages.Apply,
 		verifyPackage:        verifyPackage,
 		proposePackageRevert: packages.ProposeRevert,
+		applyConfig:          fileedit.Apply,
 	}
 }
 
