@@ -64,6 +64,31 @@ func TestNoColorStylesRenderSemanticLabelsWithoutANSI(t *testing.T) {
 	}
 }
 
+func TestFieldStyleUsesGraphiteAndDropsBackgroundWithoutColor(t *testing.T) {
+	colored := newUIStyles(false)
+	background, ok := colored.field.GetBackground().(lipgloss.Color)
+	if !ok || string(background) != "#0a0d10" {
+		t.Fatalf("field background=%T(%v), want graphite #0a0d10", colored.field.GetBackground(), colored.field.GetBackground())
+	}
+	foreground, ok := colored.field.GetForeground().(lipgloss.Color)
+	if !ok || string(foreground) != "#dae4ea" {
+		t.Fatalf("field foreground=%T(%v), want bone #dae4ea", colored.field.GetForeground(), colored.field.GetForeground())
+	}
+
+	previousProfile := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(previousProfile) })
+
+	plain := newUIStyles(true)
+	out := plain.field.Render("WORKSTATION CONTROL")
+	if out != "WORKSTATION CONTROL" || strings.Contains(out, "\x1b[") {
+		t.Fatalf("NO_COLOR field rendered styling: %q", out)
+	}
+	if _, ok := plain.field.GetBackground().(lipgloss.NoColor); !ok {
+		t.Fatalf("NO_COLOR field retained background: %T(%v)", plain.field.GetBackground(), plain.field.GetBackground())
+	}
+}
+
 func TestStatusTextPreservesNoColorSemanticLabels(t *testing.T) {
 	s := newUIStyles(true)
 	tests := []struct {
@@ -100,6 +125,29 @@ func TestNumberedRowAlignsRenderedStatusByVisibleWidth(t *testing.T) {
 	}
 	if !strings.HasSuffix(got, "READY") {
 		t.Fatalf("status is not right-aligned: %q", got)
+	}
+}
+
+func TestNumberedRowPreservesSelectionMarkerWithoutColor(t *testing.T) {
+	s := newUIStyles(true)
+	status := statusText(s, "READY", statusSuccess)
+	active := numberedRow(s, "03", "INSPECT SYSTEM", status, 40, true)
+	inactive := numberedRow(s, "03", "INSPECT SYSTEM", status, 40, false)
+
+	if active == inactive {
+		t.Fatalf("active and inactive rows are identical: %q", active)
+	}
+	if !strings.HasPrefix(active, "> ") {
+		t.Fatalf("active row missing marker: %q", active)
+	}
+	if !strings.HasPrefix(inactive, "  ") {
+		t.Fatalf("inactive row missing marker space: %q", inactive)
+	}
+	if strings.Contains(active+inactive, "\x1b[") {
+		t.Fatalf("NO_COLOR rows contain ANSI: active=%q inactive=%q", active, inactive)
+	}
+	if lipgloss.Width(active) != 40 || lipgloss.Width(inactive) != 40 {
+		t.Fatalf("row widths active=%d inactive=%d want 40", lipgloss.Width(active), lipgloss.Width(inactive))
 	}
 }
 

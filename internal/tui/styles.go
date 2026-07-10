@@ -12,7 +12,7 @@ import (
 // uiStyles contains semantic roles for the Monolith/Afterburner visual system.
 // Existing screens keep their legacy styles until they migrate to this system.
 type uiStyles struct {
-	major, title, label, text, muted         lipgloss.Style
+	field, major, title, label, text, muted  lipgloss.Style
 	attention, active, success, danger, rule lipgloss.Style
 }
 
@@ -35,6 +35,7 @@ func newUIStyles(noColor bool) uiStyles {
 	}
 
 	return uiStyles{
+		field:     lipgloss.NewStyle().Background(color("#0a0d10")).Foreground(color("#dae4ea")),
 		major:     lipgloss.NewStyle().Foreground(color("#f4f7f8")).Bold(!noColor),
 		title:     lipgloss.NewStyle().Foreground(color("#dae4ea")).Bold(!noColor),
 		label:     lipgloss.NewStyle().Foreground(color("#60717c")),
@@ -150,12 +151,14 @@ func statusText(s uiStyles, text string, kind statusKind) string {
 func numberedRow(s uiStyles, number, label, renderedStatus string, width int, active bool) string {
 	numberStyle := s.muted
 	labelStyle := s.text
+	marker := "  "
 	if active {
 		numberStyle = s.active
 		labelStyle = s.active
+		marker = "> "
 	}
 
-	left := numberStyle.Render(number) + " " + labelStyle.Render(label)
+	left := marker + numberStyle.Render(number) + " " + labelStyle.Render(label)
 	gap := max(1, width-lipgloss.Width(left)-lipgloss.Width(renderedStatus))
 	return left + strings.Repeat(" ", gap) + renderedStatus
 }
