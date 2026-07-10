@@ -37,6 +37,29 @@ func cmpWorkItems(got, want []runner.WorkItem) string {
 	return ""
 }
 
+func TestSplitPreservesAuditConfigAndDoctorViews(t *testing.T) {
+	m := testGuidedModel()
+	m.width, m.height = 100, 36
+	m.configFiles = []configFile{{label: "flake.nix", path: "/repo/flake.nix", hint: "system"}}
+	m.auditReady = true
+	m.auditItems = []system.AuditItem{{Name: "ssh config", OK: true, Detail: "managed"}}
+	m.facts = system.Facts{DotfilesBranch: "main", HMGeneration: "gen 4", AgeKeyExists: true, GitHubKeyExists: true}
+
+	for _, tc := range []struct {
+		name string
+		view func() string
+		want string
+	}{
+		{"config", func() string { return m.viewConfig(92) }, "flake.nix"},
+		{"audit", func() string { return m.viewAudit(92) }, "ssh config"},
+		{"doctor", func() string { return m.viewDoctor(92) }, "gen 4"},
+	} {
+		if out := tc.view(); !strings.Contains(out, tc.want) {
+			t.Fatalf("%s missing %q:\n%s", tc.name, tc.want, out)
+		}
+	}
+}
+
 func TestMaintenanceSelectionBuildsReviewWithoutRunning(t *testing.T) {
 	m := testGuidedModel()
 	m.openMaintenance("hms")
