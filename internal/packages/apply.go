@@ -30,6 +30,7 @@ type applyFilesystem struct {
 	readFile   func(string) ([]byte, error)
 	stat       func(string) (os.FileInfo, error)
 	createTemp func(string, string) (applyTempFile, error)
+	mkdirTemp  func(string, string) (string, error)
 	remove     func(string) error
 	exchange   func(string, string) error
 	link       func(string, string) error
@@ -48,6 +49,7 @@ const (
 	applyBeforeInitialExchange
 	applyBeforePrimaryRollbackExchange
 	applyBeforeRecoveryRollbackExchange
+	applyBeforeArtifactCleanup
 )
 
 func realApplyFilesystem() applyFilesystem {
@@ -57,10 +59,11 @@ func realApplyFilesystem() applyFilesystem {
 		createTemp: func(dir, pattern string) (applyTempFile, error) {
 			return os.CreateTemp(dir, pattern)
 		},
-		remove:   os.Remove,
-		exchange: exchangePaths,
-		link:     os.Link,
-		sameFile: os.SameFile,
+		mkdirTemp: os.MkdirTemp,
+		remove:    os.Remove,
+		exchange:  exchangePaths,
+		link:      os.Link,
+		sameFile:  os.SameFile,
 		syncDir: func(dir string) error {
 			file, err := os.Open(dir)
 			if err != nil {
@@ -88,25 +91,34 @@ func apply(proposal Proposal, filesystem applyFilesystem) (AppliedEdit, error) {
 		return AppliedEdit{}, ErrStaleFile
 	}
 
+	parent := filepath.Dir(proposal.Target.Path)
+	stageDir, err := filesystem.mkdirTemp(parent, ".packages-apply-stage-*")
+	if err != nil {
+		return AppliedEdit{}, fmt.Errorf("create private apply staging directory: %w", err)
+	}
+	stageInfo, err := filesystem.stat(stageDir)
+	if err != nil || !stageInfo.IsDir() || stageInfo.Mode().Perm() != 0o700 {
+		return AppliedEdit{}, errors.Join(fmt.Errorf("invalid private apply staging directory %s", stageDir), err, cleanupOwnedArtifacts(filesystem, parent, stageDir, stageInfo))
+	}
 	after := bytes.Clone(proposal.Proposed)
-	tempPath, proposedInfo, err := prepareApplyFile(filesystem, filepath.Dir(proposal.Target.Path), applyTempPattern, after, info.Mode())
+	tempPath, proposedInfo, err := prepareApplyFile(filesystem, stageDir, stageInfo, applyTempPattern, after, info.Mode())
 	if err != nil {
-		return AppliedEdit{}, err
+		return AppliedEdit{}, errors.Join(err, cleanupOwnedArtifacts(filesystem, parent, stageDir, stageInfo))
 	}
-	guardPath, recoveryInfo, err := prepareApplyFile(filesystem, filepath.Dir(proposal.Target.Path), applyTempPattern+"-recovery", current, info.Mode())
+	guardPath, recoveryInfo, err := prepareApplyFile(filesystem, stageDir, stageInfo, applyTempPattern+"-recovery", current, info.Mode())
 	if err != nil {
-		return AppliedEdit{}, errors.Join(err, cleanupApplyArtifacts(filesystem, filepath.Dir(proposal.Target.Path), tempPath))
+		return AppliedEdit{}, errors.Join(err, cleanupOwnedArtifacts(filesystem, parent, stageDir, stageInfo, ownedArtifact{tempPath, proposedInfo}))
 	}
-	state := exchangeApplyState{filesystem: filesystem, target: proposal.Target.Path, oldTemp: tempPath, recovery: guardPath, originalInfo: info, proposedInfo: proposedInfo, recoveryInfo: recoveryInfo, originalHash: proposal.OriginalHash, proposedHash: proposal.ProposedHash, originalMode: info.Mode()}
+	state := exchangeApplyState{filesystem: filesystem, target: proposal.Target.Path, oldTemp: tempPath, recovery: guardPath, staging: stageDir, stagingInfo: stageInfo, originalInfo: info, proposedInfo: proposedInfo, recoveryInfo: recoveryInfo, originalHash: proposal.OriginalHash, proposedHash: proposal.ProposedHash, originalMode: info.Mode()}
 	runApplyHook(filesystem, applyBeforeClaim, proposal.Target.Path, guardPath)
 	latestInfo, latestInfoErr := filesystem.stat(proposal.Target.Path)
 	latest, latestErr := filesystem.readFile(proposal.Target.Path)
 	if latestInfoErr != nil || latestErr != nil || !latestInfo.Mode().IsRegular() || !filesystem.sameFile(info, latestInfo) || sha256.Sum256(latest) != proposal.OriginalHash {
-		return AppliedEdit{}, errors.Join(ErrStaleFile, latestInfoErr, latestErr, cleanupApplyArtifacts(filesystem, filepath.Dir(proposal.Target.Path), tempPath, guardPath))
+		return AppliedEdit{}, errors.Join(ErrStaleFile, latestInfoErr, latestErr, state.cleanupPreExchange())
 	}
 	runApplyHook(filesystem, applyBeforeInitialExchange, proposal.Target.Path, tempPath)
 	if err := filesystem.exchange(proposal.Target.Path, tempPath); err != nil {
-		return AppliedEdit{}, errors.Join(fmt.Errorf("atomically exchange declaration target: %w", err), cleanupApplyArtifacts(filesystem, filepath.Dir(proposal.Target.Path), tempPath, guardPath))
+		return AppliedEdit{}, errors.Join(fmt.Errorf("atomically exchange declaration target: %w", err), state.cleanupPreExchange())
 	}
 	if err := state.verifyInitialExchange(); err != nil {
 		return AppliedEdit{}, err
@@ -122,7 +134,7 @@ func apply(proposal Proposal, filesystem applyFilesystem) (AppliedEdit, error) {
 	if err := filesystem.syncDir(filepath.Dir(proposal.Target.Path)); err != nil {
 		return completedEdit(proposal, current, after, beforeHash), fmt.Errorf("sync committed declaration failed; artifacts retained at %s and %s: %w", tempPath, guardPath, err)
 	}
-	if err := cleanupApplyArtifacts(filesystem, filepath.Dir(proposal.Target.Path), tempPath, guardPath); err != nil {
+	if err := state.cleanupCommitted(); err != nil {
 		return completedEdit(proposal, current, after, beforeHash), err
 	}
 	return completedEdit(proposal, current, after, beforeHash), nil
@@ -154,30 +166,34 @@ func (s exchangeApplyState) verifyInitialExchange() error {
 	if state != oldDisplacedCompetitor {
 		return nil
 	}
-	competitorInfo, err := s.filesystem.stat(s.oldTemp)
-	if err != nil {
-		return fmt.Errorf("%w: displaced target identity unavailable; artifacts retained at %s and %s", ErrStaleFile, s.oldTemp, s.recovery)
-	}
-	runApplyHook(s.filesystem, applyBeforePrimaryRollbackExchange, s.target, s.oldTemp)
-	if !s.identity(s.target, s.proposedInfo) {
-		return fmt.Errorf("%w: later competing target preserved at %s; artifacts retained at %s and %s", ErrStaleFile, s.target, s.oldTemp, s.recovery)
-	}
-	if err := s.filesystem.exchange(s.target, s.oldTemp); err != nil {
-		return fmt.Errorf("%w: displaced target restore failed; artifacts retained at %s and %s: %v", ErrStaleFile, s.oldTemp, s.recovery, err)
-	}
-	restoredInfo, restoredErr := s.filesystem.stat(s.target)
-	if restoredErr != nil || !s.filesystem.sameFile(restoredInfo, competitorInfo) || !s.identity(s.oldTemp, s.proposedInfo) {
-		return fmt.Errorf("%w: displaced target restore unverified; artifacts retained at %s and %s", ErrStaleFile, s.oldTemp, s.recovery)
-	}
-	return fmt.Errorf("%w: displaced competing target restored at %s; artifacts retained at %s and %s", ErrStaleFile, s.target, s.oldTemp, s.recovery)
+	return fmt.Errorf("%w: ambiguous displaced identity retained at %s; known proposal remains at %s; recovery retained at %s", ErrStaleFile, s.oldTemp, s.target, s.recovery)
 }
 
 type exchangeApplyState struct {
 	filesystem                               applyFilesystem
-	target, oldTemp, recovery                string
+	target, oldTemp, recovery, staging       string
+	stagingInfo                              os.FileInfo
 	originalInfo, proposedInfo, recoveryInfo os.FileInfo
 	originalHash, proposedHash               [32]byte
 	originalMode                             os.FileMode
+}
+
+type ownedArtifact struct {
+	path     string
+	identity os.FileInfo
+}
+
+func (s exchangeApplyState) cleanupPreExchange() error {
+	return cleanupOwnedArtifacts(s.filesystem, filepath.Dir(s.target), s.staging, s.stagingInfo, ownedArtifact{s.oldTemp, s.proposedInfo}, ownedArtifact{s.recovery, s.recoveryInfo})
+}
+func (s exchangeApplyState) cleanupCommitted() error {
+	return cleanupOwnedArtifacts(s.filesystem, filepath.Dir(s.target), s.staging, s.stagingInfo, ownedArtifact{s.oldTemp, s.originalInfo}, ownedArtifact{s.recovery, s.recoveryInfo})
+}
+func (s exchangeApplyState) cleanupRollback(source string) error {
+	if source == s.oldTemp {
+		return cleanupOwnedArtifacts(s.filesystem, filepath.Dir(s.target), s.staging, s.stagingInfo, ownedArtifact{s.oldTemp, s.proposedInfo}, ownedArtifact{s.recovery, s.recoveryInfo})
+	}
+	return cleanupOwnedArtifacts(s.filesystem, filepath.Dir(s.target), s.staging, s.stagingInfo, ownedArtifact{s.oldTemp, s.originalInfo}, ownedArtifact{s.recovery, s.proposedInfo})
 }
 
 func (s exchangeApplyState) valid(path string, identity os.FileInfo, hash [32]byte) bool {
@@ -214,13 +230,15 @@ func (s exchangeApplyState) rollback(oldState oldExchangeIdentity) error {
 		return fmt.Errorf("%w: invalid recovery; artifacts retained at %s and %s", ErrStaleFile, s.oldTemp, s.recovery)
 	}
 	err := s.rollbackExchange(source, identity, stage)
+	usedSource := source
 	if err != nil && oldState == oldReviewedValid && s.valid(s.recovery, s.recoveryInfo, s.originalHash) {
 		err = s.rollbackExchange(s.recovery, s.recoveryInfo, applyBeforeRecoveryRollbackExchange)
+		usedSource = s.recovery
 	}
 	if err != nil {
 		return err
 	}
-	return errors.Join(ErrStaleFile, cleanupApplyArtifacts(s.filesystem, filepath.Dir(s.target), s.oldTemp, s.recovery))
+	return errors.Join(ErrStaleFile, s.cleanupRollback(usedSource))
 }
 
 func (s exchangeApplyState) rollbackExchange(source string, identity os.FileInfo, stage applyStage) error {
@@ -248,15 +266,20 @@ func (s exchangeApplyState) rollbackExchange(source string, identity os.FileInfo
 	return fmt.Errorf("%w: rollback identities unverified; artifacts retained at %s and %s", ErrStaleFile, s.oldTemp, s.recovery)
 }
 
-func prepareApplyFile(fs applyFilesystem, dir, pattern string, content []byte, mode os.FileMode) (string, os.FileInfo, error) {
+func prepareApplyFile(fs applyFilesystem, dir string, dirInfo os.FileInfo, pattern string, content []byte, mode os.FileMode) (string, os.FileInfo, error) {
 	f, err := fs.createTemp(dir, pattern)
 	if err != nil {
 		return "", nil, err
 	}
 	path := f.Name()
+	createdInfo, createdErr := fs.stat(path)
+	if createdErr != nil {
+		_ = f.Close()
+		return "", nil, createdErr
+	}
 	fail := func(e error) (string, os.FileInfo, error) {
 		_ = f.Close()
-		return "", nil, errors.Join(e, cleanupApplyArtifacts(fs, dir, path))
+		return "", nil, errors.Join(e, cleanupOwnedArtifacts(fs, filepath.Dir(dir), dir, dirInfo, ownedArtifact{path, createdInfo}))
 	}
 	if err := f.Chmod(mode); err != nil {
 		return fail(err)
@@ -272,30 +295,53 @@ func prepareApplyFile(fs applyFilesystem, dir, pattern string, content []byte, m
 		return fail(err)
 	}
 	if err := f.Close(); err != nil {
-		return "", nil, errors.Join(err, cleanupApplyArtifacts(fs, dir, path))
+		return fail(err)
 	}
 	info, err := fs.stat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != mode.Perm() {
-		return "", nil, errors.Join(fmt.Errorf("invalid prepared file %s", path), err, cleanupApplyArtifacts(fs, dir, path))
+		return "", nil, errors.Join(fmt.Errorf("invalid prepared file %s", path), err, cleanupOwnedArtifacts(fs, filepath.Dir(dir), dir, dirInfo, ownedArtifact{path, createdInfo}))
 	}
 	b, err := fs.readFile(path)
 	if err != nil || !bytes.Equal(b, content) {
-		return "", nil, errors.Join(fmt.Errorf("prepared file content mismatch %s", path), err, cleanupApplyArtifacts(fs, dir, path))
+		return "", nil, errors.Join(fmt.Errorf("prepared file content mismatch %s", path), err, cleanupOwnedArtifacts(fs, filepath.Dir(dir), dir, dirInfo, ownedArtifact{path, createdInfo}))
 	}
 	return path, info, nil
 }
 
-func cleanupApplyArtifacts(fs applyFilesystem, dir string, paths ...string) error {
+func cleanupOwnedArtifacts(fs applyFilesystem, parent, stage string, stageInfo os.FileInfo, artifacts ...ownedArtifact) error {
 	var result error
-	for _, p := range paths {
-		if p == "" {
+	for _, artifact := range artifacts {
+		p := artifact.path
+		if p == "" || artifact.identity == nil {
+			continue
+		}
+		runApplyHook(fs, applyBeforeArtifactCleanup, stage, p)
+		current, statErr := fs.stat(p)
+		if statErr != nil {
+			if !errors.Is(statErr, os.ErrNotExist) {
+				result = errors.Join(result, statErr)
+			}
+			continue
+		}
+		if !fs.sameFile(current, artifact.identity) {
+			result = errors.Join(result, fmt.Errorf("refuse cleanup of identity-mismatched artifact %s", p))
 			continue
 		}
 		if err := fs.remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
 			result = errors.Join(result, fmt.Errorf("remove artifact %s: %w", p, err))
 		}
 	}
-	if err := fs.syncDir(dir); err != nil {
+	if result == nil && stage != "" && stageInfo != nil {
+		current, err := fs.stat(stage)
+		if err == nil && fs.sameFile(current, stageInfo) {
+			if err := fs.remove(stage); err != nil {
+				result = errors.Join(result, fmt.Errorf("remove staging directory %s: %w", stage, err))
+			}
+		} else if err == nil {
+			result = errors.Join(result, fmt.Errorf("refuse cleanup of identity-mismatched staging directory %s", stage))
+		}
+	}
+	if err := fs.syncDir(parent); err != nil {
 		result = errors.Join(result, fmt.Errorf("sync artifact cleanup: %w", err))
 	}
 	return result

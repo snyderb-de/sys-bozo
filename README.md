@@ -75,12 +75,20 @@ From Home, press `2` or select Add Package:
 
 Confirmation atomically edits the declarative Nix or Homebrew config, applies
 the matching Home Manager or nix-darwin action, and verifies the selected
-provider. A changed file hash aborts instead of overwriting newer work. If the
-process stops during the atomic exchange, the target path remains present with
-either old or new bytes and a same-directory recovery temporary may remain;
-that temporary preserves reviewed old bytes for manual recovery. A stale file can be
-briefly swapped into place and then rolled back, but the target path is never
-absent. If the
+provider. The declaration target is protected against arbitrary atomic
+concurrent edits with inode, mode, hash, and exchange checks; conflicts abort
+and retain recovery evidence instead of silently installing an unrecognized
+inode. Proposal and recovery files live in a random adjacent same-filesystem
+staging directory with mode `0700`, and the target path remains present through
+every exchange. If the process stops, the target can contain old or new bytes
+and that private staging directory may remain for manual recovery.
+
+The staging paths are process-owned. Portable POSIX filesystems do not provide
+an unlink-if-inode primitive, so hostile same-UID mutation inside those private
+internal paths is outside this guarantee. Cleanup still checks the recorded
+identity immediately before removal; a detected mismatch is retained and its
+path is reported. A stale proposal can be briefly visible before validation
+rolls it back. If the
 apply action fails after the edit, the declaration stays visible and `v` opens
 a separately reviewed, hash-gated revert; sys-bozo never silently rolls it
 back. Verification failure is reported as failure and also leaves the

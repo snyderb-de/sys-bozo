@@ -176,7 +176,7 @@ func TestApplyCleansTemporaryFileOnEveryPreRenameFailure(t *testing.T) {
 			filesystem := realApplyFilesystem()
 			createTemp := filesystem.createTemp
 			filesystem.createTemp = func(tempDir, pattern string) (applyTempFile, error) {
-				if tempDir != dir {
+				if filepath.Dir(tempDir) != dir {
 					t.Fatalf("temp dir=%q want %q", tempDir, dir)
 				}
 				file, err := createTemp(tempDir, pattern)
@@ -348,6 +348,134 @@ func TestApplyAfterClaimHookCanObserveClaimedTarget(t *testing.T) {
 	}
 }
 
+func TestApplyAfterClaimNeverInstallsUnknownOldTempIdentity(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "target")
+	original := []byte("original\n")
+	proposed := []byte("proposed\n")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var replacementInfo os.FileInfo
+	var oldTemp, recovery string
+	fs := realApplyFilesystem()
+	fs.hook = func(stage applyStage, _, artifact string) {
+		switch stage {
+		case applyBeforeClaim:
+			recovery = artifact
+		case applyAfterClaim:
+			oldTemp = artifact
+			replacement := filepath.Join(filepath.Dir(artifact), "unknown-old-temp")
+			if err := os.WriteFile(replacement, original, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			replacementInfo, _ = os.Lstat(replacement)
+			if err := os.Rename(replacement, artifact); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	_, err := apply(ProposeReplacement(Target{Path: path}, original, proposed), fs)
+	if !errors.Is(err, ErrStaleFile) {
+		t.Fatalf("err=%v", err)
+	}
+	if got, readErr := os.ReadFile(path); readErr != nil || !bytes.Equal(got, proposed) {
+		t.Fatalf("known proposal=%q err=%v", got, readErr)
+	}
+	if info, statErr := os.Lstat(oldTemp); statErr != nil || !os.SameFile(info, replacementInfo) {
+		t.Fatalf("unknown oldTemp was not retained: info=%v err=%v", info, statErr)
+	}
+	if got, readErr := os.ReadFile(recovery); readErr != nil || !bytes.Equal(got, original) {
+		t.Fatalf("recovery=%q err=%v", got, readErr)
+	}
+	assertApplyArtifactsRetained(t, dir)
+}
+
+func TestApplyNeverInstallsReplacedRecoveryIdentity(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "target")
+	original := []byte("original\n")
+	proposed := []byte("proposed\n")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var replacementInfo os.FileInfo
+	var recovery string
+	fs := realApplyFilesystem()
+	fs.hook = func(stage applyStage, _, source string) {
+		switch stage {
+		case applyBeforeGuardRecheck:
+			if err := os.WriteFile(source, []byte("tampered original\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		case applyBeforeRecoveryRollbackExchange:
+			recovery = source
+			replacement := filepath.Join(filepath.Dir(source), "unknown-recovery")
+			if err := os.WriteFile(replacement, original, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			replacementInfo, _ = os.Lstat(replacement)
+			if err := os.Rename(replacement, source); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	_, err := apply(ProposeReplacement(Target{Path: path}, original, proposed), fs)
+	if !errors.Is(err, ErrStaleFile) {
+		t.Fatalf("err=%v", err)
+	}
+	if got, readErr := os.ReadFile(path); readErr != nil || !bytes.Equal(got, proposed) {
+		t.Fatalf("known proposal=%q err=%v", got, readErr)
+	}
+	if info, statErr := os.Lstat(recovery); statErr != nil || !os.SameFile(info, replacementInfo) {
+		t.Fatalf("replacement recovery was not retained: info=%v err=%v", info, statErr)
+	}
+	assertApplyArtifactsRetained(t, dir)
+}
+
+func TestApplyCleanupRefusesReplacedArtifactIdentity(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "target")
+	original := []byte("original\n")
+	proposed := []byte("proposed\n")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var replacementInfo os.FileInfo
+	var replacedPath string
+	replaced := false
+	fs := realApplyFilesystem()
+	fs.hook = func(stage applyStage, _, artifact string) {
+		if stage != applyBeforeArtifactCleanup || replaced {
+			return
+		}
+		replaced = true
+		replacedPath = artifact
+		replacement := filepath.Join(filepath.Dir(artifact), "unknown-cleanup")
+		if err := os.WriteFile(replacement, []byte("do not remove\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		replacementInfo, _ = os.Lstat(replacement)
+		if err := os.Rename(replacement, artifact); err != nil {
+			t.Fatal(err)
+		}
+	}
+	applied, err := apply(ProposeReplacement(Target{Path: path}, original, proposed), fs)
+	if err == nil || !strings.Contains(err.Error(), replacedPath) || !strings.Contains(err.Error(), "identity-mismatched") {
+		t.Fatalf("cleanup err=%v replaced=%q", err, replacedPath)
+	}
+	if !bytes.Equal(applied.After, proposed) {
+		t.Fatalf("completed edit=%q", applied.After)
+	}
+	if got, readErr := os.ReadFile(path); readErr != nil || !bytes.Equal(got, proposed) {
+		t.Fatalf("committed proposal=%q err=%v", got, readErr)
+	}
+	if info, statErr := os.Lstat(replacedPath); statErr != nil || !os.SameFile(info, replacementInfo) {
+		t.Fatalf("replacement artifact was removed: info=%v err=%v", info, statErr)
+	}
+	assertPrivateApplyStage(t, dir, 1)
+}
+
 func TestApplyTargetExistsWithOldOrNewBytesAtEveryHook(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "target")
@@ -359,6 +487,9 @@ func TestApplyTargetExistsWithOldOrNewBytesAtEveryHook(t *testing.T) {
 	seen := map[applyStage]bool{}
 	fs := realApplyFilesystem()
 	fs.hook = func(stage applyStage, target, _ string) {
+		if stage == applyBeforeArtifactCleanup {
+			return
+		}
 		seen[stage] = true
 		got, err := os.ReadFile(target)
 		if err != nil || (!bytes.Equal(got, original) && !bytes.Equal(got, proposed)) {
@@ -399,19 +530,10 @@ func TestApplyRollbackPreservesRenameOverCompetingTargetByIdentity(t *testing.T)
 	if readErr != nil || !bytes.Equal(got, proposed) {
 		t.Fatalf("competitor=%q err=%v", got, readErr)
 	}
-	entries, _ := os.ReadDir(dir)
-	retained := 0
-	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), ".packages-apply-") {
-			retained++
-		}
-	}
-	if retained < 2 {
-		t.Fatalf("recovery artifacts not retained: %v", entries)
-	}
+	assertApplyArtifactsRetained(t, dir)
 }
 
-func TestApplyInitialExchangeRestoresByteIdenticalCompetitor(t *testing.T) {
+func TestApplyInitialExchangeRetainsAmbiguousByteIdenticalCompetitor(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "target")
 	old := []byte("old\n")
@@ -430,8 +552,8 @@ func TestApplyInitialExchangeRestoresByteIdenticalCompetitor(t *testing.T) {
 		t.Fatalf("err=%v", err)
 	}
 	got, _ := os.ReadFile(path)
-	if !bytes.Equal(got, old) {
-		t.Fatalf("competitor=%q", got)
+	if !bytes.Equal(got, newb) {
+		t.Fatalf("known proposal=%q", got)
 	}
 	assertApplyArtifactsRetained(t, dir)
 }
@@ -562,16 +684,41 @@ func TestApplyPostCheckRecoveryRaceRestoresDisplacedCompetitor(t *testing.T) {
 
 func assertApplyArtifactsRetained(t *testing.T, dir string) {
 	t.Helper()
-	entries, _ := os.ReadDir(dir)
-	n := 0
+	assertPrivateApplyStage(t, dir, 2)
+}
+
+func assertPrivateApplyStage(t *testing.T, dir string, minimumArtifacts int) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stages := 0
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), ".packages-apply-") {
-			n++
+		if !strings.HasPrefix(e.Name(), ".packages-apply-stage-") {
+			continue
+		}
+		stages++
+		stage := filepath.Join(dir, e.Name())
+		info, err := os.Lstat(stage)
+		if err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
+			t.Fatalf("private staging directory %s: mode=%v err=%v", stage, infoMode(info), err)
+		}
+		artifacts, err := os.ReadDir(stage)
+		if err != nil || len(artifacts) < minimumArtifacts {
+			t.Fatalf("retained artifacts in %s: %v err=%v", stage, artifacts, err)
 		}
 	}
-	if n < 2 {
+	if stages == 0 {
 		t.Fatalf("artifacts=%v", entries)
 	}
+}
+
+func infoMode(info os.FileInfo) os.FileMode {
+	if info == nil {
+		return 0
+	}
+	return info.Mode()
 }
 
 func TestApplyPrimarySwapbackFailureFallsBackDirectlyToRecovery(t *testing.T) {
@@ -634,16 +781,7 @@ func TestApplyRecoveryExchangeFailureRetainsProposedAndRecovery(t *testing.T) {
 	if !bytes.Equal(got, newb) {
 		t.Fatalf("target=%q", got)
 	}
-	entries, _ := os.ReadDir(dir)
-	retained := 0
-	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), ".packages-apply-") {
-			retained++
-		}
-	}
-	if retained < 2 {
-		t.Fatalf("retained=%v", entries)
-	}
+	assertApplyArtifactsRetained(t, dir)
 }
 
 func TestApplyClaimRejectsSymlinkSwapAndExistingGuard(t *testing.T) {
