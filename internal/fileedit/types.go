@@ -20,8 +20,19 @@ type AppliedEdit struct {
 }
 
 type PreparedEdit struct {
-	state *exchangeApplyState
+	state       *exchangeApplyState
+	outcome     AppliedEdit
+	commitState CommitState
 }
+
+type CommitState uint8
+
+const (
+	CommitNotApplied CommitState = iota
+	CommitVerifiedApplied
+	CommitVerifiedRestored
+	CommitUnverifiedAfterExchange
+)
 
 type TransactionProposal struct {
 	Repo     string

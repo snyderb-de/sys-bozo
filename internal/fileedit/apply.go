@@ -157,6 +157,12 @@ func (p *PreparedEdit) Commit() (AppliedEdit, error) {
 	state := p.state
 	p.state = nil
 	proposal := state.proposal
+	defer func() {
+		p.commitState = state.commitState
+		if state.commitState != CommitNotApplied {
+			p.outcome = completedEdit(proposal, state.current, state.after, state.beforeHash)
+		}
+	}()
 	runApplyHook(state.filesystem, applyBeforeInitialExchange, state.target, state.oldTemp)
 	if err := state.captureAndValidateOriginalTarget(); err != nil {
 		return AppliedEdit{}, err
@@ -164,15 +170,18 @@ func (p *PreparedEdit) Commit() (AppliedEdit, error) {
 	if err := state.filesystem.exchange(state.target, state.oldTemp); err != nil {
 		return AppliedEdit{}, errors.Join(fmt.Errorf("atomically exchange declaration target: %w", err), state.cleanupPreExchange())
 	}
+	state.commitState = CommitUnverifiedAfterExchange
 	if err := state.verifyInitialExchange(); err != nil {
 		return AppliedEdit{}, err
 	}
+	state.commitState = CommitVerifiedApplied
 	runApplyHook(state.filesystem, applyAfterClaim, state.target, state.oldTemp)
 	runApplyHook(state.filesystem, applyBeforeInstall, state.target, state.oldTemp)
 	runApplyHook(state.filesystem, applyBeforeGuardRecheck, state.target, state.oldTemp)
 	targetValid := state.valid(state.target, state.proposedInfo, state.proposedHash)
 	oldState := state.oldIdentityState()
 	if oldState != oldReviewedValid || !targetValid {
+		state.commitState = CommitUnverifiedAfterExchange
 		return AppliedEdit{}, state.rollback(oldState)
 	}
 	if err := state.filesystem.syncDir(filepath.Dir(state.target)); err != nil {
@@ -182,6 +191,13 @@ func (p *PreparedEdit) Commit() (AppliedEdit, error) {
 		return completedEdit(proposal, state.current, state.after, state.beforeHash), err
 	}
 	return completedEdit(proposal, state.current, state.after, state.beforeHash), nil
+}
+
+func (p *PreparedEdit) Outcome() (AppliedEdit, CommitState) {
+	if p == nil {
+		return AppliedEdit{}, CommitNotApplied
+	}
+	return cloneAppliedEdit(p.outcome), p.commitState
 }
 
 func (p *PreparedEdit) Abort() error {
@@ -214,7 +230,7 @@ func (s exchangeApplyState) oldIdentityState() oldExchangeIdentity {
 	return oldReviewedTampered
 }
 
-func (s exchangeApplyState) verifyInitialExchange() error {
+func (s *exchangeApplyState) verifyInitialExchange() error {
 	if !s.identity(s.target, s.proposedInfo) {
 		return fmt.Errorf("%w: competing target preserved at %s; artifacts retained at %s", ErrStaleFile, s.target, s.retainedArtifactPaths())
 	}
@@ -232,7 +248,7 @@ func (s exchangeApplyState) verifyInitialExchange() error {
 	return s.restoreDisplacedCompetitor(displacedInfo)
 }
 
-func (s exchangeApplyState) restoreDisplacedCompetitor(displacedInfo os.FileInfo) error {
+func (s *exchangeApplyState) restoreDisplacedCompetitor(displacedInfo os.FileInfo) error {
 	retained := func(detail string, cause error) error {
 		return errors.Join(
 			fmt.Errorf("%w: %s; artifacts retained at %s", ErrStaleFile, detail, s.retainedArtifactPaths()),
@@ -248,6 +264,7 @@ func (s exchangeApplyState) restoreDisplacedCompetitor(displacedInfo os.FileInfo
 	if !s.sameIdentity(s.target, displacedInfo) || !s.identity(s.oldTemp, s.proposedInfo) {
 		return retained("displaced competitor restoration result unverified", nil)
 	}
+	s.commitState = CommitVerifiedRestored
 	cleanupErr := s.cleanupPreExchange()
 	if cleanupErr == nil {
 		return ErrStaleFile
@@ -284,6 +301,7 @@ type exchangeApplyState struct {
 	proposal                                  Proposal
 	current, after                            []byte
 	beforeHash                                [32]byte
+	commitState                               CommitState
 }
 
 type ownedArtifact struct {
@@ -375,7 +393,7 @@ func (s exchangeApplyState) identity(path string, identity os.FileInfo) bool {
 	return true
 }
 
-func (s exchangeApplyState) rollback(oldState oldExchangeIdentity) error {
+func (s *exchangeApplyState) rollback(oldState oldExchangeIdentity) error {
 	if !s.identity(s.target, s.proposedInfo) {
 		return fmt.Errorf("%w: competing target preserved at %s; original artifacts retained at %s", ErrStaleFile, s.target, s.retainedArtifactPaths())
 	}
@@ -401,6 +419,7 @@ func (s exchangeApplyState) rollback(oldState oldExchangeIdentity) error {
 	if err != nil {
 		return err
 	}
+	s.commitState = CommitVerifiedRestored
 	return errors.Join(ErrStaleFile, s.cleanupRollback(usedSource))
 }
 
