@@ -146,6 +146,9 @@ func (p *PreparedEdit) Commit() (AppliedEdit, error) {
 	p.state = nil
 	proposal := state.proposal
 	runApplyHook(state.filesystem, applyBeforeInitialExchange, state.target, state.oldTemp)
+	if err := state.revalidateOriginalTarget(); err != nil {
+		return AppliedEdit{}, err
+	}
 	if err := state.filesystem.exchange(state.target, state.oldTemp); err != nil {
 		return AppliedEdit{}, errors.Join(fmt.Errorf("atomically exchange declaration target: %w", err), state.cleanupPreExchange())
 	}
@@ -174,8 +177,11 @@ func (p *PreparedEdit) Abort() error {
 		return nil
 	}
 	state := p.state
+	if err := state.cleanupPreExchange(); err != nil {
+		return err
+	}
 	p.state = nil
-	return state.cleanupPreExchange()
+	return nil
 }
 
 type oldExchangeIdentity uint8
@@ -222,6 +228,25 @@ type exchangeApplyState struct {
 type ownedArtifact struct {
 	path     string
 	identity os.FileInfo
+}
+
+func (s exchangeApplyState) revalidateOriginalTarget() error {
+	info, infoErr := s.filesystem.stat(s.target)
+	current, readErr := s.filesystem.readFile(s.target)
+	valid := infoErr == nil && readErr == nil && info.Mode().IsRegular() && info.Mode().Perm() == s.originalMode.Perm() && s.filesystem.sameFile(info, s.originalInfo) && sha256.Sum256(current) == s.originalHash
+	if valid {
+		return nil
+	}
+	cleanupErr := s.cleanupPreExchange()
+	if cleanupErr == nil {
+		return errors.Join(ErrStaleFile, infoErr, readErr)
+	}
+	return errors.Join(
+		fmt.Errorf("%w: target changed before exchange; staging artifacts may be retained at %s and %s", ErrStaleFile, s.oldTemp, s.recovery),
+		infoErr,
+		readErr,
+		cleanupErr,
+	)
 }
 
 func (s exchangeApplyState) cleanupPreExchange() error {

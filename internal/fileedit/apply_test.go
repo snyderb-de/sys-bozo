@@ -518,17 +518,19 @@ func TestApplyRollbackPreservesRenameOverCompetingTargetByIdentity(t *testing.T)
 	assertApplyArtifactsRetained(t, dir)
 }
 
-func TestApplyInitialExchangeRetainsAmbiguousByteIdenticalCompetitor(t *testing.T) {
+func TestApplyCommitRevalidatesImmediatelyBeforeExchange(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "target")
 	old := []byte("old\n")
 	newb := []byte("new\n")
 	_ = os.WriteFile(path, old, 0o600)
 	fs := realApplyFilesystem()
+	var competitorInfo os.FileInfo
 	fs.hook = func(stage applyStage, target, _ string) {
 		if stage == applyBeforeInitialExchange {
 			p := filepath.Join(dir, "competitor")
 			_ = os.WriteFile(p, old, 0o600)
+			competitorInfo, _ = os.Lstat(p)
 			_ = os.Rename(p, target)
 		}
 	}
@@ -537,10 +539,14 @@ func TestApplyInitialExchangeRetainsAmbiguousByteIdenticalCompetitor(t *testing.
 		t.Fatalf("err=%v", err)
 	}
 	got, _ := os.ReadFile(path)
-	if !bytes.Equal(got, newb) {
-		t.Fatalf("known proposal=%q", got)
+	if !bytes.Equal(got, old) {
+		t.Fatalf("competitor=%q", got)
 	}
-	assertApplyArtifactsRetained(t, dir)
+	targetInfo, statErr := os.Lstat(path)
+	if statErr != nil || !os.SameFile(targetInfo, competitorInfo) {
+		t.Fatalf("competitor inode replaced: target=%v competitor=%v err=%v", targetInfo, competitorInfo, statErr)
+	}
+	assertNoApplyTemps(t, dir)
 }
 
 func TestApplyPreservesCompetitorBeforePrimaryRollbackExchange(t *testing.T) {
