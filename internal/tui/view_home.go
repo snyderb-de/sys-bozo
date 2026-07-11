@@ -43,6 +43,8 @@ func (m Model) View() string {
 		return m.viewHistory()
 	case screenPackage:
 		return m.viewPackage()
+	case screenRepoTriage:
+		return m.viewRepoTriage()
 	}
 	return m.viewLegacy()
 }
@@ -80,7 +82,10 @@ func (m Model) viewHome() string {
 	}
 	repo := "CLEAN"
 	repoKind := statusSuccess
-	if m.facts.DotfilesDirty > 0 {
+	if m.facts.DotfilesStatusUnavailable {
+		repo = "STATUS UNAVAILABLE"
+		repoKind = statusDanger
+	} else if m.facts.DotfilesDirty > 0 {
 		repo = fmt.Sprintf("%d DIRTY", m.facts.DotfilesDirty)
 		repoKind = statusDanger
 	}
@@ -100,7 +105,7 @@ func (m Model) viewHome() string {
 		"",
 		s.label.Render("HOST") + "  " + s.text.Render(host),
 		s.label.Render("BRANCH") + "  " + s.text.Render(branch),
-		s.label.Render("REPOSITORY") + "  " + statusText(s, repo, repoKind),
+		homeRepoRow(s, repo, repoKind, m.homeRepoFocused),
 		s.label.Render("UPDATES") + "  " + statusText(s, updates, updatesKind),
 	}
 	if m.latestHistory == nil {
@@ -123,6 +128,14 @@ func (m Model) viewHome() string {
 	rows = append(rows, "", s.muted.Render("↑/↓ MOVE   ENTER OPEN   Q QUIT"))
 
 	return primaryFrame(s, m.width, strings.Join(rows, "\n"))
+}
+
+func homeRepoRow(s uiStyles, value string, kind statusKind, focused bool) string {
+	prefix := "  "
+	if focused {
+		prefix = "> "
+	}
+	return prefix + s.label.Render("REPOSITORY") + "  " + statusText(s, value, kind)
 }
 
 const primaryFramePadding = 3

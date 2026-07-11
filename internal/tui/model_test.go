@@ -24,6 +24,7 @@ import (
 	"github.com/snyderb-de/sys-bozo/internal/fileedit"
 	"github.com/snyderb-de/sys-bozo/internal/history"
 	"github.com/snyderb-de/sys-bozo/internal/packages"
+	"github.com/snyderb-de/sys-bozo/internal/repostate"
 	"github.com/snyderb-de/sys-bozo/internal/runner"
 	"github.com/snyderb-de/sys-bozo/internal/system"
 )
@@ -39,6 +40,111 @@ func testGuidedModel() Model {
 		terminalExec: func(runner.WorkItem, time.Time) tea.Cmd {
 			return nil
 		},
+	}
+}
+
+func TestDirtyRepositoryRowOpensTriageAndShowsExactEntries(t *testing.T) {
+	m := testGuidedModel()
+	m.width, m.height = 80, 24
+	m.styles = newUIStyles(true)
+	m.facts.DotfilesDirty = 2
+	m.repoFlow = repoFlow{status: repostate.Status{Entries: []repostate.Entry{
+		{Path: "flake.nix", Worktree: repostate.StateModified},
+		{Path: "new file", Worktree: repostate.StateUntracked},
+	}}, selected: map[[32]byte]bool{}}
+	m.homeRepoFocused = true
+
+	next, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(Model)
+	if got.screen != screenRepoTriage {
+		t.Fatalf("screen=%v", got.screen)
+	}
+	view := got.viewRepoTriage()
+	for _, want := range []string{"REPO/TRIAGE", "flake.nix", "new file", "MODIFIED", "UNTRACKED"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("missing %q\n%s", want, view)
+		}
+	}
+}
+
+func TestRepoTriageArrowsMatchVimMovement(t *testing.T) {
+	base := repoTriageFixture()
+	vim, _ := base.handleRepoKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	arrow, _ := base.handleRepoKey(tea.KeyMsg{Type: tea.KeyDown})
+	if vim.(Model).repoFlow.cursor != arrow.(Model).repoFlow.cursor {
+		t.Fatalf("vim=%d arrow=%d", vim.(Model).repoFlow.cursor, arrow.(Model).repoFlow.cursor)
+	}
+}
+
+func repoTriageFixture() Model {
+	m := testGuidedModel()
+	m.screen = screenRepoTriage
+	m.width, m.height = 80, 24
+	m.styles = newUIStyles(true)
+	m.repoFlow = repoFlow{status: repostate.Status{Entries: []repostate.Entry{
+		{Path: "one", Worktree: repostate.StateModified},
+		{Path: "two", Worktree: repostate.StateUntracked},
+	}}, selected: map[[32]byte]bool{}}
+	return m
+}
+
+func TestRepoTriageSelectionSurvivesOnlyUnchangedRefresh(t *testing.T) {
+	m := repoTriageFixture()
+	entry := m.repoFlow.status.Entries[0]
+	id := repoEntryID(entry)
+	m.repoFlow.selected[id] = true
+	m.repoFlow.requestID = 7
+
+	m.acceptRepoStatus(repoStatusMsg{requestID: 6, status: repostate.Status{}})
+	if !m.repoFlow.selected[id] {
+		t.Fatal("stale async status removed selection")
+	}
+	m.acceptRepoStatus(repoStatusMsg{requestID: 7, status: repostate.Status{Entries: []repostate.Entry{entry}}})
+	if !m.repoFlow.selected[id] {
+		t.Fatal("unchanged entry lost selection")
+	}
+	changed := entry
+	changed.DisplayFingerprint = sha256.Sum256([]byte("changed"))
+	m.repoFlow.requestID = 8
+	m.acceptRepoStatus(repoStatusMsg{requestID: 8, status: repostate.Status{Entries: []repostate.Entry{changed}}})
+	if m.repoFlow.selected[id] {
+		t.Fatal("changed entry retained stale selection")
+	}
+}
+
+func TestRepoTriageUnavailableAndDiffRemainTruthfulAt80x24(t *testing.T) {
+	m := repoTriageFixture()
+	m.repoFlow.status = repostate.Status{Err: errors.New("fixture failure")}
+	out := m.View()
+	if !strings.Contains(out, "STATUS UNAVAILABLE") || strings.Contains(out, "CLEAN") {
+		t.Fatalf("unavailable status rendered incorrectly:\n%s", out)
+	}
+
+	m.repoFlow.status = repostate.Status{Entries: []repostate.Entry{{Path: "flake.nix", Worktree: repostate.StateModified}}}
+	m.repoFlow.tab = repoDiff
+	m.repoFlow.preview = repostate.Preview{Kind: repostate.PreviewDiff, Staged: "staged fixture", Unstaged: "unstaged fixture"}
+	m.resizeRepoViewport()
+	out = m.View()
+	for _, want := range []string{"STAGED", "UNSTAGED", "staged fixture", "unstaged fixture"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "\x1b[") {
+		t.Fatalf("NO_COLOR view contains ANSI:\n%q", out)
+	}
+	if width, height := lipgloss.Width(out), strings.Count(out, "\n")+1; width > 80 || height > 24 {
+		t.Fatalf("size=%dx%d want <=80x24:\n%s", width, height, out)
+	}
+}
+
+func TestInspectRepositoryEntryRoutesToTriage(t *testing.T) {
+	m := testGuidedModel()
+	m.screen = screenInspect
+	m.inspectCursor = len(inspectEntries) - 1
+	next, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if got := next.(Model); got.screen != screenRepoTriage || got.repoReturn != screenInspect {
+		t.Fatalf("screen=%v return=%v", got.screen, got.repoReturn)
 	}
 }
 

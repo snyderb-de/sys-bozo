@@ -38,10 +38,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.resizePackageDiffViewport()
 		m.resizeConfigDiffViewport()
+		m.resizeRepoViewport()
 		return m, nil
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)
+
+	case repoStatusMsg:
+		m.acceptRepoStatus(msg)
+		return m, nil
+
+	case repoPreviewMsg:
+		m.acceptRepoPreview(msg)
+		return m, nil
 
 	case packageSearchEventMsg:
 		if msg.requestID != m.packageSearchRequest {
@@ -264,21 +273,30 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.moveHomeCursor(-1)
 			return m, nil
 		case "1":
+			m.homeRepoFocused = false
 			m.openHomeEntry(0)
 			return m, nil
 		case "2":
+			m.homeRepoFocused = false
 			m.openHomeEntry(1)
 			return m, nil
 		case "3":
+			m.homeRepoFocused = false
 			m.openHomeEntry(2)
 			return m, nil
 		case "enter":
+			if m.homeRepoFocused && factsRepoActionable(m.facts) {
+				return m, m.openRepoTriage(screenHome)
+			}
 			m.openHomeEntry(m.homeCursor)
 			return m, nil
 		}
 	}
 	if m.screen == screenPackage {
 		return m.handlePackageKey(msg)
+	}
+	if m.screen == screenRepoTriage {
+		return m.handleRepoKey(msg)
 	}
 	if m.screen == screenInspect {
 		switch msg.String() {
@@ -290,7 +308,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "enter":
 			return m, m.openInspectEntry(m.inspectCursor)
-		case "1", "2", "3", "4":
+		case "1", "2", "3", "4", "5":
 			return m, m.openInspectEntry(int(msg.String()[0] - '1'))
 		case "esc":
 			m.screen = screenHome
@@ -507,7 +525,7 @@ type legacyRouteStatePolicy struct {
 
 var legacyRoutePolicy = map[screen]legacyRouteStatePolicy{
 	screenHome:        {blockTabs: true, localDigitCount: 3},
-	screenInspect:     {blockTabs: true, localDigitCount: 4},
+	screenInspect:     {blockTabs: true, localDigitCount: 5},
 	screenMaintenance: {blockTabs: true},
 	screenReview:      {blockTabs: true},
 	screenRunning:     {blockTabs: true},
@@ -517,6 +535,7 @@ var legacyRoutePolicy = map[screen]legacyRouteStatePolicy{
 	screenDoctor:      {blockTabs: true},
 	screenHistory:     {blockTabs: true},
 	screenPackage:     {blockTabs: true},
+	screenRepoTriage:  {blockTabs: true},
 }
 
 func (m Model) auditCmdIfNeeded() tea.Cmd {
@@ -529,6 +548,21 @@ func (m Model) auditCmdIfNeeded() tea.Cmd {
 // ── Navigation ────────────────────────────────────────────────────────────
 
 func (m *Model) moveHomeCursor(delta int) {
+	if factsRepoActionable(m.facts) {
+		if m.homeRepoFocused {
+			m.homeRepoFocused = false
+			if delta < 0 {
+				m.homeCursor = len(homeEntries) - 1
+			} else {
+				m.homeCursor = 0
+			}
+			return
+		}
+		if (delta > 0 && m.homeCursor == len(homeEntries)-1) || (delta < 0 && m.homeCursor == 0) {
+			m.homeRepoFocused = true
+			return
+		}
+	}
 	if len(homeEntries) == 0 {
 		return
 	}
@@ -640,6 +674,9 @@ func (m *Model) openInspectEntry(index int) tea.Cmd {
 		return nil
 	}
 	m.inspectCursor = index
+	if inspectEntries[index].target == screenRepoTriage {
+		return m.openRepoTriage(screenInspect)
+	}
 	m.screen = inspectEntries[index].target
 	if m.screen == screenAudit && !m.auditReady {
 		return m.runAudit()

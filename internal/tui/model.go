@@ -17,6 +17,7 @@ import (
 	"github.com/snyderb-de/sys-bozo/internal/fileedit"
 	"github.com/snyderb-de/sys-bozo/internal/history"
 	"github.com/snyderb-de/sys-bozo/internal/packages"
+	"github.com/snyderb-de/sys-bozo/internal/repostate"
 	"github.com/snyderb-de/sys-bozo/internal/runner"
 	"github.com/snyderb-de/sys-bozo/internal/system"
 )
@@ -62,6 +63,7 @@ const (
 	screenDoctor
 	screenHistory
 	screenPackage
+	screenRepoTriage
 )
 
 type reviewedPlan struct {
@@ -115,11 +117,12 @@ type Model struct {
 	screen screen
 	styles uiStyles
 
-	homeCursor    int
-	inspectCursor int
-	selected      map[string]bool
-	reviewed      reviewedPlan
-	latestHistory *history.Entry
+	homeCursor      int
+	homeRepoFocused bool
+	inspectCursor   int
+	selected        map[string]bool
+	reviewed        reviewedPlan
+	latestHistory   *history.Entry
 
 	tabs   []string
 	tab    int
@@ -172,11 +175,17 @@ type Model struct {
 	proposePackageRevert func(packages.AppliedEdit) (packages.Proposal, error)
 	packageEditor        func(packageEditorRequest) tea.Cmd
 	packageExecProcess   func(*exec.Cmd, tea.ExecCallback) tea.Cmd
+
+	repoFlow        repoFlow
+	repoReturn      screen
+	inspectRepo     func(context.Context, string) repostate.Status
+	loadRepoPreview func(context.Context, string, repostate.Entry) repostate.Preview
 }
 
 func New() Model {
 	ctx := runner.Build()
 	tasks := runner.DefaultTasks(ctx)
+	facts := system.Probe()
 
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
@@ -188,9 +197,15 @@ func New() Model {
 	verifyPackage := func(spec packages.VerifySpec) packages.VerifyResult {
 		return packages.Verify(context.Background(), packages.ExecRunner{}, exec.LookPath, spec)
 	}
+	inspectRepo := func(ctx context.Context, repo string) repostate.Status {
+		return repostate.Inspect(ctx, repostate.ExecRunner{}, repo, "git")
+	}
+	loadRepoPreview := func(ctx context.Context, repo string, entry repostate.Entry) repostate.Preview {
+		return repostate.LoadPreview(ctx, repostate.ExecRunner{}, repostate.RealFileSystem{}, repo, "git", entry)
+	}
 
 	model := Model{
-		facts:                system.Probe(),
+		facts:                facts,
 		runCtx:               ctx,
 		tasks:                tasks,
 		screen:               screenHome,
@@ -207,6 +222,9 @@ func New() Model {
 		verifyPackage:        verifyPackage,
 		proposePackageRevert: packages.ProposeRevert,
 		applyConfig:          fileedit.Apply,
+		homeRepoFocused:      factsRepoActionable(facts),
+		inspectRepo:          inspectRepo,
+		loadRepoPreview:      loadRepoPreview,
 	}
 	model.refreshLatestHistory()
 	return model

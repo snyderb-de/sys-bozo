@@ -18,6 +18,7 @@ var inspectEntries = []struct {
 	{"02", "AUDIT", screenAudit},
 	{"03", "DOCTOR", screenDoctor},
 	{"04", "HISTORY", screenHistory},
+	{"05", "REPOSITORY", screenRepoTriage},
 }
 
 func (m Model) viewInspect() string {
@@ -214,7 +215,9 @@ func (m Model) viewDoctor() string {
 		branch = "unknown"
 	}
 	rows = append(rows, s.label.Render("BRANCH")+"  "+s.text.Render(branch))
-	if f.DotfilesDirty == 0 {
+	if f.DotfilesStatusUnavailable {
+		rows = append(rows, s.label.Render("WORKTREE")+"  "+s.danger.Render("STATUS UNAVAILABLE"))
+	} else if f.DotfilesDirty == 0 {
 		rows = append(rows, s.label.Render("WORKTREE")+"  "+s.success.Render("CLEAN"))
 	} else {
 		rows = append(rows, s.label.Render("WORKTREE")+"  "+s.danger.Render(fmt.Sprintf("%d DIRTY", f.DotfilesDirty)))
