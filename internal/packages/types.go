@@ -77,6 +77,7 @@ type Proposal struct {
 }
 
 type AppliedEdit struct {
+	Target     Target
 	Path       string
 	Before     []byte
 	After      []byte
@@ -89,7 +90,6 @@ var (
 	ErrAmbiguousTarget   = errors.New("declaration target is missing or ambiguous")
 	ErrUnsupportedTarget = errors.New("package target is unsupported")
 	ErrSectionNotFound   = errors.New("declaration section not found")
-	ErrStaleFile         = errors.New("declaration file changed after review")
 )
 
 type Candidate struct {

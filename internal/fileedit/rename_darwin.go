@@ -1,6 +1,6 @@
 //go:build darwin
 
-package packages
+package fileedit
 
 import "golang.org/x/sys/unix"
 
