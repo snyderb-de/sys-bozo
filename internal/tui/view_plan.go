@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/snyderb-de/sys-bozo/internal/history"
+	"github.com/snyderb-de/sys-bozo/internal/repostate"
 	"github.com/snyderb-de/sys-bozo/internal/runner"
 )
 
@@ -83,6 +84,9 @@ func (m Model) viewMaintenance() string {
 }
 
 func (m Model) viewReview() string {
+	if m.reviewed.Repo != nil {
+		return m.viewRepoReview()
+	}
 	if m.reviewed.Config != nil {
 		return m.viewConfigReview()
 	}
@@ -120,6 +124,46 @@ func (m Model) viewReview() string {
 		s.muted.Render("ESCAPE BACK")+"   "+s.active.Render("ENTER CONFIRM"),
 	)
 
+	return primaryFrame(s, m.width, strings.Join(rows, "\n"))
+}
+
+func (m Model) viewRepoReview() string {
+	contentWidth := primaryContentWidth(m.width)
+	s := m.styles
+	review := m.reviewed.Repo
+	rows := []string{
+		s.major.Render("REVIEW/REPOSITORY"),
+		s.label.Render("IMMUTABLE EXACT-PATH PLAN"),
+		majorRule(s, contentWidth, true),
+		"",
+		s.label.Render("ACTION") + "  " + s.text.Render(strings.ToUpper(string(review.Operation.Kind))),
+		s.label.Render("SELECTED") + "  " + s.text.Render(fmt.Sprintf("%d", len(review.Operation.Entries))),
+		statusText(s, "STALE CHECK RUNS AGAIN AT CONFIRM", statusAttention),
+		"",
+		s.title.Render("PATHS"),
+	}
+	for _, entry := range review.Operation.Entries {
+		rows = append(rows, "  "+truncateVisible(displayRepoPath(entry.Path), max(8, contentWidth-2)))
+	}
+	rows = append(rows, "", s.title.Render("COMMANDS"))
+	for i, item := range repoWorkItems(review.Operation) {
+		state := statusText(s, "READY", statusMuted)
+		if item.Mode == runner.ExecutionInteractive {
+			state = statusText(s, "TTY", statusDanger)
+		}
+		rows = append(rows, reviewCommandRows(s, fmt.Sprintf("%02d", i+1), runner.CmdLabel(item), state, contentWidth)...)
+	}
+	if review.Operation.Kind == repostate.ActionDeleteUntracked {
+		rows = append(rows, "", statusText(s, "DESTRUCTIVE — PERMANENT UNTRACKED DELETE", statusDanger))
+	}
+	if review.Notice != "" {
+		rows = append(rows, "", s.attention.Render(truncateVisible(review.Notice, contentWidth)))
+	}
+	footer := "ESC BACK   ENTER VALIDATE + EXECUTE"
+	if review.Validating {
+		footer = "VALIDATING — NO COMMAND HAS RUN"
+	}
+	rows = append(rows, "", majorRule(s, contentWidth, false), s.muted.Render(footer))
 	return primaryFrame(s, m.width, strings.Join(rows, "\n"))
 }
 

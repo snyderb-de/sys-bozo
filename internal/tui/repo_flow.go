@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"strings"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -20,15 +22,33 @@ const (
 )
 
 type repoFlow struct {
-	status    repostate.Status
-	requestID uint64
-	loading   bool
-	cursor    int
-	selected  map[[32]byte]bool
-	tab       repoTab
-	preview   repostate.Preview
-	diffVP    viewport.Model
-	notice    string
+	status       repostate.Status
+	requestID    uint64
+	loading      bool
+	cursor       int
+	selected     map[[32]byte]bool
+	tab          repoTab
+	preview      repostate.Preview
+	diffVP       viewport.Model
+	notice       string
+	stage        repoStage
+	commitInput  textinput.Model
+	deleteInput  textinput.Model
+	deleteDryRun string
+}
+
+type repoStage uint8
+
+const (
+	repoBrowse repoStage = iota
+	repoCommitMessage
+	repoDeleteConfirm
+)
+
+type repoReview struct {
+	Operation  repostate.Operation
+	Validating bool
+	Notice     string
 }
 
 type repoStatusMsg struct {
@@ -40,6 +60,23 @@ type repoPreviewMsg struct {
 	requestID   uint64
 	fingerprint [32]byte
 	preview     repostate.Preview
+}
+
+type repoActionPreparedMsg struct {
+	requestID uint64
+	operation repostate.Operation
+	err       error
+}
+
+type repoDeleteDryRunMsg struct {
+	requestID uint64
+	output    string
+	err       error
+}
+
+type repoValidatedMsg struct {
+	requestID uint64
+	err       error
 }
 
 func factsRepoActionable(facts system.Facts) bool {
@@ -170,6 +207,35 @@ func (m *Model) toggleRepoSelection() {
 }
 
 func (m Model) handleRepoKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.repoFlow.stage == repoCommitMessage {
+		switch msg.String() {
+		case "esc":
+			m.repoFlow.stage = repoBrowse
+			return m, nil
+		case "enter":
+			return m, m.prepareRepoAction(repostate.ActionCommit, m.repoFlow.commitInput.Value(), false)
+		}
+		var cmd tea.Cmd
+		m.repoFlow.commitInput, cmd = m.repoFlow.commitInput.Update(msg)
+		return m, cmd
+	}
+	if m.repoFlow.stage == repoDeleteConfirm {
+		switch msg.String() {
+		case "esc":
+			m.repoFlow.stage = repoBrowse
+			return m, nil
+		case "enter":
+			if m.repoFlow.deleteInput.Value() != "DELETE UNTRACKED" {
+				m.repoFlow.notice = "type DELETE UNTRACKED exactly"
+				return m, nil
+			}
+			return m, m.prepareRepoAction(repostate.ActionDeleteUntracked, "", true)
+		}
+		var cmd tea.Cmd
+		m.repoFlow.deleteInput, cmd = m.repoFlow.deleteInput.Update(msg)
+		return m, cmd
+	}
+
 	switch msg.String() {
 	case "esc":
 		m.screen = m.repoReturn
@@ -177,7 +243,7 @@ func (m Model) handleRepoKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.screen = screenHome
 		}
 		return m, nil
-	case "r":
+	case "R":
 		return m, m.refreshRepoStatus()
 	case "tab", "shift+tab":
 		if m.repoFlow.tab == repoFiles {
@@ -186,6 +252,45 @@ func (m Model) handleRepoKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.repoFlow.tab = repoFiles
 		}
 		return m, nil
+	case "c":
+		if !m.repoActionAllowed(repostate.ActionCommit) {
+			m.repoFlow.notice = "COMMIT disabled for this selection"
+			return m, nil
+		}
+		input := textinput.New()
+		input.Prompt = "MESSAGE  "
+		input.CharLimit = 200
+		input.Focus()
+		m.repoFlow.commitInput = input
+		m.repoFlow.stage = repoCommitMessage
+		m.repoFlow.notice = ""
+		return m, textinput.Blink
+	case "s":
+		if !m.repoActionAllowed(repostate.ActionStash) {
+			m.repoFlow.notice = "STASH disabled for this selection"
+			return m, nil
+		}
+		return m, m.prepareRepoAction(repostate.ActionStash, "", false)
+	case "r":
+		if !m.repoActionAllowed(repostate.ActionRestore) {
+			m.repoFlow.notice = "RESTORE disabled for this selection"
+			return m, nil
+		}
+		return m, m.prepareRepoAction(repostate.ActionRestore, "", false)
+	case "d":
+		if !m.repoActionAllowed(repostate.ActionDeleteUntracked) {
+			m.repoFlow.notice = "DELETE UNTRACKED disabled for this selection"
+			return m, nil
+		}
+		input := textinput.New()
+		input.Prompt = "> "
+		input.CharLimit = len("DELETE UNTRACKED")
+		input.Focus()
+		m.repoFlow.deleteInput = input
+		m.repoFlow.deleteDryRun = "loading git clean -nd preview…"
+		m.repoFlow.stage = repoDeleteConfirm
+		m.repoFlow.notice = ""
+		return m, m.repoDeleteDryRunCmd()
 	}
 
 	if m.repoFlow.tab == repoFiles {
@@ -205,6 +310,117 @@ func (m Model) handleRepoKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.repoFlow.diffVP, cmd = m.repoFlow.diffVP.Update(msg)
 	return m, cmd
+}
+
+func (m Model) selectedRepoEntries() []repostate.Entry {
+	var entries []repostate.Entry
+	for _, entry := range m.repoFlow.status.Entries {
+		if m.repoFlow.selected[repoEntryID(entry)] {
+			entries = append(entries, entry)
+		}
+	}
+	return entries
+}
+
+func (m Model) repoActionAllowed(kind repostate.ActionKind) bool {
+	entries := m.selectedRepoEntries()
+	if len(entries) == 0 {
+		return false
+	}
+	for _, entry := range entries {
+		conflict := entry.Kind == 'u' || entry.Index == repostate.StateUnmerged || entry.Worktree == repostate.StateUnmerged
+		untracked := entry.Index == repostate.StateUntracked || entry.Worktree == repostate.StateUntracked
+		if conflict {
+			return false
+		}
+		if kind == repostate.ActionRestore && untracked {
+			return false
+		}
+		if kind == repostate.ActionDeleteUntracked && !untracked {
+			return false
+		}
+	}
+	return true
+}
+
+func (m *Model) prepareRepoAction(kind repostate.ActionKind, message string, deleteConfirmed bool) tea.Cmd {
+	entries := append([]repostate.Entry(nil), m.selectedRepoEntries()...)
+	if len(entries) == 0 || m.repoRunner == nil || m.repoFS == nil {
+		m.repoFlow.notice = "repository action unavailable"
+		return nil
+	}
+	requestID := m.repoFlow.requestID
+	runner := m.repoRunner
+	filesystem := m.repoFS
+	repo := m.repoPath()
+	gitBin := m.runCtx.GitBin
+	if gitBin == "" {
+		gitBin = "git"
+	}
+	m.repoFlow.notice = "fingerprinting exact selected content…"
+	return func() tea.Msg {
+		fingerprints, err := repostate.FingerprintEntries(context.Background(), runner, filesystem, repo, gitBin, entries)
+		if err != nil {
+			return repoActionPreparedMsg{requestID: requestID, err: err}
+		}
+		operation, err := repostate.ProposeAction(repostate.ActionRequest{
+			Repo: repo, GitBin: gitBin, Kind: kind, Message: message, Entries: entries,
+			Fingerprints: fingerprints, DeleteConfirmed: deleteConfirmed,
+		})
+		return repoActionPreparedMsg{requestID: requestID, operation: operation, err: err}
+	}
+}
+
+func (m *Model) acceptRepoAction(msg repoActionPreparedMsg) {
+	if msg.requestID != m.repoFlow.requestID {
+		return
+	}
+	if msg.err != nil {
+		m.repoFlow.notice = msg.err.Error()
+		return
+	}
+	m.repoFlow.stage = repoBrowse
+	m.reviewed = reviewedPlan{
+		Action: fmt.Sprintf("repo:%s:%d", msg.operation.Kind, len(msg.operation.Entries)),
+		Repo:   &repoReview{Operation: cloneRepoOperation(msg.operation)},
+	}
+	m.screen = screenReview
+}
+
+func (m Model) repoDeleteDryRunCmd() tea.Cmd {
+	entries := m.selectedRepoEntries()
+	requestID := m.repoFlow.requestID
+	runner := m.repoRunner
+	repo := m.repoPath()
+	gitBin := m.runCtx.GitBin
+	if gitBin == "" {
+		gitBin = "git"
+	}
+	if runner == nil {
+		return nil
+	}
+	paths := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		paths = append(paths, entry.Path)
+	}
+	return func() tea.Msg {
+		args := []string{"clean", "-nd", "--"}
+		args = append(args, paths...)
+		out, err := runner.Output(context.Background(), repo, gitBin, args...)
+		return repoDeleteDryRunMsg{requestID: requestID, output: strings.TrimSpace(string(out)), err: err}
+	}
+}
+
+func cloneRepoOperation(operation repostate.Operation) repostate.Operation {
+	cloned := operation
+	cloned.Entries = append([]repostate.Entry(nil), operation.Entries...)
+	cloned.Fingerprints = append([]repostate.ActionFingerprint(nil), operation.Fingerprints...)
+	cloned.Commands = make([]repostate.Command, len(operation.Commands))
+	for i, command := range operation.Commands {
+		cloned.Commands[i] = command
+		cloned.Commands[i].Args = append([]string(nil), command.Args...)
+	}
+	return cloned
 }
 
 func (m *Model) resizeRepoViewport() {

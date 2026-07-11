@@ -71,6 +71,7 @@ type reviewedPlan struct {
 	Items   []runner.WorkItem
 	Package *packageReview
 	Config  *configReview
+	Repo    *repoReview
 }
 
 type stepResult struct {
@@ -176,10 +177,14 @@ type Model struct {
 	packageEditor        func(packageEditorRequest) tea.Cmd
 	packageExecProcess   func(*exec.Cmd, tea.ExecCallback) tea.Cmd
 
-	repoFlow        repoFlow
-	repoReturn      screen
-	inspectRepo     func(context.Context, string) repostate.Status
-	loadRepoPreview func(context.Context, string, repostate.Entry) repostate.Preview
+	repoFlow         repoFlow
+	repoReturn       screen
+	inspectRepo      func(context.Context, string) repostate.Status
+	loadRepoPreview  func(context.Context, string, repostate.Entry) repostate.Preview
+	repoRunner       repostate.Runner
+	repoFS           repostate.FileSystem
+	validateRepo     func(context.Context, repostate.Operation) error
+	repoValidationID uint64
 }
 
 func New() Model {
@@ -203,6 +208,11 @@ func New() Model {
 	loadRepoPreview := func(ctx context.Context, repo string, entry repostate.Entry) repostate.Preview {
 		return repostate.LoadPreview(ctx, repostate.ExecRunner{}, repostate.RealFileSystem{}, repo, "git", entry)
 	}
+	repoRunner := repostate.ExecRunner{}
+	repoFS := repostate.RealFileSystem{}
+	validateRepo := func(ctx context.Context, operation repostate.Operation) error {
+		return repostate.ValidateOperation(ctx, repoRunner, repoFS, operation)
+	}
 
 	model := Model{
 		facts:                facts,
@@ -225,6 +235,9 @@ func New() Model {
 		homeRepoFocused:      factsRepoActionable(facts),
 		inspectRepo:          inspectRepo,
 		loadRepoPreview:      loadRepoPreview,
+		repoRunner:           repoRunner,
+		repoFS:               repoFS,
+		validateRepo:         validateRepo,
 	}
 	model.refreshLatestHistory()
 	return model

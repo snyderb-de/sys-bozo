@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -12,6 +13,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/snyderb-de/sys-bozo/internal/history"
+	"github.com/snyderb-de/sys-bozo/internal/repostate"
 	"github.com/snyderb-de/sys-bozo/internal/runner"
 	"github.com/snyderb-de/sys-bozo/internal/system"
 )
@@ -61,6 +63,20 @@ func (m Model) hasAvailableSelection() bool {
 }
 
 func (m *Model) confirmReviewedPlan() tea.Cmd {
+	if m.reviewed.Repo != nil {
+		if m.reviewed.Repo.Validating || m.validateRepo == nil {
+			return nil
+		}
+		m.repoValidationID++
+		requestID := m.repoValidationID
+		operation := cloneRepoOperation(m.reviewed.Repo.Operation)
+		validate := m.validateRepo
+		m.reviewed.Repo.Validating = true
+		m.reviewed.Repo.Notice = "validating exact status and bytes…"
+		return func() tea.Msg {
+			return repoValidatedMsg{requestID: requestID, err: validate(context.Background(), operation)}
+		}
+	}
 	if m.reviewed.Config != nil {
 		m.beginReviewedRun()
 		if m.reviewed.Config.EditApplied {
@@ -80,6 +96,22 @@ func (m *Model) confirmReviewedPlan() tea.Cmd {
 	}
 	m.beginReviewedRun()
 	return tea.Batch(m.advanceQueue(), m.spinner.Tick)
+}
+
+func repoWorkItems(operation repostate.Operation) []runner.WorkItem {
+	items := make([]runner.WorkItem, len(operation.Commands))
+	for i, command := range operation.Commands {
+		mode := runner.ExecutionStreamed
+		if command.Interactive {
+			mode = runner.ExecutionInteractive
+		}
+		items[i] = runner.WorkItem{
+			TaskLabel: string(operation.Kind), TaskFirst: i == 0,
+			Name: command.Name, Args: append([]string(nil), command.Args...), Dir: operation.Repo,
+			Mode: mode,
+		}
+	}
+	return items
 }
 
 func (m *Model) beginReviewedRun() {

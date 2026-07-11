@@ -52,6 +52,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.acceptRepoPreview(msg)
 		return m, nil
 
+	case repoActionPreparedMsg:
+		m.acceptRepoAction(msg)
+		return m, nil
+
+	case repoDeleteDryRunMsg:
+		if msg.requestID == m.repoFlow.requestID {
+			if msg.err != nil {
+				m.repoFlow.deleteDryRun = "dry run unavailable: " + msg.err.Error()
+			} else if msg.output == "" {
+				m.repoFlow.deleteDryRun = "git clean -nd: no matching untracked paths"
+			} else {
+				m.repoFlow.deleteDryRun = msg.output
+			}
+		}
+		return m, nil
+
+	case repoValidatedMsg:
+		if msg.requestID != m.repoValidationID || m.reviewed.Repo == nil {
+			return m, nil
+		}
+		m.reviewed.Repo.Validating = false
+		if msg.err != nil {
+			m.reviewed.Repo.Notice = "STALE — " + msg.err.Error()
+			return m, nil
+		}
+		m.reviewed.Items = repoWorkItems(m.reviewed.Repo.Operation)
+		m.beginReviewedRun()
+		return m, tea.Batch(m.advanceQueue(), m.spinner.Tick)
+
 	case packageSearchEventMsg:
 		if msg.requestID != m.packageSearchRequest {
 			return m, nil
@@ -360,7 +389,11 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.reviewPackageRevert()
 			return m, nil
 		case "esc":
+			repoResult := m.reviewed.Repo != nil
 			m.closeResult()
+			if repoResult {
+				return m, m.refreshRepoStatus()
+			}
 			return m, nil
 		}
 	}
@@ -405,6 +438,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			} else if m.reviewed.Package != nil {
 				m.screen = screenPackage
 				m.packageFlow.stage = packagePlacement
+			} else if m.reviewed.Repo != nil {
+				m.screen = screenRepoTriage
 			} else {
 				m.screen = screenMaintenance
 			}
@@ -725,6 +760,7 @@ func (m Model) retryStart() (int, bool) {
 
 func (m *Model) closeResult() {
 	packageResult := m.reviewed.Package != nil
+	repoResult := m.reviewed.Repo != nil
 	m.mode = modeView
 	m.logLines = nil
 	m.queue = nil
@@ -739,6 +775,11 @@ func (m *Model) closeResult() {
 	if packageResult {
 		m.screen = screenHome
 		m.packageFlow = packageFlow{}
+		return
+	}
+	if repoResult {
+		m.screen = screenRepoTriage
+		m.repoFlow.stage = repoBrowse
 		return
 	}
 	m.syncScreenToTab()

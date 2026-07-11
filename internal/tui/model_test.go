@@ -148,6 +148,226 @@ func TestInspectRepositoryEntryRoutesToTriage(t *testing.T) {
 	}
 }
 
+func TestRepoCommitCollectsMessageBeforeBuildingReview(t *testing.T) {
+	m := repoTriageFixture()
+	entry := m.repoFlow.status.Entries[0]
+	m.repoFlow.selected[repoEntryID(entry)] = true
+
+	next, cmd := m.handleRepoKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	got := next.(Model)
+	if got.repoFlow.stage != repoCommitMessage || got.screen != screenRepoTriage {
+		t.Fatalf("cmd=%v stage=%v screen=%v", cmd, got.repoFlow.stage, got.screen)
+	}
+	if got.screen == screenReview {
+		t.Fatal("commit reached Review before a message and fingerprint proposal")
+	}
+}
+
+func TestRepoDeleteRequiresExactLiteralBeforeProposal(t *testing.T) {
+	m := repoTriageFixture()
+	m.repoFlow.status.Entries = []repostate.Entry{{Path: "new file", Worktree: repostate.StateUntracked}}
+	m.repoFlow.selected[repoEntryID(m.repoFlow.status.Entries[0])] = true
+	next, _ := m.handleRepoKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	got := next.(Model)
+	if got.repoFlow.stage != repoDeleteConfirm {
+		t.Fatalf("stage=%v", got.repoFlow.stage)
+	}
+	next, cmd := got.handleRepoKey(tea.KeyMsg{Type: tea.KeyEnter})
+	got = next.(Model)
+	if cmd != nil || got.repoFlow.stage != repoDeleteConfirm {
+		t.Fatalf("empty confirmation advanced: cmd=%v stage=%v", cmd, got.repoFlow.stage)
+	}
+	if !strings.Contains(got.viewRepoTriage(), "DELETE UNTRACKED") {
+		t.Fatalf("confirmation literal missing:\n%s", got.viewRepoTriage())
+	}
+}
+
+func TestRepoReviewValidationPrecedesExecutionAndMapsTTY(t *testing.T) {
+	m := testGuidedModel()
+	m.screen = screenReview
+	validated := 0
+	m.validateRepo = func(context.Context, repostate.Operation) error {
+		validated++
+		return nil
+	}
+	op := repostate.Operation{Repo: "/repo", Kind: repostate.ActionCommit, Entries: []repostate.Entry{{Path: "flake.nix"}}, Commands: []repostate.Command{{Name: "git", Args: []string{"commit", "--only", "--", "flake.nix"}, Interactive: true}}}
+	m.reviewed = reviewedPlan{Action: "repo:commit:1", Repo: &repoReview{Operation: op}}
+
+	cmd := m.confirmReviewedPlan()
+	if cmd == nil || validated != 0 || m.screen != screenReview || len(m.queue) != 0 {
+		t.Fatalf("before validation: cmd=%v validated=%d screen=%v queue=%d", cmd, validated, m.screen, len(m.queue))
+	}
+	msg := cmd()
+	if validated != 1 {
+		t.Fatalf("validated=%d", validated)
+	}
+	next, _ := m.Update(msg)
+	got := next.(Model)
+	if got.screen != screenRunning || len(got.queue) != 1 || got.queue[0].Mode != runner.ExecutionInteractive {
+		t.Fatalf("after validation: screen=%v queue=%#v", got.screen, got.queue)
+	}
+}
+
+func TestRepoReviewStaleValidationRunsNothing(t *testing.T) {
+	m := testGuidedModel()
+	m.screen = screenReview
+	m.validateRepo = func(context.Context, repostate.Operation) error { return repostate.ErrStaleStatus }
+	m.reviewed = reviewedPlan{Action: "repo:restore:1", Repo: &repoReview{Operation: repostate.Operation{
+		Repo: "/repo", Kind: repostate.ActionRestore, Entries: []repostate.Entry{{Path: "flake.nix"}},
+		Commands: []repostate.Command{{Name: "git", Args: []string{"restore", "--", "flake.nix"}}},
+	}}}
+	cmd := m.confirmReviewedPlan()
+	msg := cmd()
+	next, runCmd := m.Update(msg)
+	got := next.(Model)
+	if runCmd != nil || got.screen != screenReview || len(got.queue) != 0 || !strings.Contains(got.viewRepoReview(), "STALE") {
+		t.Fatalf("runCmd=%v screen=%v queue=%d view=\n%s", runCmd, got.screen, len(got.queue), got.viewRepoReview())
+	}
+}
+
+func TestRepoActionPreparationIsReadOnlyUntilReview(t *testing.T) {
+	repo := initTUIRepo(t)
+	path := filepath.Join(repo, "tracked.txt")
+	if err := os.WriteFile(path, []byte("changed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	status := repostate.Inspect(context.Background(), repostate.ExecRunner{}, repo, "git")
+	if status.Err != nil {
+		t.Fatal(status.Err)
+	}
+	m := testGuidedModel()
+	m.screen = screenRepoTriage
+	m.facts.DotfilesRepo = repo
+	m.runCtx.GitBin = "git"
+	m.repoRunner = repostate.ExecRunner{}
+	m.repoFS = repostate.RealFileSystem{}
+	m.repoFlow = repoFlow{requestID: 1, status: status, selected: map[[32]byte]bool{repoEntryID(status.Entries[0]): true}}
+	before := gitTUIOutput(t, repo, "status", "--porcelain=v2", "-z", "--untracked-files=all")
+
+	next, cmd := m.handleRepoKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	got := next.(Model)
+	if cmd == nil || got.screen != screenRepoTriage {
+		t.Fatalf("cmd=%v screen=%v", cmd, got.screen)
+	}
+	msg := cmd()
+	after := gitTUIOutput(t, repo, "status", "--porcelain=v2", "-z", "--untracked-files=all")
+	if !bytes.Equal(before, after) {
+		t.Fatalf("repository changed before Review\nbefore=%q\nafter=%q", before, after)
+	}
+	next, _ = got.Update(msg)
+	got = next.(Model)
+	if got.screen != screenReview || got.reviewed.Repo == nil {
+		t.Fatalf("screen=%v review=%#v", got.screen, got.reviewed.Repo)
+	}
+	view := got.viewRepoReview()
+	for _, want := range []string{"STASH", "tracked.txt", "git stash push", "STALE CHECK"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func initTUIRepo(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"config", "user.name", "Fixture"},
+		{"config", "user.email", "fixture@example.invalid"},
+		{"config", "commit.gpgsign", "false"},
+	} {
+		gitTUIOutput(t, repo, args...)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("base\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitTUIOutput(t, repo, "add", "--", "tracked.txt")
+	gitTUIOutput(t, repo, "commit", "-qm", "fixture base")
+	return repo
+}
+
+func gitTUIOutput(t *testing.T, repo string, args ...string) []byte {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = repo
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, out)
+	}
+	return out
+}
+
+func TestRepoCommitUsesTerminalHandoffAfterValidation(t *testing.T) {
+	m := testGuidedModel()
+	m.screen = screenReview
+	m.validateRepo = func(context.Context, repostate.Operation) error { return nil }
+	called := 0
+	m.terminalExec = func(item runner.WorkItem, _ time.Time) tea.Cmd {
+		called++
+		if item.Mode != runner.ExecutionInteractive || item.Name != "git" {
+			t.Fatalf("item=%#v", item)
+		}
+		return nil
+	}
+	m.reviewed = reviewedPlan{Action: "repo:commit:1", Repo: &repoReview{Operation: repostate.Operation{
+		Repo: "/repo", Kind: repostate.ActionCommit, Entries: []repostate.Entry{{Path: "tracked.txt"}},
+		Commands: []repostate.Command{{Name: "git", Args: []string{"commit", "--only", "-m", "fixture", "--", "tracked.txt"}, Interactive: true}},
+	}}}
+	validation := m.confirmReviewedPlan()
+	next, _ := m.Update(validation())
+	got := next.(Model)
+	if called != 1 || got.screen != screenRunning {
+		t.Fatalf("terminal handoff calls=%d screen=%v", called, got.screen)
+	}
+}
+
+func TestRepoFailedAddNeverInvokesCommit(t *testing.T) {
+	m := testGuidedModel()
+	m.mode = modeRunning
+	m.screen = screenRunning
+	m.runStart = time.Now()
+	m.queue = []runner.WorkItem{
+		{Name: "git", Args: []string{"add", "--", "tracked.txt"}},
+		{Name: "git", Args: []string{"commit", "--only", "--", "tracked.txt"}, Mode: runner.ExecutionInteractive},
+	}
+	m.reviewed = reviewedPlan{Action: "repo:commit:1", Repo: &repoReview{Operation: repostate.Operation{Kind: repostate.ActionCommit}}, Items: cloneWorkItems(m.queue)}
+	called := 0
+	m.terminalExec = func(runner.WorkItem, time.Time) tea.Cmd { called++; return nil }
+	next, cmd := m.Update(stepDoneMsg{err: errors.New("add failed"), elapsed: time.Millisecond})
+	got := next.(Model)
+	if cmd != nil || called != 0 || got.screen != screenResult {
+		t.Fatalf("cmd=%v called=%d screen=%v", cmd, called, got.screen)
+	}
+}
+
+func TestRepoHistoryExcludesPathsMessagesAndDiffs(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	m := testGuidedModel()
+	m.runAction = "repo:commit:1"
+	m.runStart = time.Now()
+	m.reviewed = reviewedPlan{Action: m.runAction, Repo: &repoReview{Operation: repostate.Operation{
+		Kind:     repostate.ActionCommit,
+		Entries:  []repostate.Entry{{Path: "private path.txt"}},
+		Commands: []repostate.Command{{Name: "git", Args: []string{"commit", "-m", "private message and diff"}}},
+	}}}
+	m.finishRun(nil, false, time.Millisecond)
+	data, err := os.ReadFile(filepath.Join(home, ".local", "state", "sys-bozo", "history.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, forbidden := range []string{"private path", "private message", "diff"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("history leaked %q: %s", forbidden, text)
+		}
+	}
+	if !strings.Contains(text, "repo:commit:1") {
+		t.Fatalf("safe action missing: %s", text)
+	}
+}
+
 func testPackageModel(t *testing.T) Model {
 	t.Helper()
 	home := t.TempDir()
