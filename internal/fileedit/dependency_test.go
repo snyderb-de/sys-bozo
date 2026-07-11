@@ -10,6 +10,9 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestApplyPreservesModeAndRejectsStaleBytes(t *testing.T) {
@@ -432,12 +435,12 @@ func TestCommitReportsArtifactsWhenCompetitorRestorationUnverified(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldTemp, recovery := prepared.state.oldTemp, prepared.state.recovery
+	state := prepared.state
 	_, err = prepared.Commit()
-	if !errors.Is(err, ErrStaleFile) || !errors.Is(err, restoreFailure) || !strings.Contains(err.Error(), oldTemp) || !strings.Contains(err.Error(), recovery) {
-		t.Fatalf("err=%v oldTemp=%s recovery=%s", err, oldTemp, recovery)
+	if !errors.Is(err, ErrStaleFile) || !errors.Is(err, restoreFailure) || !strings.Contains(err.Error(), state.oldTemp) || !strings.Contains(err.Error(), state.recovery) || !strings.Contains(err.Error(), state.claim) {
+		t.Fatalf("err=%v oldTemp=%s recovery=%s claim=%s", err, state.oldTemp, state.recovery, state.claim)
 	}
-	got, readErr := os.ReadFile(oldTemp)
+	got, readErr := os.ReadFile(state.oldTemp)
 	if readErr != nil || string(got) != string(original) {
 		t.Fatalf("retained competitor=%q err=%v", got, readErr)
 	}
@@ -455,5 +458,240 @@ func assertExactTargetIdentity(t *testing.T, path string, wantInfo os.FileInfo, 
 	}
 	if bytes.Equal(got, []byte("new\n")) {
 		t.Fatalf("proposal installed at target: %q", got)
+	}
+}
+
+func TestCommitRejectsFIFOClaimBeforeOpen(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config")
+	original := []byte("old\n")
+	if err := os.WriteFile(path, original, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := Prepare(ProposeReplacement(path, original, []byte("new\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fifo := filepath.Join(dir, "competitor-fifo")
+	if err := unix.Mkfifo(fifo, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	fifoInfo, err := os.Lstat(fifo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(fifo, path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := commitWithin(t, prepared, 500*time.Millisecond); !errors.Is(err, ErrStaleFile) {
+		t.Fatalf("err=%v", err)
+	}
+	gotInfo, err := os.Lstat(path)
+	if err != nil || gotInfo.Mode()&os.ModeNamedPipe == 0 || !os.SameFile(gotInfo, fifoInfo) {
+		t.Fatalf("target=%v fifo=%v err=%v", gotInfo, fifoInfo, err)
+	}
+	assertNoApplyTemps(t, dir)
+}
+
+func TestCommitRejectsSymlinkClaimWithoutOpeningReferent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config")
+	original := []byte("old\n")
+	if err := os.WriteFile(path, original, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	secret := filepath.Join(dir, "secret-fixture")
+	secretBytes := []byte("secret-like-token=do-not-read\n")
+	if err := os.WriteFile(secret, secretBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fs := realApplyFilesystem()
+	open := fs.open
+	opened := false
+	fs.open = func(path string) (applyOpenedFile, error) {
+		opened = true
+		return open(path)
+	}
+	prepared, err := prepare(ProposeReplacement(path, original, []byte("new\n")), fs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	symlink := filepath.Join(dir, "competitor-symlink")
+	if err := os.Symlink(secret, symlink); err != nil {
+		t.Fatal(err)
+	}
+	symlinkInfo, err := os.Lstat(symlink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(symlink, path); err != nil {
+		t.Fatal(err)
+	}
+	_, commitErr := commitWithin(t, prepared, 500*time.Millisecond)
+	if !errors.Is(commitErr, ErrStaleFile) {
+		t.Fatalf("err=%v", commitErr)
+	}
+	if opened {
+		t.Fatal("claim referent was opened")
+	}
+	if strings.Contains(commitErr.Error(), string(secretBytes)) {
+		t.Fatal("claim error exposed referent content")
+	}
+	gotInfo, err := os.Lstat(path)
+	if err != nil || gotInfo.Mode()&os.ModeSymlink == 0 || !os.SameFile(gotInfo, symlinkInfo) {
+		t.Fatalf("target=%v symlink=%v err=%v", gotInfo, symlinkInfo, err)
+	}
+	gotTarget, err := os.Readlink(path)
+	if err != nil || gotTarget != secret {
+		t.Fatalf("readlink=%q err=%v", gotTarget, err)
+	}
+	gotSecret, err := os.ReadFile(secret)
+	if err != nil || !bytes.Equal(gotSecret, secretBytes) {
+		t.Fatalf("secret changed: %q err=%v", gotSecret, err)
+	}
+	assertNoApplyTemps(t, dir)
+}
+
+func commitWithin(t *testing.T, prepared *PreparedEdit, timeout time.Duration) (AppliedEdit, error) {
+	t.Helper()
+	type result struct {
+		applied AppliedEdit
+		err     error
+	}
+	done := make(chan result, 1)
+	go func() {
+		applied, err := prepared.Commit()
+		done <- result{applied: applied, err: err}
+	}()
+	select {
+	case got := <-done:
+		return got.applied, got.err
+	case <-time.After(timeout):
+		t.Fatalf("Commit did not return within %s", timeout)
+		return AppliedEdit{}, nil
+	}
+}
+
+func TestCommitNamesClaimOnEveryRetainedArtifactPath(t *testing.T) {
+	t.Run("initial verification", func(t *testing.T) {
+		dir, path, original := preparedFixture(t)
+		fs := realApplyFilesystem()
+		exchange := fs.exchange
+		fs.exchange = func(a, b string) error {
+			if err := exchange(a, b); err != nil {
+				return err
+			}
+			competitor := filepath.Join(dir, "post-exchange-competitor")
+			if err := os.WriteFile(competitor, original, 0o640); err != nil {
+				t.Fatal(err)
+			}
+			return os.Rename(competitor, path)
+		}
+		prepared, err := prepare(ProposeReplacement(path, original, []byte("new\n")), fs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		state := prepared.state
+		_, err = prepared.Commit()
+		assertRetainedPathsNamed(t, err, state.oldTemp, state.recovery, state.claim)
+	})
+
+	t.Run("rollback", func(t *testing.T) {
+		_, path, original := preparedFixture(t)
+		rollbackFailure := errors.New("rollback failed")
+		fs := realApplyFilesystem()
+		exchange := fs.exchange
+		exchanges := 0
+		fs.exchange = func(a, b string) error {
+			exchanges++
+			if exchanges > 1 {
+				return rollbackFailure
+			}
+			return exchange(a, b)
+		}
+		fs.hook = func(stage applyStage, target, _ string) {
+			if stage == applyBeforeGuardRecheck {
+				_ = os.WriteFile(target, []byte("unreviewed\n"), 0o640)
+			}
+		}
+		prepared, err := prepare(ProposeReplacement(path, original, []byte("new\n")), fs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		state := prepared.state
+		_, err = prepared.Commit()
+		if err == nil || !strings.Contains(err.Error(), rollbackFailure.Error()) {
+			t.Fatalf("err=%v", err)
+		}
+		assertRetainedPathsNamed(t, err, state.oldTemp, state.recovery, state.claim)
+	})
+
+	t.Run("committed sync", func(t *testing.T) {
+		_, path, original := preparedFixture(t)
+		syncFailure := errors.New("commit sync failed")
+		fs := realApplyFilesystem()
+		syncDir := fs.syncDir
+		fs.syncDir = func(dir string) error {
+			if dir == filepath.Dir(path) {
+				return syncFailure
+			}
+			return syncDir(dir)
+		}
+		prepared, err := prepare(ProposeReplacement(path, original, []byte("new\n")), fs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		state := prepared.state
+		applied, err := prepared.Commit()
+		if !errors.Is(err, syncFailure) || applied.Path != path {
+			t.Fatalf("applied=%#v err=%v", applied, err)
+		}
+		assertRetainedPathsNamed(t, err, state.oldTemp, state.recovery, state.claim)
+	})
+
+	t.Run("claim cleanup", func(t *testing.T) {
+		_, path, original := preparedFixture(t)
+		cleanupFailure := errors.New("claim cleanup failed")
+		fs := realApplyFilesystem()
+		remove := fs.remove
+		fs.remove = func(path string) error {
+			if strings.Contains(path, "claim") {
+				return cleanupFailure
+			}
+			return remove(path)
+		}
+		prepared, err := prepare(ProposeReplacement(path, original, []byte("new\n")), fs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		state := prepared.state
+		_, err = prepared.Commit()
+		if !errors.Is(err, cleanupFailure) {
+			t.Fatalf("err=%v", err)
+		}
+		assertRetainedPathsNamed(t, err, state.claim)
+	})
+}
+
+func preparedFixture(t *testing.T) (string, string, []byte) {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config")
+	original := []byte("old\n")
+	if err := os.WriteFile(path, original, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	return dir, path, original
+}
+
+func assertRetainedPathsNamed(t *testing.T, err error, paths ...string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("err=%v", err)
+	}
+	for _, path := range paths {
+		if path == "" || !strings.Contains(err.Error(), path) {
+			t.Fatalf("err=%v missing retained path %q", err, path)
+		}
 	}
 }
