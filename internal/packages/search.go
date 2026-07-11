@@ -4,10 +4,52 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os/exec"
 	"sort"
 	"strings"
+	"unicode"
 )
+
+type PhaseReporter func(SearchPhase)
+
+type SearchAdapter interface {
+	Provider() Provider
+	Search(context.Context, string, PhaseReporter) ([]Candidate, error)
+}
+
+type commandSearchAdapter struct {
+	provider Provider
+	runner   OutputRunner
+	command  string
+}
+
+func (a commandSearchAdapter) Provider() Provider { return a.provider }
+
+func (a commandSearchAdapter) Search(ctx context.Context, query string, report PhaseReporter) ([]Candidate, error) {
+	switch a.provider {
+	case ProviderNix:
+		return searchNix(ctx, a.runner, a.command, query, report)
+	case ProviderBrew:
+		return searchBrew(ctx, a.runner, a.command, query, report)
+	case ProviderDNF:
+		return searchDNF(ctx, a.runner, a.command, query, report)
+	case ProviderAPT:
+		return searchAPT(ctx, a.runner, a.command, query, report)
+	default:
+		return nil, fmt.Errorf("unsupported search provider %q", a.provider)
+	}
+}
+
+func NewSearchAdapters(specs []ProviderSpec, runner OutputRunner) []SearchAdapter {
+	adapters := make([]SearchAdapter, 0, len(specs))
+	for _, spec := range specs {
+		if spec.Enabled {
+			adapters = append(adapters, commandSearchAdapter{provider: spec.Provider, runner: runner, command: spec.Command})
+		}
+	}
+	return adapters
+}
 
 type ExecRunner struct{}
 
@@ -25,11 +67,11 @@ func Search(ctx context.Context, runner OutputRunner, nixCommand, brewCommand, q
 	results := make(chan providerSearchResult, 2)
 
 	go func() {
-		candidates, err := searchNix(ctx, runner, nixCommand, query)
+		candidates, err := searchNix(ctx, runner, nixCommand, query, nil)
 		results <- providerSearchResult{provider: ProviderNix, candidates: candidates, err: err}
 	}()
 	go func() {
-		candidates, err := searchBrew(ctx, runner, brewCommand, query)
+		candidates, err := searchBrew(ctx, runner, brewCommand, query, nil)
 		results <- providerSearchResult{provider: ProviderBrew, candidates: candidates, err: err}
 	}()
 
@@ -62,11 +104,13 @@ type nixPackage struct {
 	Description string `json:"description"`
 }
 
-func searchNix(ctx context.Context, runner OutputRunner, command, query string) ([]Candidate, error) {
+func searchNix(ctx context.Context, runner OutputRunner, command, query string, report PhaseReporter) ([]Candidate, error) {
+	reportPhase(report, SearchQuerying)
 	output, err := runner.Output(ctx, command, "search", "--json", "nixpkgs", query)
 	if err != nil {
 		return nil, err
 	}
+	reportPhase(report, SearchParsing)
 
 	packages := make(map[string]nixPackage)
 	if err := json.Unmarshal(output, &packages); err != nil {
@@ -112,9 +156,17 @@ func knownNixSystem(system string) bool {
 	}
 }
 
-func searchBrew(ctx context.Context, runner OutputRunner, command, query string) ([]Candidate, error) {
+func searchBrew(ctx context.Context, runner OutputRunner, command, query string, report PhaseReporter) ([]Candidate, error) {
+	reportPhase(report, SearchQuerying)
 	formulaOutput, formulaErr := runner.Output(ctx, command, "search", "--formula", query)
+	if formulaErr == nil {
+		reportPhase(report, SearchParsing)
+	}
+	reportPhase(report, SearchQuerying)
 	caskOutput, caskErr := runner.Output(ctx, command, "search", "--cask", query)
+	if caskErr == nil {
+		reportPhase(report, SearchParsing)
+	}
 
 	var formulae []Candidate
 	if formulaErr == nil {
@@ -129,6 +181,82 @@ func searchBrew(ctx context.Context, runner OutputRunner, command, query string)
 	candidates = append(candidates, casks...)
 
 	return candidates, errors.Join(formulaErr, caskErr)
+}
+
+func searchDNF(ctx context.Context, runner OutputRunner, command, query string, report PhaseReporter) ([]Candidate, error) {
+	reportPhase(report, SearchQuerying)
+	output, err := runner.Output(ctx, command, "search", "--all", "--quiet", query)
+	if err != nil {
+		return nil, err
+	}
+	reportPhase(report, SearchParsing)
+	return nativeCandidates(output, ProviderDNF, " : ", dnfCandidateID), nil
+}
+
+func searchAPT(ctx context.Context, runner OutputRunner, command, query string, report PhaseReporter) ([]Candidate, error) {
+	reportPhase(report, SearchQuerying)
+	output, err := runner.Output(ctx, command, "search", "--names-only", query)
+	if err != nil {
+		return nil, err
+	}
+	reportPhase(report, SearchParsing)
+	return nativeCandidates(output, ProviderAPT, " - ", func(id string) string { return id }), nil
+}
+
+func reportPhase(report PhaseReporter, phase SearchPhase) {
+	if report != nil {
+		report(phase)
+	}
+}
+
+func nativeCandidates(output []byte, provider Provider, separator string, normalizeID func(string) string) []Candidate {
+	candidates := make([]Candidate, 0)
+	for _, line := range strings.Split(string(output), "\n") {
+		idAndDescription := strings.SplitN(line, separator, 2)
+		if len(idAndDescription) != 2 {
+			continue
+		}
+		id := normalizeID(strings.TrimSpace(idAndDescription[0]))
+		if !validCandidateID(id) {
+			continue
+		}
+		candidates = append(candidates, Candidate{
+			Provider:    provider,
+			Kind:        KindPackage,
+			ID:          id,
+			Name:        id,
+			Description: boundDescription(strings.TrimSpace(idAndDescription[1])),
+		})
+	}
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].ID < candidates[j].ID })
+	return candidates
+}
+
+func dnfCandidateID(id string) string {
+	dot := strings.LastIndexByte(id, '.')
+	if dot == -1 {
+		return id
+	}
+	architecture := id[dot+1:]
+	switch architecture {
+	case "aarch64", "armv7hl", "i386", "i486", "i586", "i686", "noarch", "ppc64", "ppc64le", "s390x", "src", "x86_64":
+		return id[:dot]
+	default:
+		return id
+	}
+}
+
+func validCandidateID(id string) bool {
+	return id != "" && strings.IndexFunc(id, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsControl(r)
+	}) == -1
+}
+
+func boundDescription(description string) string {
+	if len(description) > 512 {
+		return description[:512]
+	}
+	return description
 }
 
 func brewCandidates(output []byte, kind Kind) []Candidate {

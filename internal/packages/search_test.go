@@ -139,6 +139,87 @@ func TestSearchParsesBrewFormulaeAndCasks(t *testing.T) {
 	}
 }
 
+func TestDNFSearchParsesNameAndSummaryWithoutHeaders(t *testing.T) {
+	runner := fakeOutputRunner{responses: map[string]fakeOutputResponse{
+		"dnf search --all --quiet lazy": {out: "lazydocker.x86_64 : Docker terminal UI\npython3-lazy-object-proxy.x86_64 : Proxy objects\n"},
+	}}
+
+	got, err := searchDNF(context.Background(), runner, "dnf", "lazy", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Candidate{Provider: ProviderDNF, Kind: KindPackage, ID: "lazydocker", Name: "lazydocker", Description: "Docker terminal UI"}
+	if len(got) != 2 || !reflect.DeepEqual(got[0], want) {
+		t.Fatalf("got %#v", got)
+	}
+}
+
+func TestAPTSearchPreservesExactPackageID(t *testing.T) {
+	runner := fakeOutputRunner{responses: map[string]fakeOutputResponse{
+		"apt-cache search --names-only lazy": {out: "lazydocker - Docker terminal UI\npython3-lazy-object-proxy - Proxy objects\n"},
+	}}
+
+	got, err := searchAPT(context.Background(), runner, "apt-cache", "lazy", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Candidate{Provider: ProviderAPT, Kind: KindPackage, ID: "lazydocker", Name: "lazydocker", Description: "Docker terminal UI"}
+	if len(got) != 2 || !reflect.DeepEqual(got[0], want) {
+		t.Fatalf("got %#v", got)
+	}
+}
+
+func TestNativeSearchRejectsInvalidIDsSortsAndBoundsDescriptions(t *testing.T) {
+	runner := fakeOutputRunner{responses: map[string]fakeOutputResponse{
+		"apt-cache search --names-only tool": {out: "Package descriptions\nzed - " + strings.Repeat("x", 600) + "\nbad id - rejected\nalpha - first\n"},
+	}}
+
+	got, err := searchAPT(context.Background(), runner, "apt-cache", "tool", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].ID != "alpha" || got[1].ID != "zed" {
+		t.Fatalf("got %#v", got)
+	}
+	if len(got[1].Description) != 512 {
+		t.Fatalf("description bytes=%d want 512", len(got[1].Description))
+	}
+}
+
+func TestNewSearchAdaptersFiltersDisabledSpecsAndReportsCommandPhases(t *testing.T) {
+	var calls []string
+	runner := fakeOutputRunner{
+		responses: map[string]fakeOutputResponse{
+			"dnf5 search --all --quiet lazy": {out: "lazydocker.noarch : Docker terminal UI\n"},
+		},
+		calls: &calls,
+	}
+	adapters := NewSearchAdapters([]ProviderSpec{
+		{Provider: ProviderDNF, Command: "dnf5", Enabled: true},
+		{Provider: ProviderNix, Command: "nix", Enabled: false},
+	}, runner)
+
+	if len(adapters) != 1 || adapters[0].Provider() != ProviderDNF {
+		t.Fatalf("adapters=%#v", adapters)
+	}
+	var phases []SearchPhase
+	got, err := adapters[0].Search(context.Background(), "lazy", func(phase SearchPhase) {
+		phases = append(phases, phase)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(calls, []string{"dnf5 search --all --quiet lazy"}) {
+		t.Fatalf("calls=%#v", calls)
+	}
+	if !reflect.DeepEqual(phases, []SearchPhase{SearchQuerying, SearchParsing}) {
+		t.Fatalf("phases=%#v", phases)
+	}
+	if len(got) != 1 || got[0].ID != "lazydocker" {
+		t.Fatalf("got %#v", got)
+	}
+}
+
 func TestSearchDiscardsFailedFormulaOutputAndKeepsCask(t *testing.T) {
 	formulaErr := errors.New("brew formula search unavailable")
 	runner := fakeOutputRunner{responses: map[string]fakeOutputResponse{
