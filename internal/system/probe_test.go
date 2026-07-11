@@ -33,6 +33,12 @@ func TestManagerStatusRendersAptOnlyForInjectedDebianFamilyFacts(t *testing.T) {
 	}
 }
 
+func TestGitDirtyStatusDistinguishesUnavailableFromClean(t *testing.T) {
+	if count, unavailable := gitDirtyStatus(t.TempDir()); count != 0 || !unavailable {
+		t.Fatalf("count=%d unavailable=%v", count, unavailable)
+	}
+}
+
 func TestLocalAuditTreatsSSHConfigCopyAsManaged(t *testing.T) {
 	home := t.TempDir()
 	dotfiles := t.TempDir()

@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/snyderb-de/sys-bozo/internal/repostate"
 )
 
 type Facts struct {
@@ -31,9 +33,10 @@ type Facts struct {
 	BrewOutdated  int
 
 	// Dotfiles repo
-	DotfilesRepo   string
-	DotfilesBranch string
-	DotfilesDirty  int
+	DotfilesRepo              string
+	DotfilesBranch            string
+	DotfilesDirty             int
+	DotfilesStatusUnavailable bool
 
 	// Health
 	HMGeneration    string
@@ -77,7 +80,7 @@ func Probe() Facts {
 	facts.Topgrade, _ = exec.LookPath("topgrade")
 
 	facts.GitDirtyCount = gitDirtyCount(wd)
-	facts.DotfilesDirty = gitDirtyCount(repo)
+	facts.DotfilesDirty, facts.DotfilesStatusUnavailable = gitDirtyStatus(repo)
 	facts.DotfilesBranch = gitBranch(repo)
 
 	if facts.BrewPath != "" {
@@ -332,23 +335,22 @@ func isNixManagedPath(p string) bool {
 }
 
 func gitDirtyCount(dir string) int {
+	count, _ := gitDirtyStatus(dir)
+	return count
+}
+
+func gitDirtyStatus(dir string) (int, bool) {
 	if dir == "" {
-		return 0
+		return 0, true
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 1200*time.Millisecond)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "git", "status", "--short")
-	cmd.Dir = dir
-	out, err := cmd.Output()
-	if err != nil {
-		return 0
+	status := repostate.Inspect(ctx, repostate.ExecRunner{}, dir, "git")
+	if status.Err != nil {
+		return 0, true
 	}
-	text := strings.TrimSpace(string(out))
-	if text == "" {
-		return 0
-	}
-	return len(strings.Split(text, "\n"))
+	return len(status.Entries), false
 }
 
 func gitBranch(dir string) string {
