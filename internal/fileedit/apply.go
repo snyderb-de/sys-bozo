@@ -34,9 +34,16 @@ type applyTempFile interface {
 	Close() error
 }
 
+type applyOpenedFile interface {
+	io.Reader
+	Stat() (os.FileInfo, error)
+	Close() error
+}
+
 type applyFilesystem struct {
 	readFile   func(string) ([]byte, error)
 	stat       func(string) (os.FileInfo, error)
+	open       func(string) (applyOpenedFile, error)
 	createTemp func(string, string) (applyTempFile, error)
 	mkdirTemp  func(string, string) (string, error)
 	remove     func(string) error
@@ -58,12 +65,17 @@ const (
 	applyBeforePrimaryRollbackExchange
 	applyBeforeRecoveryRollbackExchange
 	applyBeforeArtifactCleanup
+	applyAfterCapturedValidation
+	applyAfterFinalLiveIdentityCheck
 )
 
 func realApplyFilesystem() applyFilesystem {
 	return applyFilesystem{
 		readFile: os.ReadFile,
 		stat:     os.Lstat,
+		open: func(path string) (applyOpenedFile, error) {
+			return os.Open(path)
+		},
 		createTemp: func(dir, pattern string) (applyTempFile, error) {
 			return os.CreateTemp(dir, pattern)
 		},
@@ -146,7 +158,7 @@ func (p *PreparedEdit) Commit() (AppliedEdit, error) {
 	p.state = nil
 	proposal := state.proposal
 	runApplyHook(state.filesystem, applyBeforeInitialExchange, state.target, state.oldTemp)
-	if err := state.revalidateOriginalTarget(); err != nil {
+	if err := state.captureAndValidateOriginalTarget(); err != nil {
 		return AppliedEdit{}, err
 	}
 	if err := state.filesystem.exchange(state.target, state.oldTemp); err != nil {
@@ -206,23 +218,68 @@ func (s exchangeApplyState) verifyInitialExchange() error {
 	if !s.identity(s.target, s.proposedInfo) {
 		return fmt.Errorf("%w: competing target preserved at %s; artifacts retained at %s and %s", ErrStaleFile, s.target, s.oldTemp, s.recovery)
 	}
-	state := s.oldIdentityState()
-	if state != oldDisplacedCompetitor {
-		return nil
+	if s.sameIdentity(s.oldTemp, s.claimInfo) {
+		state := s.oldIdentityState()
+		if state == oldReviewedValid {
+			return nil
+		}
+		return s.rollback(state)
 	}
-	return fmt.Errorf("%w: ambiguous displaced identity retained at %s; known proposal remains at %s; recovery retained at %s", ErrStaleFile, s.oldTemp, s.target, s.recovery)
+	displacedInfo, err := s.filesystem.stat(s.oldTemp)
+	if err != nil {
+		return fmt.Errorf("%w: displaced target identity unverified; artifacts retained at %s, %s, and %s: %v", ErrStaleFile, s.oldTemp, s.recovery, s.claim, err)
+	}
+	return s.restoreDisplacedCompetitor(displacedInfo)
+}
+
+func (s exchangeApplyState) restoreDisplacedCompetitor(displacedInfo os.FileInfo) error {
+	retained := func(detail string, cause error) error {
+		return errors.Join(
+			fmt.Errorf("%w: %s; artifacts retained at %s, %s, and %s", ErrStaleFile, detail, s.oldTemp, s.recovery, s.claim),
+			cause,
+		)
+	}
+	if !s.identity(s.target, s.proposedInfo) || !s.sameIdentity(s.oldTemp, displacedInfo) {
+		return retained("displaced competitor restoration identities unverified", nil)
+	}
+	if err := s.filesystem.exchange(s.target, s.oldTemp); err != nil {
+		return retained("restore displaced competitor", err)
+	}
+	if !s.sameIdentity(s.target, displacedInfo) || !s.identity(s.oldTemp, s.proposedInfo) {
+		return retained("displaced competitor restoration result unverified", nil)
+	}
+	cleanupErr := s.cleanupPreExchange()
+	if cleanupErr == nil {
+		return ErrStaleFile
+	}
+	return errors.Join(
+		fmt.Errorf("%w: displaced competitor restored; staging artifacts may be retained at %s, %s, and %s", ErrStaleFile, s.oldTemp, s.recovery, s.claim),
+		cleanupErr,
+	)
+}
+
+func (s exchangeApplyState) sameIdentity(path string, identity os.FileInfo) bool {
+	if identity == nil {
+		return false
+	}
+	info, err := s.filesystem.stat(path)
+	if err != nil {
+		return false
+	}
+	return s.filesystem.sameFile(info, identity)
 }
 
 type exchangeApplyState struct {
-	filesystem                               applyFilesystem
-	target, oldTemp, recovery, staging       string
-	stagingInfo                              os.FileInfo
-	originalInfo, proposedInfo, recoveryInfo os.FileInfo
-	originalHash, proposedHash               [32]byte
-	originalMode                             os.FileMode
-	proposal                                 Proposal
-	current, after                           []byte
-	beforeHash                               [32]byte
+	filesystem                                applyFilesystem
+	target, oldTemp, recovery, staging, claim string
+	stagingInfo                               os.FileInfo
+	originalInfo, proposedInfo, recoveryInfo  os.FileInfo
+	claimInfo                                 os.FileInfo
+	originalHash, proposedHash                [32]byte
+	originalMode                              os.FileMode
+	proposal                                  Proposal
+	current, after                            []byte
+	beforeHash                                [32]byte
 }
 
 type ownedArtifact struct {
@@ -230,36 +287,68 @@ type ownedArtifact struct {
 	identity os.FileInfo
 }
 
-func (s exchangeApplyState) revalidateOriginalTarget() error {
-	info, infoErr := s.filesystem.stat(s.target)
-	current, readErr := s.filesystem.readFile(s.target)
-	valid := infoErr == nil && readErr == nil && info.Mode().IsRegular() && info.Mode().Perm() == s.originalMode.Perm() && s.filesystem.sameFile(info, s.originalInfo) && sha256.Sum256(current) == s.originalHash
-	if valid {
-		return nil
+func (s *exchangeApplyState) captureAndValidateOriginalTarget() error {
+	s.claim = filepath.Join(s.staging, ".packages-apply-claim")
+	if err := s.filesystem.link(s.target, s.claim); err != nil {
+		return s.rejectBeforeExchange("capture target inode", err)
 	}
+	claimInfo, err := s.filesystem.stat(s.claim)
+	if err != nil {
+		return s.rejectBeforeExchange("inspect captured target inode", err)
+	}
+	s.claimInfo = claimInfo
+	if err := s.filesystem.syncDir(s.staging); err != nil {
+		return s.rejectBeforeExchange("sync captured target inode", err)
+	}
+	opened, err := s.filesystem.open(s.claim)
+	if err != nil {
+		return s.rejectBeforeExchange("open captured target inode", err)
+	}
+	beforeInfo, beforeErr := opened.Stat()
+	content, readErr := io.ReadAll(opened)
+	afterInfo, afterErr := opened.Stat()
+	closeErr := opened.Close()
+	coherent := beforeErr == nil && readErr == nil && afterErr == nil && closeErr == nil &&
+		beforeInfo.Mode().IsRegular() && beforeInfo.Mode().Perm() == s.originalMode.Perm() &&
+		afterInfo.Mode().IsRegular() && afterInfo.Mode().Perm() == s.originalMode.Perm() &&
+		s.filesystem.sameFile(beforeInfo, claimInfo) && s.filesystem.sameFile(afterInfo, claimInfo) &&
+		s.filesystem.sameFile(claimInfo, s.originalInfo) && sha256.Sum256(content) == s.originalHash
+	if !coherent {
+		return s.rejectBeforeExchange("validate captured target inode", beforeErr, readErr, afterErr, closeErr)
+	}
+	runApplyHook(s.filesystem, applyAfterCapturedValidation, s.target, s.claim)
+	liveInfo, liveErr := s.filesystem.stat(s.target)
+	liveValid := liveErr == nil && liveInfo.Mode().IsRegular() && liveInfo.Mode().Perm() == s.originalMode.Perm() && s.filesystem.sameFile(liveInfo, claimInfo)
+	if !liveValid {
+		return s.rejectBeforeExchange("revalidate live target identity", liveErr)
+	}
+	runApplyHook(s.filesystem, applyAfterFinalLiveIdentityCheck, s.target, s.claim)
+	return nil
+}
+
+func (s exchangeApplyState) rejectBeforeExchange(detail string, causes ...error) error {
 	cleanupErr := s.cleanupPreExchange()
+	joined := []error{fmt.Errorf("%w: %s", ErrStaleFile, detail)}
 	if cleanupErr == nil {
-		return errors.Join(ErrStaleFile, infoErr, readErr)
+		return errors.Join(append(joined, causes...)...)
 	}
-	return errors.Join(
-		fmt.Errorf("%w: target changed before exchange; staging artifacts may be retained at %s and %s", ErrStaleFile, s.oldTemp, s.recovery),
-		infoErr,
-		readErr,
-		cleanupErr,
-	)
+	joined[0] = fmt.Errorf("%w: %s; staging artifacts may be retained at %s, %s, and %s", ErrStaleFile, detail, s.oldTemp, s.recovery, s.claim)
+	joined = append(joined, causes...)
+	joined = append(joined, cleanupErr)
+	return errors.Join(joined...)
 }
 
 func (s exchangeApplyState) cleanupPreExchange() error {
-	return cleanupOwnedArtifacts(s.filesystem, filepath.Dir(s.target), s.staging, s.stagingInfo, ownedArtifact{s.oldTemp, s.proposedInfo}, ownedArtifact{s.recovery, s.recoveryInfo})
+	return cleanupOwnedArtifacts(s.filesystem, filepath.Dir(s.target), s.staging, s.stagingInfo, ownedArtifact{s.oldTemp, s.proposedInfo}, ownedArtifact{s.recovery, s.recoveryInfo}, ownedArtifact{s.claim, s.claimInfo})
 }
 func (s exchangeApplyState) cleanupCommitted() error {
-	return cleanupOwnedArtifacts(s.filesystem, filepath.Dir(s.target), s.staging, s.stagingInfo, ownedArtifact{s.oldTemp, s.originalInfo}, ownedArtifact{s.recovery, s.recoveryInfo})
+	return cleanupOwnedArtifacts(s.filesystem, filepath.Dir(s.target), s.staging, s.stagingInfo, ownedArtifact{s.oldTemp, s.originalInfo}, ownedArtifact{s.recovery, s.recoveryInfo}, ownedArtifact{s.claim, s.claimInfo})
 }
 func (s exchangeApplyState) cleanupRollback(source string) error {
 	if source == s.oldTemp {
-		return cleanupOwnedArtifacts(s.filesystem, filepath.Dir(s.target), s.staging, s.stagingInfo, ownedArtifact{s.oldTemp, s.proposedInfo}, ownedArtifact{s.recovery, s.recoveryInfo})
+		return cleanupOwnedArtifacts(s.filesystem, filepath.Dir(s.target), s.staging, s.stagingInfo, ownedArtifact{s.oldTemp, s.proposedInfo}, ownedArtifact{s.recovery, s.recoveryInfo}, ownedArtifact{s.claim, s.claimInfo})
 	}
-	return cleanupOwnedArtifacts(s.filesystem, filepath.Dir(s.target), s.staging, s.stagingInfo, ownedArtifact{s.oldTemp, s.originalInfo}, ownedArtifact{s.recovery, s.proposedInfo})
+	return cleanupOwnedArtifacts(s.filesystem, filepath.Dir(s.target), s.staging, s.stagingInfo, ownedArtifact{s.oldTemp, s.originalInfo}, ownedArtifact{s.recovery, s.proposedInfo}, ownedArtifact{s.claim, s.claimInfo})
 }
 
 func (s exchangeApplyState) valid(path string, identity os.FileInfo, hash [32]byte) bool {

@@ -1,6 +1,7 @@
 package fileedit
 
 import (
+	"bytes"
 	"errors"
 	"go/parser"
 	"go/token"
@@ -322,5 +323,137 @@ func TestAbortRetainsIdentityMismatchedArtifact(t *testing.T) {
 		if readErr != nil || string(got) != "competitor\n" {
 			t.Fatalf("attempt %d artifact=%q err=%v", attempt, got, readErr)
 		}
+	}
+}
+
+func TestCommitRestoresCompetitorRenamedBetweenMetadataAndBytes(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config")
+	original := []byte("old\n")
+	if err := os.WriteFile(path, original, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	competitorPath := filepath.Join(dir, "competitor")
+	if err := os.WriteFile(competitorPath, original, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	competitorInfo, err := os.Lstat(competitorPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs := realApplyFilesystem()
+	stat := fs.stat
+	race, replaced := false, false
+	fs.stat = func(candidate string) (os.FileInfo, error) {
+		info, err := stat(candidate)
+		if race && !replaced && candidate == path && err == nil {
+			replaced = true
+			if renameErr := os.Rename(competitorPath, path); renameErr != nil {
+				t.Fatalf("replace target: %v", renameErr)
+			}
+		}
+		return info, err
+	}
+	prepared, err := prepare(ProposeReplacement(path, original, []byte("new\n")), fs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	race = true
+	if _, err := prepared.Commit(); !errors.Is(err, ErrStaleFile) {
+		t.Fatalf("err=%v", err)
+	}
+	assertExactTargetIdentity(t, path, competitorInfo, original)
+}
+
+func TestCommitRestoresCompetitorAtFinalInterleavings(t *testing.T) {
+	for _, stage := range []applyStage{applyAfterCapturedValidation, applyAfterFinalLiveIdentityCheck} {
+		t.Run(strconv.Itoa(int(stage)), func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "config")
+			original := []byte("old\n")
+			if err := os.WriteFile(path, original, 0o640); err != nil {
+				t.Fatal(err)
+			}
+			competitorPath := filepath.Join(dir, "competitor")
+			if err := os.WriteFile(competitorPath, original, 0o640); err != nil {
+				t.Fatal(err)
+			}
+			competitorInfo, err := os.Lstat(competitorPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fs := realApplyFilesystem()
+			fs.hook = func(got applyStage, target, _ string) {
+				if got == stage {
+					if err := os.Rename(competitorPath, target); err != nil {
+						t.Fatalf("replace target: %v", err)
+					}
+				}
+			}
+			_, err = apply(ProposeReplacement(path, original, []byte("new\n")), fs)
+			if !errors.Is(err, ErrStaleFile) {
+				t.Fatalf("err=%v", err)
+			}
+			assertExactTargetIdentity(t, path, competitorInfo, original)
+		})
+	}
+}
+
+func TestCommitReportsArtifactsWhenCompetitorRestorationUnverified(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config")
+	original := []byte("old\n")
+	if err := os.WriteFile(path, original, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	competitorPath := filepath.Join(dir, "competitor")
+	if err := os.WriteFile(competitorPath, original, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	restoreFailure := errors.New("restore failed")
+	fs := realApplyFilesystem()
+	exchange := fs.exchange
+	exchanges := 0
+	fs.exchange = func(a, b string) error {
+		exchanges++
+		if exchanges == 2 {
+			return restoreFailure
+		}
+		return exchange(a, b)
+	}
+	fs.hook = func(stage applyStage, target, _ string) {
+		if stage == applyAfterFinalLiveIdentityCheck {
+			if err := os.Rename(competitorPath, target); err != nil {
+				t.Fatalf("replace target: %v", err)
+			}
+		}
+	}
+	prepared, err := prepare(ProposeReplacement(path, original, []byte("new\n")), fs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldTemp, recovery := prepared.state.oldTemp, prepared.state.recovery
+	_, err = prepared.Commit()
+	if !errors.Is(err, ErrStaleFile) || !errors.Is(err, restoreFailure) || !strings.Contains(err.Error(), oldTemp) || !strings.Contains(err.Error(), recovery) {
+		t.Fatalf("err=%v oldTemp=%s recovery=%s", err, oldTemp, recovery)
+	}
+	got, readErr := os.ReadFile(oldTemp)
+	if readErr != nil || string(got) != string(original) {
+		t.Fatalf("retained competitor=%q err=%v", got, readErr)
+	}
+}
+
+func assertExactTargetIdentity(t *testing.T, path string, wantInfo os.FileInfo, wantBytes []byte) {
+	t.Helper()
+	got, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(got, wantBytes) {
+		t.Fatalf("target=%q err=%v", got, err)
+	}
+	gotInfo, err := os.Lstat(path)
+	if err != nil || !os.SameFile(gotInfo, wantInfo) {
+		t.Fatalf("target inode=%v want=%v err=%v", gotInfo, wantInfo, err)
+	}
+	if bytes.Equal(got, []byte("new\n")) {
+		t.Fatalf("proposal installed at target: %q", got)
 	}
 }
