@@ -171,7 +171,7 @@ func TestAPTSearchPreservesExactPackageID(t *testing.T) {
 
 func TestNativeSearchRejectsInvalidIDsSortsAndBoundsDescriptions(t *testing.T) {
 	runner := fakeOutputRunner{responses: map[string]fakeOutputResponse{
-		"apt-cache search --names-only tool": {out: "Package descriptions\nzed - " + strings.Repeat("x", 600) + "\nbad id - rejected\nalpha - first\n"},
+		"apt-cache search --names-only tool": {out: "Package descriptions\nzed - " + strings.Repeat("x", 600) + "\nbad id - rejected\n\ttrimmed - rejected\nalpha - first\n"},
 	}}
 
 	got, err := searchAPT(context.Background(), runner, "apt-cache", "tool", nil)

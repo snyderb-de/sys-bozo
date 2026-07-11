@@ -216,7 +216,11 @@ func nativeCandidates(output []byte, provider Provider, separator string, normal
 		if len(idAndDescription) != 2 {
 			continue
 		}
-		id := normalizeID(strings.TrimSpace(idAndDescription[0]))
+		rawID := idAndDescription[0]
+		if !validCandidateID(rawID) {
+			continue
+		}
+		id := normalizeID(rawID)
 		if !validCandidateID(id) {
 			continue
 		}
