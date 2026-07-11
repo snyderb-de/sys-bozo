@@ -30,7 +30,10 @@ const (
 type packageFlow struct {
 	stage          packageStage
 	query          textinput.Model
-	result         packages.SearchResult
+	providers      []packageProviderState
+	activeProvider int
+	searchComplete bool
+	animationFrame int
 	scope          packages.Scope
 	sections       []string
 	section        int
@@ -38,6 +41,18 @@ type packageFlow struct {
 	placingSection bool
 	err            error
 	notice         string
+}
+
+type packageProviderState struct {
+	Spec        packages.ProviderSpec
+	Phase       packages.SearchPhase
+	PhaseDetail string
+	StartedAt   time.Time
+	Elapsed     time.Duration
+	Candidates  []packages.Candidate
+	Err         error
+	Selected    int
+	Scroll      int
 }
 
 type packageReview struct {
@@ -75,10 +90,13 @@ func sanitizedApplyDetail(err error) string {
 	}, err.Error())
 }
 
-type packageSearchMsg struct {
+type packageSearchEventMsg struct {
 	requestID uint64
-	result    packages.SearchResult
+	events    <-chan packages.SearchEvent
+	event     packages.SearchEvent
+	ok        bool
 }
+type packageAnimationTickMsg struct{ requestID uint64 }
 type packageAppliedMsg struct {
 	edit packages.AppliedEdit
 	err  error
@@ -106,6 +124,19 @@ func newPackageFlow(width int) packageFlow {
 	return packageFlow{stage: packageSearch, query: query, scope: packages.ScopeShared}
 }
 
+func waitPackageSearchEvent(requestID uint64, events <-chan packages.SearchEvent) tea.Cmd {
+	return func() tea.Msg {
+		event, ok := <-events
+		return packageSearchEventMsg{requestID: requestID, events: events, event: event, ok: ok}
+	}
+}
+
+func packageAnimationTick(requestID uint64) tea.Cmd {
+	return tea.Tick(90*time.Millisecond, func(time.Time) tea.Msg {
+		return packageAnimationTickMsg{requestID: requestID}
+	})
+}
+
 func (m *Model) openPackageFlow() {
 	m.packageFlow = newPackageFlow(m.width)
 	m.reviewed = reviewedPlan{}
@@ -127,7 +158,7 @@ func (m Model) handlePackageKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if query == "" {
 				return m, nil
 			}
-			search := m.searchPackage
+			search := m.startPackageSearch
 			if search == nil {
 				return m, nil
 			}
@@ -136,6 +167,24 @@ func (m Model) handlePackageKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.packageSearchRequest++
 			requestID := m.packageSearchRequest
+			specs := packages.DetectProviderSpecs(packages.HostCapabilities{
+				OS: m.runCtx.OS, OSID: m.runCtx.OSID, NixBin: m.runCtx.NixBin,
+				BrewBin: m.runCtx.BrewBin, DnfBin: m.runCtx.DnfBin, AptCacheBin: m.runCtx.AptCacheBin,
+			})
+			providers := make([]packageProviderState, len(specs))
+			active := -1
+			for i, spec := range specs {
+				providers[i].Spec = spec
+				if active < 0 && spec.Enabled {
+					active = i
+				}
+				if spec.Provider == packages.ProviderNix && spec.Enabled {
+					active = i
+				}
+			}
+			if active < 0 {
+				active = 0
+			}
 			base, baseCancel := context.WithCancel(context.Background())
 			timeout := m.packageSearchTimeout
 			if timeout <= 0 {
@@ -144,39 +193,43 @@ func (m Model) handlePackageKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			searchCtx, timeoutCancel := context.WithTimeout(base, timeout)
 			m.packageSearchCancel = func() { timeoutCancel(); baseCancel() }
 			m.packageFlow.stage = packageSearching
-			return m, func() tea.Msg { return packageSearchMsg{requestID: requestID, result: search(searchCtx, query)} }
+			m.packageFlow.providers = providers
+			m.packageFlow.activeProvider = active
+			m.packageFlow.searchComplete = false
+			m.packageFlow.animationFrame = 0
+			events := search(searchCtx, packages.SearchRequest{RequestID: requestID, Query: query}, specs)
+			return m, tea.Batch(waitPackageSearchEvent(requestID, events), packageAnimationTick(requestID))
 		}
 		var cmd tea.Cmd
 		m.packageFlow.query, cmd = m.packageFlow.query.Update(msg)
 		return m, cmd
-	case packageSearching:
+	case packageSearching, packageChoose:
 		switch msg.String() {
+		case "tab":
+			m.movePackageProvider(1)
+		case "shift+tab":
+			m.movePackageProvider(-1)
+		case "j", "down":
+			m.movePackageCandidate(1)
+		case "k", "up":
+			m.movePackageCandidate(-1)
 		case "esc":
-			m.cancelPackageSearch()
-			m.packageFlow = newPackageFlow(m.width)
+			if m.packageFlow.stage == packageSearching {
+				m.stopPackageSearch()
+				m.packageFlow.stage = packageChoose
+			} else {
+				m.cancelPackageSearch()
+				m.packageFlow = newPackageFlow(m.width)
+			}
 			return m, nil
 		case "q", "ctrl+c":
 			m.cancelPackageSearch()
 			return m, tea.Quit
-		}
-		return m, nil
-	case packageChoose:
-		n := len(m.packageFlow.result.Candidates)
-		if n == 0 {
-			if msg.String() == "esc" {
-				m.packageFlow = newPackageFlow(m.width)
-			}
-			return m, nil
-		}
-		switch msg.String() {
-		case "j", "down":
-			m.packageFlow.result.Selected = (m.packageFlow.result.Selected + 1) % n
-		case "k", "up":
-			m.packageFlow.result.Selected = (m.packageFlow.result.Selected - 1 + n) % n
-		case "esc":
-			m.packageFlow = newPackageFlow(m.width)
 		case "enter":
-			m.beginPackagePlacement()
+			provider, ok := m.activePackageProvider()
+			if ok && provider.Phase == packages.SearchDone && len(provider.Candidates) > 0 {
+				m.beginPackagePlacement()
+			}
 		}
 		return m, nil
 	case packagePlacement:
@@ -186,11 +239,56 @@ func (m Model) handlePackageKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) cancelPackageSearch() {
+	m.stopPackageSearch()
+	m.packageSearchRequest++
+}
+
+func (m *Model) stopPackageSearch() {
 	if m.packageSearchCancel != nil {
 		m.packageSearchCancel()
 		m.packageSearchCancel = nil
 	}
-	m.packageSearchRequest++
+}
+
+func (m *Model) movePackageProvider(delta int) {
+	n := len(m.packageFlow.providers)
+	if n == 0 || (delta != 1 && delta != -1) {
+		return
+	}
+	start := m.packageFlow.activeProvider
+	if start < 0 || start >= n {
+		start = 0
+	}
+	for step := 1; step <= n; step++ {
+		i := (start + delta*step%n + n) % n
+		provider := m.packageFlow.providers[i]
+		if provider.Spec.Enabled || provider.Phase == packages.SearchFailed {
+			m.packageFlow.activeProvider = i
+			return
+		}
+	}
+}
+
+func (m *Model) movePackageCandidate(delta int) {
+	i := m.packageFlow.activeProvider
+	if i < 0 || i >= len(m.packageFlow.providers) {
+		return
+	}
+	providers := append([]packageProviderState(nil), m.packageFlow.providers...)
+	provider := providers[i]
+	n := len(provider.Candidates)
+	if n == 0 {
+		return
+	}
+	provider.Selected = (provider.Selected + delta%n + n) % n
+	limit := packageVisibleResultLimit(m.height)
+	if provider.Selected < provider.Scroll {
+		provider.Scroll = provider.Selected
+	} else if provider.Selected >= provider.Scroll+limit {
+		provider.Scroll = provider.Selected - limit + 1
+	}
+	providers[i] = provider
+	m.packageFlow.providers = providers
 }
 
 var packageScopes = []packages.Scope{packages.ScopeShared, packages.ScopePlatform, packages.ScopeHost}
@@ -371,11 +469,49 @@ func (m Model) openPackageEditor(request packageEditorRequest) tea.Cmd {
 }
 
 func (m Model) selectedPackageCandidate() (packages.Candidate, bool) {
-	selected := m.packageFlow.result.Selected
-	if selected < 0 || selected >= len(m.packageFlow.result.Candidates) {
+	provider, ok := m.activePackageProvider()
+	if !ok || provider.Selected < 0 || provider.Selected >= len(provider.Candidates) {
 		return packages.Candidate{}, false
 	}
-	return m.packageFlow.result.Candidates[selected], true
+	return provider.Candidates[provider.Selected], true
+}
+
+func (m Model) activePackageProvider() (packageProviderState, bool) {
+	i := m.packageFlow.activeProvider
+	if i < 0 || i >= len(m.packageFlow.providers) {
+		return packageProviderState{}, false
+	}
+	return m.packageFlow.providers[i], true
+}
+
+func (m Model) providerIndex(provider packages.Provider) (int, bool) {
+	for i, state := range m.packageFlow.providers {
+		if state.Spec.Provider == provider {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+func (m Model) hasUnfinishedProviders() (bool, bool) {
+	if len(m.packageFlow.providers) == 0 {
+		return false, false
+	}
+	for _, provider := range m.packageFlow.providers {
+		if provider.Spec.Enabled && !packageSearchTerminal(provider.Phase) {
+			return true, true
+		}
+	}
+	return false, true
+}
+
+func packageSearchTerminal(phase packages.SearchPhase) bool {
+	switch phase {
+	case packages.SearchDone, packages.SearchFailed, packages.SearchCancelled, packages.SearchTimedOut:
+		return true
+	default:
+		return false
+	}
 }
 
 func packageVerifySpec(candidate packages.Candidate, ctx runner.Context, target packages.Target) packages.VerifySpec {
@@ -395,17 +531,33 @@ func packageVerifySpec(candidate packages.Candidate, ctx runner.Context, target 
 	return spec
 }
 
-func (m *Model) acceptPackageSearch(result packages.SearchResult) {
-	result.Candidates = append([]packages.Candidate(nil), result.Candidates...)
-	result.Selected = 0
-	for i, candidate := range result.Candidates {
-		if candidate.Provider == packages.ProviderNix {
-			result.Selected = i
-			break
-		}
+func (m *Model) acceptPackageSearchEvent(event packages.SearchEvent) {
+	i, ok := m.providerIndex(event.Provider)
+	if !ok {
+		return
 	}
-	m.packageFlow.result = result
-	m.packageFlow.stage = packageChoose
+	providers := append([]packageProviderState(nil), m.packageFlow.providers...)
+	provider := providers[i]
+	provider.Phase = event.Phase
+	provider.PhaseDetail = string(event.Phase)
+	if event.Phase == packages.SearchStarting {
+		provider.StartedAt = event.At
+	}
+	if !provider.StartedAt.IsZero() && !event.At.IsZero() && !event.At.Before(provider.StartedAt) {
+		provider.Elapsed = event.At.Sub(provider.StartedAt)
+	}
+	if event.Candidates != nil {
+		provider.Candidates = append([]packages.Candidate(nil), event.Candidates...)
+	}
+	provider.Err = event.Err
+	if provider.Selected >= len(provider.Candidates) {
+		provider.Selected = max(0, len(provider.Candidates)-1)
+	}
+	if provider.Scroll > provider.Selected {
+		provider.Scroll = provider.Selected
+	}
+	providers[i] = provider
+	m.packageFlow.providers = providers
 }
 
 func (m *Model) buildPackageReview(proposal packages.Proposal, verify packages.VerifySpec) bool {

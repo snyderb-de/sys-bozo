@@ -50,7 +50,10 @@ func testPackageModel(t *testing.T) Model {
 	t.Setenv("DOTFILES_REPO", repo)
 	m := testGuidedModel()
 	m.runCtx.Repo = repo
-	m.searchPackage = func(context.Context, string) packages.SearchResult { return packages.SearchResult{} }
+	m.runCtx.NixBin = "nix"
+	m.startPackageSearch = func(_ context.Context, request packages.SearchRequest, _ []packages.ProviderSpec) <-chan packages.SearchEvent {
+		return packageEventChannel(packages.SearchEvent{RequestID: request.RequestID, Phase: packages.SearchSessionFinished})
+	}
 	m.packageSearchTimeout = time.Second
 	m.applyPackage = func(packages.Proposal) (packages.AppliedEdit, error) { return packages.AppliedEdit{}, nil }
 	m.verifyPackage = func(packages.VerifySpec) packages.VerifyResult { return packages.VerifyResult{OK: true} }
@@ -63,17 +66,226 @@ func testPackageModel(t *testing.T) Model {
 	return m
 }
 
+func packageEventChannel(events ...packages.SearchEvent) <-chan packages.SearchEvent {
+	ch := make(chan packages.SearchEvent, len(events))
+	for _, event := range events {
+		ch <- event
+	}
+	close(ch)
+	return ch
+}
+
+func packageProviderFixture(candidates ...packages.Candidate) []packageProviderState {
+	provider := packages.ProviderNix
+	if len(candidates) > 0 {
+		provider = candidates[0].Provider
+	}
+	return []packageProviderState{{
+		Spec:       packages.ProviderSpec{Provider: provider, Label: strings.ToUpper(string(provider)), Enabled: true},
+		Phase:      packages.SearchDone,
+		Candidates: append([]packages.Candidate(nil), candidates...),
+	}}
+}
+
+func runPackageCommands(t *testing.T, m Model, cmd tea.Cmd) Model {
+	t.Helper()
+	for i := 0; cmd != nil && i < 20; i++ {
+		msg := cmd()
+		if batch, ok := msg.(tea.BatchMsg); ok {
+			if len(batch) == 0 {
+				t.Fatal("empty package command batch")
+			}
+			msg = batch[0]()
+		}
+		next, nextCmd := m.Update(msg)
+		m, cmd = next.(Model), nextCmd
+	}
+	if cmd != nil {
+		t.Fatal("package command stream did not close")
+	}
+	return m
+}
+
+func packageSearchEventCommand(t *testing.T, cmd tea.Cmd) tea.Cmd {
+	t.Helper()
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok || len(batch) == 0 {
+		t.Fatalf("package search command=%T, want non-empty tea.BatchMsg", batch)
+	}
+	return batch[0]
+}
+
+func packageTabsFixture() Model {
+	m := New()
+	m.width, m.height = 80, 24
+	m.packageFlow = newPackageFlow(80)
+	m.packageFlow.stage = packageSearching
+	m.packageFlow.providers = []packageProviderState{
+		{Spec: packages.ProviderSpec{Provider: packages.ProviderNix, Label: "NIX", Command: "nix", Enabled: true}, Phase: packages.SearchDone, Candidates: []packages.Candidate{{Provider: packages.ProviderNix, Kind: packages.KindPackage, ID: "one"}, {Provider: packages.ProviderNix, Kind: packages.KindPackage, ID: "two"}, {Provider: packages.ProviderNix, Kind: packages.KindPackage, ID: "three"}}},
+		{Spec: packages.ProviderSpec{Provider: packages.ProviderDNF, Label: "DNF", Command: "dnf", Enabled: true}, Phase: packages.SearchQuerying, Candidates: []packages.Candidate{{Provider: packages.ProviderDNF, Kind: packages.KindPackage, ID: "native-one"}, {Provider: packages.ProviderDNF, Kind: packages.KindPackage, ID: "native-two"}}},
+	}
+	return m
+}
+
+func TestCompletedProviderIsBrowsableWhileOtherProviderSearches(t *testing.T) {
+	m := packageTabsFixture()
+	m.packageFlow.stage = packageSearching
+	m.packageFlow.providers = []packageProviderState{
+		{Spec: packages.ProviderSpec{Provider: packages.ProviderNix, Label: "NIX", Enabled: true}, Phase: packages.SearchDone, Candidates: []packages.Candidate{{Provider: packages.ProviderNix, ID: "hello"}}},
+		{Spec: packages.ProviderSpec{Provider: packages.ProviderDNF, Label: "DNF", Enabled: true}, Phase: packages.SearchQuerying},
+	}
+	next, _ := m.handlePackageKey(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(Model)
+	if got.packageFlow.stage != packagePlacement {
+		t.Fatalf("stage=%v", got.packageFlow.stage)
+	}
+}
+
+func TestPackageTabsPreserveSelectionPerProvider(t *testing.T) {
+	m := packageTabsFixture()
+	m.packageFlow.activeProvider = 0
+	m.packageFlow.providers[0].Selected = 2
+	m.packageFlow.providers[1].Selected = 1
+	next, _ := m.handlePackageKey(tea.KeyMsg{Type: tea.KeyTab})
+	got := next.(Model)
+	if got.packageFlow.activeProvider != 1 || got.packageFlow.providers[0].Selected != 2 || got.packageFlow.providers[1].Selected != 1 {
+		t.Fatalf("flow=%#v", got.packageFlow)
+	}
+}
+
+func TestPackageEscapePreservesCompletedCandidatesThenResets(t *testing.T) {
+	m := packageTabsFixture()
+	ctx, cancel := context.WithCancel(context.Background())
+	m.packageSearchCancel = cancel
+
+	next, cmd := m.handlePackageKey(tea.KeyMsg{Type: tea.KeyEsc})
+	m = next.(Model)
+	if cmd != nil || ctx.Err() != context.Canceled || m.packageFlow.stage != packageChoose || len(m.packageFlow.providers[0].Candidates) != 3 {
+		t.Fatalf("first escape: cmd=%v err=%v stage=%v providers=%#v", cmd, ctx.Err(), m.packageFlow.stage, m.packageFlow.providers)
+	}
+
+	next, cmd = m.handlePackageKey(tea.KeyMsg{Type: tea.KeyEsc})
+	m = next.(Model)
+	if cmd != nil || m.packageFlow.stage != packageSearch || len(m.packageFlow.providers) != 0 {
+		t.Fatalf("second escape: cmd=%v stage=%v providers=%#v", cmd, m.packageFlow.stage, m.packageFlow.providers)
+	}
+}
+
+func TestPackageTimeoutStateDiffersFromCancellation(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		phase packages.SearchPhase
+		err   error
+	}{
+		{name: "timeout", phase: packages.SearchTimedOut, err: context.DeadlineExceeded},
+		{name: "cancel", phase: packages.SearchCancelled, err: context.Canceled},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := packageTabsFixture()
+			m.packageSearchRequest = 9
+			events := packageEventChannel()
+			next, cmd := m.Update(packageSearchEventMsg{
+				requestID: 9,
+				events:    events,
+				ok:        true,
+				event: packages.SearchEvent{
+					RequestID: 9, Provider: packages.ProviderDNF, Phase: tc.phase, Err: tc.err,
+				},
+			})
+			got := next.(Model)
+			provider := got.packageFlow.providers[1]
+			if cmd == nil || provider.Phase != tc.phase || !errors.Is(provider.Err, tc.err) {
+				t.Fatalf("cmd=%v provider=%#v", cmd, provider)
+			}
+		})
+	}
+}
+
+func TestPackageClosedEventChannelDoesNotResubscribe(t *testing.T) {
+	m := packageTabsFixture()
+	m.packageSearchRequest = 11
+	_, cancel := context.WithCancel(context.Background())
+	m.packageSearchCancel = cancel
+
+	next, cmd := m.Update(packageSearchEventMsg{requestID: 11, events: packageEventChannel(), ok: false})
+	got := next.(Model)
+	if cmd != nil || !got.packageFlow.searchComplete || got.packageFlow.stage != packageChoose || got.packageSearchCancel != nil {
+		t.Fatalf("cmd=%v complete=%v stage=%v cancel=%v", cmd, got.packageFlow.searchComplete, got.packageFlow.stage, got.packageSearchCancel)
+	}
+}
+
+func TestPackageSearchCompletionDoesNotExitPlacement(t *testing.T) {
+	m := packageTabsFixture()
+	m.packageFlow.stage = packagePlacement
+	m.packageSearchRequest = 13
+
+	next, cmd := m.Update(packageSearchEventMsg{requestID: 13, events: packageEventChannel(), ok: false})
+	got := next.(Model)
+	if cmd != nil || got.packageFlow.stage != packagePlacement || !got.packageFlow.searchComplete {
+		t.Fatalf("cmd=%v stage=%v complete=%v", cmd, got.packageFlow.stage, got.packageFlow.searchComplete)
+	}
+}
+
+func TestPackageSearchEventClonesCandidates(t *testing.T) {
+	m := packageTabsFixture()
+	m.packageSearchRequest = 12
+	candidates := []packages.Candidate{{Provider: packages.ProviderDNF, ID: "original"}}
+	next, _ := m.Update(packageSearchEventMsg{
+		requestID: 12,
+		events:    packageEventChannel(),
+		ok:        true,
+		event:     packages.SearchEvent{RequestID: 12, Provider: packages.ProviderDNF, Phase: packages.SearchDone, Candidates: candidates},
+	})
+	candidates[0].ID = "mutated"
+	got := next.(Model)
+	if got.packageFlow.providers[1].Candidates[0].ID != "original" {
+		t.Fatalf("candidates alias input: %#v", got.packageFlow.providers[1].Candidates)
+	}
+}
+
+func TestPackageTabsSkipDisabledButFocusFailed(t *testing.T) {
+	m := packageTabsFixture()
+	m.packageFlow.providers = append(m.packageFlow.providers,
+		packageProviderState{Spec: packages.ProviderSpec{Provider: packages.ProviderAPT, Label: "APT"}},
+		packageProviderState{Spec: packages.ProviderSpec{Provider: packages.ProviderBrew, Label: "BREW"}, Phase: packages.SearchFailed, Err: errors.New("failed")},
+	)
+	m.packageFlow.activeProvider = 1
+	next, _ := m.handlePackageKey(tea.KeyMsg{Type: tea.KeyTab})
+	got := next.(Model)
+	if got.packageFlow.activeProvider != 3 {
+		t.Fatalf("active provider=%d", got.packageFlow.activeProvider)
+	}
+}
+
+func TestPackageProviderScrollControlsVisibleResults(t *testing.T) {
+	m := packageTabsFixture()
+	m.styles = newUIStyles(true)
+	m.screen = screenPackage
+	m.packageFlow.stage = packageChoose
+	for _, id := range []string{"four", "five", "six", "seven", "eight"} {
+		m.packageFlow.providers[0].Candidates = append(m.packageFlow.providers[0].Candidates, packages.Candidate{Provider: packages.ProviderNix, Kind: packages.KindPackage, ID: id})
+	}
+	m.packageFlow.providers[0].Scroll = 1
+	m.packageFlow.providers[0].Selected = 2
+
+	out := m.View()
+	if strings.Contains(out, "one") || !strings.Contains(out, "two") || !strings.Contains(out, "three") {
+		t.Fatalf("scrolled results:\n%s", out)
+	}
+}
+
 func TestPackageSearchDefaultsToNixAndDoesNotWrite(t *testing.T) {
 	m := testPackageModel(t)
 	m.screen = screenPackage
-	m.packageFlow = packageFlow{stage: packageChoose, result: packages.SearchResult{
-		Candidates: []packages.Candidate{
-			{Provider: packages.ProviderNix, ID: "lazydocker", Name: "lazydocker"},
-			{Provider: packages.ProviderBrew, Kind: packages.KindFormula, ID: "lazydocker", Name: "lazydocker"},
-		},
-		Selected: 0,
-	}}
-	if got := m.packageFlow.result.Candidates[m.packageFlow.result.Selected].Provider; got != packages.ProviderNix {
+	m.packageFlow = packageFlow{stage: packageChoose, providers: packageProviderFixture(
+		packages.Candidate{Provider: packages.ProviderNix, ID: "lazydocker", Name: "lazydocker"},
+		packages.Candidate{Provider: packages.ProviderBrew, Kind: packages.KindFormula, ID: "lazydocker", Name: "lazydocker"},
+	)}
+	provider, ok := m.activePackageProvider()
+	if !ok {
+		t.Fatal("missing active provider")
+	}
+	if got := provider.Candidates[provider.Selected].Provider; got != packages.ProviderNix {
 		t.Fatalf("provider=%s", got)
 	}
 	if len(m.queue) != 0 || m.mode == modeRunning {
@@ -390,15 +602,15 @@ func TestConfirmPackageReviewAppliesOnlyAfterConfirmation(t *testing.T) {
 func TestHomeAddPackageRunsInjectedSearchAndDefaultsToNix(t *testing.T) {
 	m := testPackageModel(t)
 	called := false
-	m.searchPackage = func(_ context.Context, query string) packages.SearchResult {
+	m.startPackageSearch = func(_ context.Context, request packages.SearchRequest, _ []packages.ProviderSpec) <-chan packages.SearchEvent {
 		called = true
-		if query != "lazydocker" {
-			t.Fatalf("query=%q", query)
+		if request.Query != "lazydocker" {
+			t.Fatalf("query=%q", request.Query)
 		}
-		return packages.SearchResult{Candidates: []packages.Candidate{
-			{Provider: packages.ProviderBrew, Kind: packages.KindFormula, ID: "lazydocker", Name: "lazydocker"},
-			{Provider: packages.ProviderNix, Kind: packages.KindPackage, ID: "lazydocker", Name: "lazydocker"},
-		}}
+		return packageEventChannel(
+			packages.SearchEvent{RequestID: request.RequestID, Provider: packages.ProviderNix, Phase: packages.SearchDone, Candidates: []packages.Candidate{{Provider: packages.ProviderNix, Kind: packages.KindPackage, ID: "lazydocker", Name: "lazydocker"}}},
+			packages.SearchEvent{RequestID: request.RequestID, Phase: packages.SearchSessionFinished},
+		)
 	}
 
 	next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
@@ -412,14 +624,14 @@ func TestHomeAddPackageRunsInjectedSearchAndDefaultsToNix(t *testing.T) {
 	}
 	next, cmd = m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 	m = next.(Model)
-	if cmd == nil || called || m.packageFlow.stage != packageSearching || len(m.queue) != 0 || m.mode == modeRunning {
+	if cmd == nil || !called || m.packageFlow.stage != packageSearching || len(m.queue) != 0 || m.mode == modeRunning {
 		t.Fatalf("cmd=%v called=%v stage=%v queue=%v mode=%v", cmd, called, m.packageFlow.stage, m.queue, m.mode)
 	}
 
-	next, nextCmd := m.Update(cmd())
-	m = next.(Model)
-	if nextCmd != nil || !called || m.packageFlow.stage != packageChoose || m.packageFlow.result.Selected != 1 {
-		t.Fatalf("cmd=%v called=%v stage=%v selected=%d", nextCmd, called, m.packageFlow.stage, m.packageFlow.result.Selected)
+	m = runPackageCommands(t, m, cmd)
+	provider, ok := m.activePackageProvider()
+	if !called || m.packageFlow.stage != packageChoose || !ok || provider.Selected != 0 {
+		t.Fatalf("called=%v stage=%v provider=%#v", called, m.packageFlow.stage, provider)
 	}
 	if len(m.queue) != 0 || m.mode == modeRunning {
 		t.Fatal("search executed package work")
@@ -431,17 +643,23 @@ func TestPackageSearchEscapeAndQuitCancelBlockingProvider(t *testing.T) {
 		t.Run(key.String(), func(t *testing.T) {
 			m := testPackageModel(t)
 			started := make(chan context.Context, 1)
-			m.searchPackage = func(ctx context.Context, _ string) packages.SearchResult {
+			m.startPackageSearch = func(ctx context.Context, request packages.SearchRequest, _ []packages.ProviderSpec) <-chan packages.SearchEvent {
 				started <- ctx
-				<-ctx.Done()
-				return packages.SearchResult{NixErr: ctx.Err(), BrewErr: ctx.Err()}
+				events := make(chan packages.SearchEvent, 1)
+				go func() {
+					<-ctx.Done()
+					events <- packages.SearchEvent{RequestID: request.RequestID, Provider: packages.ProviderNix, Phase: packages.SearchCancelled, Err: ctx.Err()}
+					close(events)
+				}()
+				return events
 			}
 			m.openPackageFlow()
 			m.packageFlow.query.SetValue("fixture")
 			next, cmd := m.handlePackageKey(tea.KeyMsg{Type: tea.KeyEnter})
 			m = next.(Model)
+			eventCmd := packageSearchEventCommand(t, cmd)
 			done := make(chan tea.Msg, 1)
-			go func() { done <- cmd() }()
+			go func() { done <- eventCmd() }()
 			ctx := <-started
 
 			next, quitCmd := m.handlePackageKey(key)
@@ -457,7 +675,7 @@ func TestPackageSearchEscapeAndQuitCancelBlockingProvider(t *testing.T) {
 				t.Fatal("search command leaked after cancellation")
 			}
 			if key.Type == tea.KeyEsc {
-				if quitCmd != nil || m.packageFlow.stage != packageSearch {
+				if quitCmd != nil || m.packageFlow.stage != packageChoose {
 					t.Fatalf("cmd=%v stage=%v", quitCmd, m.packageFlow.stage)
 				}
 			} else if quitCmd == nil {
@@ -474,18 +692,22 @@ func TestStartingNewPackageSearchCancelsOldAndIgnoresLateResult(t *testing.T) {
 	m.packageSearchRequest = 7
 	m.packageFlow = newPackageFlow(m.width)
 	m.packageFlow.query.SetValue("new")
-	m.searchPackage = func(context.Context, string) packages.SearchResult { return packages.SearchResult{} }
+	m.startPackageSearch = func(_ context.Context, request packages.SearchRequest, _ []packages.ProviderSpec) <-chan packages.SearchEvent {
+		return packageEventChannel(packages.SearchEvent{RequestID: request.RequestID, Phase: packages.SearchSessionFinished})
+	}
 	next, cmd := m.handlePackageKey(tea.KeyMsg{Type: tea.KeyEnter})
 	m = next.(Model)
 	if cmd == nil || oldCtx.Err() != context.Canceled || m.packageSearchRequest != 8 {
 		t.Fatalf("cmd=%v old=%v id=%d", cmd, oldCtx.Err(), m.packageSearchRequest)
 	}
 
-	late := packageSearchMsg{requestID: 7, result: packages.SearchResult{Candidates: []packages.Candidate{{ID: "late"}}}}
+	lateEvents := packageEventChannel()
+	late := packageSearchEventMsg{requestID: 7, events: lateEvents, ok: true, event: packages.SearchEvent{RequestID: 7, Provider: packages.ProviderNix, Phase: packages.SearchDone, Candidates: []packages.Candidate{{ID: "late"}}}}
 	next, nextCmd := m.Update(late)
 	m = next.(Model)
-	if nextCmd != nil || m.packageFlow.stage != packageSearching || len(m.packageFlow.result.Candidates) != 0 {
-		t.Fatalf("stage=%v result=%#v", m.packageFlow.stage, m.packageFlow.result)
+	provider, _ := m.activePackageProvider()
+	if nextCmd != nil || m.packageFlow.stage != packageSearching || len(provider.Candidates) != 0 {
+		t.Fatalf("stage=%v provider=%#v", m.packageFlow.stage, provider)
 	}
 	m.cancelPackageSearch()
 }
@@ -495,16 +717,21 @@ func TestPackageSearchTimeoutIsVisibleAndRestoresNavigation(t *testing.T) {
 	m.styles = newUIStyles(true)
 	m.width, m.height = 80, 24
 	m.packageSearchTimeout = 10 * time.Millisecond
-	m.searchPackage = func(ctx context.Context, _ string) packages.SearchResult {
-		<-ctx.Done()
-		return packages.SearchResult{NixErr: ctx.Err(), BrewErr: ctx.Err()}
+	m.startPackageSearch = func(ctx context.Context, request packages.SearchRequest, _ []packages.ProviderSpec) <-chan packages.SearchEvent {
+		events := make(chan packages.SearchEvent, 2)
+		go func() {
+			<-ctx.Done()
+			events <- packages.SearchEvent{RequestID: request.RequestID, Provider: packages.ProviderNix, Phase: packages.SearchTimedOut, Err: ctx.Err()}
+			events <- packages.SearchEvent{RequestID: request.RequestID, Phase: packages.SearchSessionFinished}
+			close(events)
+		}()
+		return events
 	}
 	m.openPackageFlow()
 	m.packageFlow.query.SetValue("fixture")
 	next, cmd := m.handlePackageKey(tea.KeyMsg{Type: tea.KeyEnter})
 	m = next.(Model)
-	next, _ = m.Update(cmd())
-	m = next.(Model)
+	m = runPackageCommands(t, m, cmd)
 	if m.packageFlow.stage != packageChoose {
 		t.Fatalf("stage=%v", m.packageFlow.stage)
 	}
@@ -527,12 +754,12 @@ func TestPackagePlacementBuildsProposalWithoutWritingAndDefaultsMisc(t *testing.
 	m.screen = screenPackage
 	m.packageFlow = packageFlow{
 		stage: packageChoose,
-		result: packages.SearchResult{Candidates: []packages.Candidate{{
+		providers: packageProviderFixture(packages.Candidate{
 			Provider: packages.ProviderNix,
 			Kind:     packages.KindPackage,
 			ID:       "lazydocker",
 			Name:     "lazydocker",
-		}}, Selected: 0},
+		}),
 	}
 
 	next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
@@ -751,9 +978,9 @@ func TestAmbiguousPackageTargetUsesInjectedEditorAndResumesReviewWithoutWriting(
 		}
 	}
 	m.screen = screenPackage
-	m.packageFlow = packageFlow{stage: packageChoose, result: packages.SearchResult{Candidates: []packages.Candidate{{
+	m.packageFlow = packageFlow{stage: packageChoose, providers: packageProviderFixture(packages.Candidate{
 		Provider: packages.ProviderNix, Kind: packages.KindPackage, ID: "lazydocker", Name: "lazydocker",
-	}}, Selected: 0}}
+	})}
 
 	next, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 	m = next.(Model)
@@ -795,7 +1022,7 @@ func TestDuplicatePackageIsInformationalAndNeverOpensEditorOrWrites(t *testing.T
 	m.screen = screenPackage
 	m.packageFlow = packageFlow{
 		stage: packagePlacement, placingSection: true, target: packages.Target{Path: path, Assignment: "home.packages", ApplyAction: "hms"},
-		sections: []string{"Misc"}, result: packages.SearchResult{Candidates: []packages.Candidate{{Provider: packages.ProviderNix, Kind: packages.KindPackage, ID: "yazi"}}},
+		sections: []string{"Misc"}, providers: packageProviderFixture(packages.Candidate{Provider: packages.ProviderNix, Kind: packages.KindPackage, ID: "yazi"}),
 	}
 	next, cmd := m.handlePackageKey(tea.KeyMsg{Type: tea.KeyEnter})
 	m = next.(Model)
@@ -832,9 +1059,9 @@ func TestNixHostEditorHandoffUsesEngineTargetOnDarwinAndLinux(t *testing.T) {
 				return func() tea.Msg { return packageEditorDoneMsg{err: errors.New("fixture editor stopped")} }
 			}
 			m.screen = screenPackage
-			m.packageFlow = packageFlow{stage: packagePlacement, scope: packages.ScopeHost, result: packages.SearchResult{Candidates: []packages.Candidate{{
+			m.packageFlow = packageFlow{stage: packagePlacement, scope: packages.ScopeHost, providers: packageProviderFixture(packages.Candidate{
 				Provider: packages.ProviderNix, Kind: packages.KindPackage, ID: "fixture", Name: "fixture",
-			}}, Selected: 0}}
+			})}
 
 			next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 			got := next.(Model)
@@ -851,9 +1078,9 @@ func TestNixHostEditorHandoffRequiresExistingFile(t *testing.T) {
 	editorCalled := false
 	m.packageEditor = func(packageEditorRequest) tea.Cmd { editorCalled = true; return nil }
 	m.screen = screenPackage
-	m.packageFlow = packageFlow{stage: packagePlacement, scope: packages.ScopeHost, result: packages.SearchResult{Candidates: []packages.Candidate{{
+	m.packageFlow = packageFlow{stage: packagePlacement, scope: packages.ScopeHost, providers: packageProviderFixture(packages.Candidate{
 		Provider: packages.ProviderNix, Kind: packages.KindPackage, ID: "fixture", Name: "fixture",
-	}}, Selected: 0}}
+	})}
 
 	next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 	got := next.(Model)
@@ -873,9 +1100,9 @@ func TestUnsupportedBrewScopeStaysSelectedAndDoesNotOpenEditor(t *testing.T) {
 			editorCalled := false
 			m.packageEditor = func(packageEditorRequest) tea.Cmd { editorCalled = true; return nil }
 			m.screen = screenPackage
-			m.packageFlow = packageFlow{stage: packagePlacement, scope: scope, result: packages.SearchResult{Candidates: []packages.Candidate{{
+			m.packageFlow = packageFlow{stage: packagePlacement, scope: scope, providers: packageProviderFixture(packages.Candidate{
 				Provider: packages.ProviderBrew, Kind: packages.KindFormula, ID: "fixture", Name: "fixture",
-			}}, Selected: 0}}
+			})}
 
 			next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 			got := next.(Model)
@@ -908,9 +1135,9 @@ func TestProposeAddFailureUsesSameKnownTargetEditorFallback(t *testing.T) {
 	m.packageFlow = packageFlow{
 		stage: packagePlacement, placingSection: true, scope: packages.ScopeShared,
 		target:   packages.Target{Path: path, Assignment: "home.packages", ApplyAction: "hms"},
-		sections: []string{"Missing"}, result: packages.SearchResult{Candidates: []packages.Candidate{{
+		sections: []string{"Missing"}, providers: packageProviderFixture(packages.Candidate{
 			Provider: packages.ProviderNix, Kind: packages.KindPackage, ID: "fixture", Name: "fixture",
-		}}, Selected: 0},
+		}),
 	}
 
 	next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
@@ -943,9 +1170,9 @@ func TestUnsupportedPackageScopeAlwaysUsesEditorHandoff(t *testing.T) {
 		}
 	}
 	m.screen = screenPackage
-	m.packageFlow = packageFlow{stage: packagePlacement, scope: packages.ScopeHost, result: packages.SearchResult{Candidates: []packages.Candidate{{
+	m.packageFlow = packageFlow{stage: packagePlacement, scope: packages.ScopeHost, providers: packageProviderFixture(packages.Candidate{
 		Provider: packages.ProviderNix, Kind: packages.KindPackage, ID: "lazydocker", Name: "lazydocker",
-	}}, Selected: 0}}
+	})}
 
 	next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 	got := next.(Model)
@@ -985,10 +1212,10 @@ func TestPackageWorkflowViewsFit80x24AndPreserveNoColorSemantics(t *testing.T) {
 		{"search", func(m *Model) {}, []string{"ADD/PACKAGE", "DECLARATIVE INSTALL", "SEARCH"}},
 		{"results", func(m *Model) {
 			m.packageFlow.stage = packageChoose
-			m.packageFlow.result = packages.SearchResult{Candidates: candidates, Selected: 0}
+			m.packageFlow.providers = packageProviderFixture(candidates...)
 		}, []string{"RESULTS", "NIX", "BREW", "DEFAULT", "lazydocker"}},
 		{"placement", func(m *Model) {
-			m.packageFlow = packageFlow{stage: packagePlacement, result: packages.SearchResult{Candidates: candidates}, scope: packages.ScopeShared, sections: []string{"Core", "Misc"}, section: 1, placingSection: true}
+			m.packageFlow = packageFlow{stage: packagePlacement, providers: packageProviderFixture(candidates...), scope: packages.ScopeShared, sections: []string{"Core", "Misc"}, section: 1, placingSection: true}
 		}, []string{"PLACEMENT", "PROVIDER", "SCOPE", "SHARED", "SECTION", "Misc"}},
 		{"review", func(m *Model) {
 			m.tasks = []runner.Task{{ID: "hms", Available: func(runner.Context) bool { return true }, Steps: []runner.Step{{Cmd: func(runner.Context) (string, []string) {
@@ -1117,13 +1344,14 @@ func TestPackageWorkflowFakeRepoSmoke(t *testing.T) {
 		Mode: runner.ExecutionInteractive, Retryable: true,
 		Cmd: func(runner.Context) (string, []string) { return "fixture-hms", []string{"--safe"} },
 	}}}}
-	m.searchPackage = func(_ context.Context, query string) packages.SearchResult {
-		if query != "lazydocker" {
-			t.Fatalf("query=%q", query)
+	m.startPackageSearch = func(_ context.Context, request packages.SearchRequest, _ []packages.ProviderSpec) <-chan packages.SearchEvent {
+		if request.Query != "lazydocker" {
+			t.Fatalf("query=%q", request.Query)
 		}
-		return packages.SearchResult{Candidates: []packages.Candidate{{
-			Provider: packages.ProviderNix, Kind: packages.KindPackage, ID: "lazydocker", Name: "lazydocker",
-		}}}
+		return packageEventChannel(
+			packages.SearchEvent{RequestID: request.RequestID, Provider: packages.ProviderNix, Phase: packages.SearchDone, Candidates: []packages.Candidate{{Provider: packages.ProviderNix, Kind: packages.KindPackage, ID: "lazydocker", Name: "lazydocker"}}},
+			packages.SearchEvent{RequestID: request.RequestID, Phase: packages.SearchSessionFinished},
+		)
 	}
 	m.applyPackage = func(proposal packages.Proposal) (packages.AppliedEdit, error) {
 		if proposal.Target.Path != path {
@@ -1153,8 +1381,7 @@ func TestPackageWorkflowFakeRepoSmoke(t *testing.T) {
 	m.packageFlow.query.SetValue("lazydocker")
 	next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 	m = next.(Model)
-	next, _ = m.Update(cmd())
-	m = next.(Model)
+	m = runPackageCommands(t, m, cmd)
 	for range 3 {
 		next, cmd = m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 		m = next.(Model)

@@ -42,13 +42,14 @@ func (m Model) viewPackage() string {
 		)
 	case packageChoose:
 		rows = append(rows, s.label.Render("RESULTS"), "")
-		if len(m.packageFlow.result.Candidates) == 0 {
+		providerState, providerOK := m.activePackageProvider()
+		if !providerOK || len(providerState.Candidates) == 0 {
 			rows = append(rows, s.danger.Render("NO PACKAGE MATCHES"))
 		}
 		defaultNix := -1
-		start, end := packageVisibleWindow(len(m.packageFlow.result.Candidates), m.packageFlow.result.Selected, packageVisibleResultLimit(m.height))
+		start, end := packageScrolledWindow(len(providerState.Candidates), providerState.Scroll, packageVisibleResultLimit(m.height))
 		for i := start; i < end; i++ {
-			candidate := m.packageFlow.result.Candidates[i]
+			candidate := providerState.Candidates[i]
 			if defaultNix < 0 && candidate.Provider == packages.ProviderNix {
 				defaultNix = i
 			}
@@ -63,15 +64,16 @@ func (m Model) viewPackage() string {
 			if i == defaultNix {
 				status = statusText(s, "DEFAULT", statusActive)
 			}
-			rows = append(rows, numberedRow(s, fmt.Sprintf("%02d", i+1), label, status, contentWidth, i == m.packageFlow.result.Selected))
+			rows = append(rows, numberedRow(s, fmt.Sprintf("%02d", i+1), label, status, contentWidth, i == providerState.Selected))
 			detail := strings.TrimSpace(meta + "  " + candidate.Description)
 			rows = append(rows, "     "+s.muted.Render(truncateVisible(detail, max(1, contentWidth-5))))
 		}
-		if m.packageFlow.result.NixErr != nil {
-			rows = append(rows, s.danger.Render(truncateVisible("NIX SEARCH WARNING  "+m.packageFlow.result.NixErr.Error(), contentWidth)))
-		}
-		if m.packageFlow.result.BrewErr != nil {
-			rows = append(rows, s.danger.Render(truncateVisible("BREW SEARCH WARNING  "+m.packageFlow.result.BrewErr.Error(), contentWidth)))
+		if providerOK && providerState.Err != nil {
+			label := providerState.Spec.Label
+			if label == "" {
+				label = strings.ToUpper(string(providerState.Spec.Provider))
+			}
+			rows = append(rows, s.danger.Render(truncateVisible(label+" SEARCH WARNING  "+providerState.Err.Error(), contentWidth)))
 		}
 		rows = append(rows, "", s.muted.Render("ESCAPE SEARCH   ↑/↓ MOVE")+"   "+s.active.Render("ENTER PLACE"))
 	case packagePlacement:
@@ -139,6 +141,19 @@ func packageVisibleWindow(total, selected, limit int) (int, int) {
 		start = total - limit
 	}
 	return start, start + limit
+}
+
+func packageScrolledWindow(total, scroll, limit int) (int, int) {
+	if total <= limit {
+		return 0, total
+	}
+	if scroll < 0 {
+		scroll = 0
+	}
+	if scroll+limit > total {
+		scroll = total - limit
+	}
+	return scroll, scroll + limit
 }
 
 func (m Model) viewPackageReview() string {

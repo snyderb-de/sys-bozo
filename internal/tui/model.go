@@ -163,7 +163,7 @@ type Model struct {
 	applyConfig       func(fileedit.Proposal) (fileedit.AppliedEdit, error)
 
 	packageFlow          packageFlow
-	searchPackage        func(context.Context, string) packages.SearchResult
+	startPackageSearch   func(context.Context, packages.SearchRequest, []packages.ProviderSpec) <-chan packages.SearchEvent
 	packageSearchCancel  context.CancelFunc
 	packageSearchRequest uint64
 	packageSearchTimeout time.Duration
@@ -181,8 +181,9 @@ func New() Model {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(clrCyan)
-	searchPackage := func(searchCtx context.Context, query string) packages.SearchResult {
-		return packages.Search(searchCtx, packages.ExecRunner{}, ctx.NixBin, ctx.BrewBin, query)
+	startPackageSearch := func(searchCtx context.Context, request packages.SearchRequest, specs []packages.ProviderSpec) <-chan packages.SearchEvent {
+		adapters := packages.NewSearchAdapters(specs, packages.ExecRunner{})
+		return packages.StartSearch(searchCtx, request, adapters)
 	}
 	verifyPackage := func(spec packages.VerifySpec) packages.VerifyResult {
 		return packages.Verify(context.Background(), packages.ExecRunner{}, exec.LookPath, spec)
@@ -200,7 +201,7 @@ func New() Model {
 		spinner:              sp,
 		configFiles:          buildConfigFiles(ctx),
 		terminalExec:         runInteractiveWork,
-		searchPackage:        searchPackage,
+		startPackageSearch:   startPackageSearch,
 		packageSearchTimeout: 30 * time.Second,
 		applyPackage:         packages.Apply,
 		verifyPackage:        verifyPackage,

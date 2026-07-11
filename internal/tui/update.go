@@ -43,16 +43,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 
-	case packageSearchMsg:
+	case packageSearchEventMsg:
 		if msg.requestID != m.packageSearchRequest {
 			return m, nil
 		}
-		if m.packageSearchCancel != nil {
-			m.packageSearchCancel()
-			m.packageSearchCancel = nil
+		if !msg.ok {
+			m.stopPackageSearch()
+			m.packageFlow.searchComplete = true
+			if m.packageFlow.stage == packageSearching {
+				m.packageFlow.stage = packageChoose
+			}
+			return m, nil
 		}
-		m.acceptPackageSearch(msg.result)
-		return m, nil
+		if msg.event.RequestID != msg.requestID {
+			return m, waitPackageSearchEvent(msg.requestID, msg.events)
+		}
+		m.acceptPackageSearchEvent(msg.event)
+		return m, waitPackageSearchEvent(msg.requestID, msg.events)
+
+	case packageAnimationTickMsg:
+		if msg.requestID != m.packageSearchRequest {
+			return m, nil
+		}
+		unfinished, ok := m.hasUnfinishedProviders()
+		if !ok || !unfinished {
+			return m, nil
+		}
+		m.packageFlow.animationFrame++
+		return m, packageAnimationTick(msg.requestID)
 
 	case packageAppliedMsg:
 		if msg.err != nil {
