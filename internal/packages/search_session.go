@@ -23,6 +23,10 @@ type SearchEvent struct {
 	At         time.Time
 }
 
+type providerSearchError struct{}
+
+func (providerSearchError) Error() string { return "provider search failed" }
+
 func StartSearch(ctx context.Context, request SearchRequest, adapters []SearchAdapter) <-chan SearchEvent {
 	bufferSize := len(adapters) * 4
 	if bufferSize < 4 {
@@ -51,7 +55,24 @@ func StartSearch(ctx context.Context, request SearchRequest, adapters []SearchAd
 			defer adaptersDone.Done()
 			provider := adapter.Provider()
 			emit(newSearchEvent(request.RequestID, provider, SearchStarting, nil, nil))
+			// Coalescing bounds each provider to three intermediate events. The
+			// fourth buffer slot is therefore always available for its terminal event.
+			var reportedQuerying, reportedParsing bool
 			candidates, err := adapter.Search(ctx, request.Query, func(phase SearchPhase) {
+				switch phase {
+				case SearchQuerying:
+					if reportedQuerying {
+						return
+					}
+					reportedQuerying = true
+				case SearchParsing:
+					if reportedParsing {
+						return
+					}
+					reportedParsing = true
+				default:
+					return
+				}
 				emit(newSearchEvent(request.RequestID, provider, phase, nil, nil))
 			})
 
@@ -83,7 +104,20 @@ func newSearchEvent(requestID uint64, provider Provider, phase SearchPhase, cand
 		Provider:   provider,
 		Phase:      phase,
 		Candidates: append([]Candidate(nil), candidates...),
-		Err:        err,
+		Err:        safeSearchError(err),
 		At:         time.Now(),
+	}
+}
+
+func safeSearchError(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, context.Canceled):
+		return context.Canceled
+	case errors.Is(err, context.DeadlineExceeded):
+		return context.DeadlineExceeded
+	default:
+		return providerSearchError{}
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 type PhaseReporter func(SearchPhase)
@@ -27,18 +28,21 @@ type commandSearchAdapter struct {
 func (a commandSearchAdapter) Provider() Provider { return a.provider }
 
 func (a commandSearchAdapter) Search(ctx context.Context, query string, report PhaseReporter) ([]Candidate, error) {
+	var candidates []Candidate
+	var err error
 	switch a.provider {
 	case ProviderNix:
-		return searchNix(ctx, a.runner, a.command, query, report)
+		candidates, err = searchNix(ctx, a.runner, a.command, query, report)
 	case ProviderBrew:
-		return searchBrew(ctx, a.runner, a.command, query, report)
+		candidates, err = searchBrew(ctx, a.runner, a.command, query, report)
 	case ProviderDNF:
-		return searchDNF(ctx, a.runner, a.command, query, report)
+		candidates, err = searchDNF(ctx, a.runner, a.command, query, report)
 	case ProviderAPT:
-		return searchAPT(ctx, a.runner, a.command, query, report)
+		candidates, err = searchAPT(ctx, a.runner, a.command, query, report)
 	default:
-		return nil, fmt.Errorf("unsupported search provider %q", a.provider)
+		err = fmt.Errorf("unsupported search provider %q", a.provider)
 	}
+	return candidates, safeSearchError(err)
 }
 
 func NewSearchAdapters(specs []ProviderSpec, runner OutputRunner) []SearchAdapter {
@@ -257,8 +261,13 @@ func validCandidateID(id string) bool {
 }
 
 func boundDescription(description string) string {
+	description = strings.ToValidUTF8(description, "\uFFFD")
 	if len(description) > 512 {
-		return description[:512]
+		end := 512
+		for !utf8.ValidString(description[:end]) {
+			end--
+		}
+		return description[:end]
 	}
 	return description
 }

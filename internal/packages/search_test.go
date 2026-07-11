@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 type fakeOutputRunner struct {
@@ -183,6 +184,21 @@ func TestNativeSearchRejectsInvalidIDsSortsAndBoundsDescriptions(t *testing.T) {
 	}
 	if len(got[1].Description) != 512 {
 		t.Fatalf("description bytes=%d want 512", len(got[1].Description))
+	}
+}
+
+func TestNativeSearchBoundsDescriptionsAtValidUTF8Rune(t *testing.T) {
+	description := strings.Repeat("x", 511) + "é" + strings.Repeat("y", 20)
+	runner := fakeOutputRunner{responses: map[string]fakeOutputResponse{
+		"apt-cache search --names-only tool": {out: "tool - " + description + "\n"},
+	}}
+
+	got, err := searchAPT(context.Background(), runner, "apt-cache", "tool", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || len(got[0].Description) > 512 || !utf8.ValidString(got[0].Description) {
+		t.Fatalf("description bytes=%d valid=%v", len(got[0].Description), utf8.ValidString(got[0].Description))
 	}
 }
 
