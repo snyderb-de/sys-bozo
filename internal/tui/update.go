@@ -62,7 +62,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, waitPackageSearchEvent(msg.requestID, msg.events)
 
 	case packageAnimationTickMsg:
-		if msg.requestID != m.packageSearchRequest {
+		if msg.requestID != m.packageSearchRequest || m.packageFlow.searchComplete {
 			return m, nil
 		}
 		unfinished, ok := m.hasUnfinishedProviders()

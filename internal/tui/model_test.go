@@ -83,7 +83,7 @@ func packageProviderFixture(candidates ...packages.Candidate) []packageProviderS
 	return []packageProviderState{{
 		Spec:       packages.ProviderSpec{Provider: provider, Label: strings.ToUpper(string(provider)), Enabled: true},
 		Phase:      packages.SearchDone,
-		Candidates: append([]packages.Candidate(nil), candidates...),
+		Candidates: clonePackageCandidates(candidates),
 	}}
 }
 
@@ -153,6 +153,37 @@ func TestPackageTabsPreserveSelectionPerProvider(t *testing.T) {
 	}
 }
 
+func TestPackageSearchingShowsActiveProviderAndOnlyPlacesCompletedVisibleResult(t *testing.T) {
+	m := packageTabsFixture()
+	m.styles = newUIStyles(true)
+	m.screen = screenPackage
+
+	out := m.View()
+	if !strings.Contains(out, "NIX") || !strings.Contains(out, "one") || !strings.Contains(out, "DONE") {
+		t.Fatalf("active completed provider not visible:\n%s", out)
+	}
+
+	next, _ := m.handlePackageKey(tea.KeyMsg{Type: tea.KeyTab})
+	m = next.(Model)
+	out = m.View()
+	if !strings.Contains(out, "DNF") || !strings.Contains(out, "native-one") || !strings.Contains(out, "QUERYING-INDEX") {
+		t.Fatalf("active querying provider not visible:\n%s", out)
+	}
+	next, _ = m.handlePackageKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+	if m.packageFlow.stage != packageSearching {
+		t.Fatalf("querying provider entered placement: stage=%v", m.packageFlow.stage)
+	}
+
+	next, _ = m.handlePackageKey(tea.KeyMsg{Type: tea.KeyTab})
+	m = next.(Model)
+	next, _ = m.handlePackageKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+	if m.packageFlow.stage != packagePlacement {
+		t.Fatalf("completed provider did not enter placement: stage=%v", m.packageFlow.stage)
+	}
+}
+
 func TestPackageEscapePreservesCompletedCandidatesThenResets(t *testing.T) {
 	m := packageTabsFixture()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -204,6 +235,7 @@ func TestPackageTimeoutStateDiffersFromCancellation(t *testing.T) {
 func TestPackageClosedEventChannelDoesNotResubscribe(t *testing.T) {
 	m := packageTabsFixture()
 	m.packageSearchRequest = 11
+	m.packageFlow.animationFrame = 7
 	_, cancel := context.WithCancel(context.Background())
 	m.packageSearchCancel = cancel
 
@@ -211,6 +243,12 @@ func TestPackageClosedEventChannelDoesNotResubscribe(t *testing.T) {
 	got := next.(Model)
 	if cmd != nil || !got.packageFlow.searchComplete || got.packageFlow.stage != packageChoose || got.packageSearchCancel != nil {
 		t.Fatalf("cmd=%v complete=%v stage=%v cancel=%v", cmd, got.packageFlow.searchComplete, got.packageFlow.stage, got.packageSearchCancel)
+	}
+
+	next, cmd = got.Update(packageAnimationTickMsg{requestID: 11})
+	got = next.(Model)
+	if cmd != nil || got.packageFlow.animationFrame != 7 {
+		t.Fatalf("queued tick after close: cmd=%v frame=%d", cmd, got.packageFlow.animationFrame)
 	}
 }
 
@@ -229,7 +267,7 @@ func TestPackageSearchCompletionDoesNotExitPlacement(t *testing.T) {
 func TestPackageSearchEventClonesCandidates(t *testing.T) {
 	m := packageTabsFixture()
 	m.packageSearchRequest = 12
-	candidates := []packages.Candidate{{Provider: packages.ProviderDNF, ID: "original"}}
+	candidates := []packages.Candidate{{Provider: packages.ProviderDNF, ID: "original", VersionArgs: []string{"--version"}}}
 	next, _ := m.Update(packageSearchEventMsg{
 		requestID: 12,
 		events:    packageEventChannel(),
@@ -237,8 +275,10 @@ func TestPackageSearchEventClonesCandidates(t *testing.T) {
 		event:     packages.SearchEvent{RequestID: 12, Provider: packages.ProviderDNF, Phase: packages.SearchDone, Candidates: candidates},
 	})
 	candidates[0].ID = "mutated"
+	candidates[0].VersionArgs[0] = "--mutated"
 	got := next.(Model)
-	if got.packageFlow.providers[1].Candidates[0].ID != "original" {
+	stored := got.packageFlow.providers[1].Candidates[0]
+	if stored.ID != "original" || !reflect.DeepEqual(stored.VersionArgs, []string{"--version"}) {
 		t.Fatalf("candidates alias input: %#v", got.packageFlow.providers[1].Candidates)
 	}
 }

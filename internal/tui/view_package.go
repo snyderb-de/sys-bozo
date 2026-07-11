@@ -37,45 +37,11 @@ func (m Model) viewPackage() string {
 		rows = append(rows,
 			s.label.Render("SEARCH"),
 			s.active.Render("SEARCHING")+"  "+s.text.Render(m.packageFlow.query.Value()),
-			"",
-			s.muted.Render("Provider queries are read-only."),
 		)
+		rows = append(rows, m.packageProviderResultRows(contentWidth, true)...)
 	case packageChoose:
 		rows = append(rows, s.label.Render("RESULTS"), "")
-		providerState, providerOK := m.activePackageProvider()
-		if !providerOK || len(providerState.Candidates) == 0 {
-			rows = append(rows, s.danger.Render("NO PACKAGE MATCHES"))
-		}
-		defaultNix := -1
-		start, end := packageScrolledWindow(len(providerState.Candidates), providerState.Scroll, packageVisibleResultLimit(m.height))
-		for i := start; i < end; i++ {
-			candidate := providerState.Candidates[i]
-			if defaultNix < 0 && candidate.Provider == packages.ProviderNix {
-				defaultNix = i
-			}
-			provider := strings.ToUpper(string(candidate.Provider))
-			kind := strings.ToUpper(string(candidate.Kind))
-			meta := strings.TrimSpace(provider + " / " + kind + "  " + candidate.Version)
-			label := candidate.Name
-			if label == "" {
-				label = candidate.ID
-			}
-			status := statusText(s, "READY", statusMuted)
-			if i == defaultNix {
-				status = statusText(s, "DEFAULT", statusActive)
-			}
-			rows = append(rows, numberedRow(s, fmt.Sprintf("%02d", i+1), label, status, contentWidth, i == providerState.Selected))
-			detail := strings.TrimSpace(meta + "  " + candidate.Description)
-			rows = append(rows, "     "+s.muted.Render(truncateVisible(detail, max(1, contentWidth-5))))
-		}
-		if providerOK && providerState.Err != nil {
-			label := providerState.Spec.Label
-			if label == "" {
-				label = strings.ToUpper(string(providerState.Spec.Provider))
-			}
-			rows = append(rows, s.danger.Render(truncateVisible(label+" SEARCH WARNING  "+providerState.Err.Error(), contentWidth)))
-		}
-		rows = append(rows, "", s.muted.Render("ESCAPE SEARCH   ↑/↓ MOVE")+"   "+s.active.Render("ENTER PLACE"))
+		rows = append(rows, m.packageProviderResultRows(contentWidth, false)...)
 	case packagePlacement:
 		candidate, _ := m.selectedPackageCandidate()
 		name := candidate.Name
@@ -115,9 +81,75 @@ func (m Model) viewPackage() string {
 	return primaryFrame(s, m.width, strings.Join(rows, "\n"))
 }
 
+func (m Model) packageProviderResultRows(contentWidth int, searching bool) []string {
+	s := m.styles
+	tabs := make([]string, 0, len(m.packageFlow.providers))
+	for i, provider := range m.packageFlow.providers {
+		label := packageProviderLabel(provider)
+		if i == m.packageFlow.activeProvider {
+			label = "[" + label + "]"
+		}
+		tabs = append(tabs, label)
+	}
+	rows := []string{s.label.Render("PROVIDERS") + "  " + s.text.Render(strings.Join(tabs, "  "))}
+	providerState, providerOK := m.activePackageProvider()
+	if !providerOK {
+		return append(rows, s.danger.Render("NO PACKAGE PROVIDERS"))
+	}
+	phase := strings.ToUpper(string(providerState.Phase))
+	if phase == "" && !providerState.Spec.Enabled {
+		phase = "DISABLED"
+	}
+	rows = append(rows, s.label.Render("SOURCE")+"  "+s.text.Render(packageProviderLabel(providerState))+"  "+s.muted.Render(phase), "")
+	if len(providerState.Candidates) == 0 {
+		message := "NO PACKAGE MATCHES"
+		if searching && !packageSearchTerminal(providerState.Phase) {
+			message = "NO RESULTS YET"
+		}
+		rows = append(rows, s.danger.Render(message))
+	}
+	defaultNix := -1
+	start, end := packageScrolledWindow(len(providerState.Candidates), providerState.Scroll, packageVisibleResultLimit(m.height))
+	for i := start; i < end; i++ {
+		candidate := providerState.Candidates[i]
+		if defaultNix < 0 && candidate.Provider == packages.ProviderNix {
+			defaultNix = i
+		}
+		provider := strings.ToUpper(string(candidate.Provider))
+		kind := strings.ToUpper(string(candidate.Kind))
+		meta := strings.TrimSpace(provider + " / " + kind + "  " + candidate.Version)
+		label := candidate.Name
+		if label == "" {
+			label = candidate.ID
+		}
+		status := statusText(s, "READY", statusMuted)
+		if i == defaultNix {
+			status = statusText(s, "DEFAULT", statusActive)
+		}
+		rows = append(rows, numberedRow(s, fmt.Sprintf("%02d", i+1), label, status, contentWidth, i == providerState.Selected))
+		detail := strings.TrimSpace(meta + "  " + candidate.Description)
+		rows = append(rows, "     "+s.muted.Render(truncateVisible(detail, max(1, contentWidth-5))))
+	}
+	if providerState.Err != nil {
+		rows = append(rows, s.danger.Render(truncateVisible(packageProviderLabel(providerState)+" SEARCH WARNING  "+providerState.Err.Error(), contentWidth)))
+	}
+	controls := s.muted.Render("TAB SOURCE   ESCAPE SEARCH   ↑/↓ MOVE") + "   " + s.active.Render("ENTER PLACE")
+	if searching {
+		controls = s.muted.Render("TAB SOURCE   ESCAPE CANCEL   ↑/↓ MOVE") + "   " + s.active.Render("ENTER PLACE")
+	}
+	return append(rows, "", controls)
+}
+
+func packageProviderLabel(provider packageProviderState) string {
+	if provider.Spec.Label != "" {
+		return provider.Spec.Label
+	}
+	return strings.ToUpper(string(provider.Spec.Provider))
+}
+
 func packageVisibleResultLimit(height int) int {
 	if height > 0 && height <= 24 {
-		return 6
+		return 5
 	}
 	return 12
 }

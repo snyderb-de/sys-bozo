@@ -547,7 +547,7 @@ func (m *Model) acceptPackageSearchEvent(event packages.SearchEvent) {
 		provider.Elapsed = event.At.Sub(provider.StartedAt)
 	}
 	if event.Candidates != nil {
-		provider.Candidates = append([]packages.Candidate(nil), event.Candidates...)
+		provider.Candidates = clonePackageCandidates(event.Candidates)
 	}
 	provider.Err = event.Err
 	if provider.Selected >= len(provider.Candidates) {
@@ -558,6 +558,18 @@ func (m *Model) acceptPackageSearchEvent(event packages.SearchEvent) {
 	}
 	providers[i] = provider
 	m.packageFlow.providers = providers
+}
+
+func clonePackageCandidates(candidates []packages.Candidate) []packages.Candidate {
+	if candidates == nil {
+		return nil
+	}
+	cloned := make([]packages.Candidate, len(candidates))
+	for i, candidate := range candidates {
+		cloned[i] = candidate
+		cloned[i].VersionArgs = append([]string(nil), candidate.VersionArgs...)
+	}
+	return cloned
 }
 
 func (m *Model) buildPackageReview(proposal packages.Proposal, verify packages.VerifySpec) bool {
