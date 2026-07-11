@@ -23,4 +23,18 @@ type PreparedEdit struct {
 	state *exchangeApplyState
 }
 
-var ErrStaleFile = errors.New("file changed after review")
+type TransactionProposal struct {
+	Repo     string
+	LockPath string
+	Edits    []Proposal
+}
+
+type TransactionResult struct {
+	Edits         []AppliedEdit
+	RecoveryPaths []string
+}
+
+var (
+	ErrStaleFile       = errors.New("file changed after review")
+	ErrTransactionBusy = errors.New("file transaction is already in progress")
+)
