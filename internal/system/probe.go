@@ -22,6 +22,7 @@ type Facts struct {
 	GitDirtyCount int
 	SudoPath      string
 	DnfPath       string
+	AptCachePath  string
 	NixPath       string
 	BrewPath      string
 	HomeManager   string
@@ -68,6 +69,7 @@ func Probe() Facts {
 	if facts.DnfPath == "" {
 		facts.DnfPath, _ = exec.LookPath("dnf5")
 	}
+	facts.AptCachePath, _ = exec.LookPath("apt-cache")
 	facts.NixPath, _ = exec.LookPath("nix")
 	facts.BrewPath, _ = exec.LookPath("brew")
 	facts.HomeManager, _ = exec.LookPath("home-manager")
@@ -113,6 +115,9 @@ func (f Facts) ManagerStatus() []string {
 	if f.OS == "linux" && f.OSID == "fedora" {
 		status = append(status, statusLine("dnf", f.DnfPath))
 		status = append(status, statusLine("sudo", f.SudoPath))
+	}
+	if f.OS == "linux" && (f.OSID == "debian" || f.OSID == "ubuntu") {
+		status = append(status, statusLine("apt-cache", f.AptCachePath))
 	}
 	if f.OS == "darwin" {
 		status = append(status, statusLine("brew", f.BrewPath))

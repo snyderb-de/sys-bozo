@@ -25,6 +25,7 @@ type Context struct {
 	GoBin          string
 	SudoBin        string
 	DnfBin         string
+	AptCacheBin    string
 	NixBin         string
 	NixStoreBin    string
 	NixSystem      string
@@ -90,14 +91,16 @@ func HMConfigKey(user, hostname string) string {
 
 // Build resolves all paths and identity from the environment.
 func Build() Context {
+	return buildContext(runtime.GOOS, runtime.GOARCH, osReleaseID())
+}
+
+func buildContext(goos, goarch, osID string) Context {
 	user := os.Getenv("USER")
 	if user == "" {
 		user = os.Getenv("LOGNAME")
 	}
 	hostname, _ := os.Hostname()
 	home, _ := os.UserHomeDir()
-	osID := osReleaseID()
-
 	repo := os.Getenv("DOTFILES_REPO")
 	if repo == "" {
 		repo = filepath.Join(home, "code", "dotfiles")
@@ -126,15 +129,16 @@ func Build() Context {
 		SysBozoBin:     sysBozoBin,
 		User:           user,
 		Hostname:       hostname,
-		OS:             runtime.GOOS,
+		OS:             goos,
 		OSID:           osID,
 		GitBin:         findExe("git"),
 		GoBin:          findExe("go"),
 		SudoBin:        sudoBin,
 		DnfBin:         findExe("dnf", "/usr/bin/dnf5"),
+		AptCacheBin:    findExe("apt-cache", "/usr/bin/apt-cache"),
 		NixBin:         findExe("nix", "/nix/var/nix/profiles/default/bin/nix"),
 		NixStoreBin:    findExe("nix-store", "/nix/var/nix/profiles/default/bin/nix-store"),
-		NixSystem:      runtime.GOARCH + "-" + runtime.GOOS,
+		NixSystem:      goarch + "-" + goos,
 		BrewBin:        findExe("brew", "/opt/homebrew/bin/brew", "/usr/local/bin/brew"),
 		HomeManager:    findExe("home-manager", hmFallbacks...),
 		DarwinRebuild:  findExe("darwin-rebuild", "/run/current-system/sw/bin/darwin-rebuild"),

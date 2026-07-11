@@ -1,10 +1,29 @@
 package runner
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestBuildContextResolvesAptCacheForInjectedUbuntuHost(t *testing.T) {
+	binDir := t.TempDir()
+	aptCache := filepath.Join(binDir, "apt-cache")
+	if err := os.WriteFile(aptCache, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+
+	ctx := buildContext("linux", "amd64", "ubuntu")
+	if ctx.OS != "linux" || ctx.OSID != "ubuntu" {
+		t.Fatalf("host identity = %s/%s, want linux/ubuntu", ctx.OS, ctx.OSID)
+	}
+	if ctx.AptCacheBin != aptCache {
+		t.Fatalf("apt-cache = %q, want %q", ctx.AptCacheBin, aptCache)
+	}
+}
 
 func TestDefaultTasksIncludeTopgradeSweep(t *testing.T) {
 	ctx := Context{

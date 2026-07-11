@@ -3,8 +3,35 @@ package system
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
+
+func TestManagerStatusRendersAptOnlyForInjectedDebianFamilyFacts(t *testing.T) {
+	tests := []struct {
+		name  string
+		facts Facts
+		want  []string
+	}{
+		{
+			name:  "ubuntu",
+			facts: Facts{OS: "linux", OSID: "ubuntu", AptCachePath: "/usr/bin/apt-cache"},
+			want:  []string{"nix: missing", "home-manager: missing", "topgrade: missing", "apt-cache: /usr/bin/apt-cache"},
+		},
+		{
+			name:  "fedora",
+			facts: Facts{OS: "linux", OSID: "fedora", AptCachePath: "/usr/bin/apt-cache"},
+			want:  []string{"nix: missing", "home-manager: missing", "topgrade: missing", "dnf: missing", "sudo: missing"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.facts.ManagerStatus(); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("got %#v want %#v", got, tt.want)
+			}
+		})
+	}
+}
 
 func TestLocalAuditTreatsSSHConfigCopyAsManaged(t *testing.T) {
 	home := t.TempDir()

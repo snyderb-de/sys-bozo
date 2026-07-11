@@ -8,9 +8,38 @@ import (
 type Provider string
 
 const (
-	ProviderNix  Provider = "nix"
-	ProviderBrew Provider = "brew"
+	ProviderNix               Provider = "nix"
+	ProviderBrew              Provider = "brew"
+	ProviderDNF               Provider = "dnf"
+	ProviderAPT               Provider = "apt"
+	ProviderNativeUnsupported Provider = "native-unsupported"
 )
+
+type SearchPhase string
+
+const (
+	SearchStarting  SearchPhase = "starting"
+	SearchQuerying  SearchPhase = "querying-index"
+	SearchParsing   SearchPhase = "parsing"
+	SearchDone      SearchPhase = "done"
+	SearchFailed    SearchPhase = "failed"
+	SearchCancelled SearchPhase = "cancelled"
+	SearchTimedOut  SearchPhase = "timed-out"
+)
+
+type HostCapabilities struct {
+	OS, OSID, Arch          string
+	NixBin, BrewBin, DnfBin string
+	AptCacheBin             string
+}
+
+type ProviderSpec struct {
+	Provider       Provider
+	Label          string
+	Command        string
+	Enabled        bool
+	DisabledReason string
+}
 
 type Kind string
 
