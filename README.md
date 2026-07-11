@@ -42,9 +42,11 @@ Run the development build from the repository:
 
 ## Guided Control Center
 
-The Home screen has three entries: `1` Weekly Maintenance, `2` Add Package,
-and `3` Inspect System. Use the arrow keys or `j`/`k` to move, `Enter` to open,
-`Escape` to go back, and `q` to quit.
+The Home screen has three launch entries: `1` Weekly Maintenance, `2` Add
+Package, and `3` Inspect System. When the detected dotfiles repository is dirty
+or Git status is unavailable, its status row also becomes selectable. Use the
+arrow keys or `j`/`k` to move, `Enter` to open, `Escape` to go back, and `q` to
+quit.
 
 For maintenance, open Weekly Maintenance, use `Space` to select one or more
 available actions, and press `Enter` to review. The Review screen shows the
@@ -56,6 +58,27 @@ Commands that need a password, prompt, or other native input use an
 interactive terminal handoff. The TUI gives the child process the terminal,
 then restores the Result screen when it exits. Interactive input is not copied
 into sys-bozo's captured output or history.
+
+### Repository Triage
+
+Open the highlighted repository row on Home, or choose Repository under
+Inspect System. `REPO/TRIAGE` lists every exact porcelain-v2 Git entry; a Git
+failure is shown as `STATUS UNAVAILABLE`, never as a clean worktree.
+
+- Use `j`/`k` or Up/Down to move and `Space` to select multiple entries.
+- Press `Enter` for the selected file's staged/unstaged diff; `Tab` switches
+  between FILES and DIFF.
+- `C` commits only selected paths, `S` stashes only selected paths, and `R`
+  restores selected tracked paths.
+- `D` is available only for untracked selections. It shows `git clean -nd`
+  output and requires typing `DELETE UNTRACKED` before Review.
+- Conflicts remain inspect-only. Resolve them in your editor, refresh with
+  `Shift+R`, then select the resulting non-conflicted entries.
+
+Every action builds an immutable Review with exact paths and argv. Confirmation
+rechecks the complete Git status plus selected file bytes or symlink text. A
+stale Review runs nothing. Commits use native terminal handoff for hooks,
+signing, and credential prompts; history stores only the action kind and count.
 
 ### Add Package
 

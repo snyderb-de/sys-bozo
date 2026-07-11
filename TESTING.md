@@ -68,6 +68,20 @@ only to a temporary `DOTFILES_REPO`, runs a fake rebuild command, and verifies
 a fixture executable. It also proves the declaration is byte-for-byte
 unchanged before confirmation.
 
+### Fake-repo repository triage
+
+```sh
+go test ./internal/repostate -run 'Test(CommitOperationExcludesUnrelatedStagedPath|RepositoryActionsStayPathScopedInRealTempRepos|DeleteUntrackedSymlinkDoesNotFollowTarget)' -count=1 -v
+go test ./internal/tui -run 'TestRepo(ActionPreparationIsReadOnlyUntilReview|ReviewStaleValidationRunsNothing|CommitUsesTerminalHandoffAfterValidation|HistoryExcludesPathsMessagesAndDiffs)' -count=1 -v
+```
+
+These tests initialize repositories under `t.TempDir`, disable system/global
+Git config for fixture commands, and use fixture-only author data. They prove
+that unrelated staged or modified paths survive, stale Review executes
+nothing, untracked symlinks are removed without following targets, and no
+path, diff, or commit message reaches history. They do not use real
+credentials, signing configuration, or the developer's repositories.
+
 ### Provider partial failure
 
 ```sh
@@ -94,11 +108,14 @@ its own diff and confirmation. A stale revert does not write.
 
 ```sh
 NO_COLOR=1 PACKAGE_VISUAL_LOG=1 go test ./internal/tui -run 'TestPackageWorkflowViewsFit80x24AndPreserveNoColorSemantics|TestPackageReviewDiffViewportPreservesAndScrollsFullDiffAt80x24|TestTask5VisualSmokeFitsTargetTerminals|TestTask5NoColorHomeReviewAndResultHaveNoANSI' -count=1 -v
+NO_COLOR=1 go test ./internal/tui -run 'Test(RepoWorkflowViewsFit80x24|RepoTriageUnavailableAndDiffRemainTruthfulAt80x24)' -count=1 -v
 ```
 
 The package and maintenance screens must fit an 80-column by 24-row terminal.
 Long package diffs remain scrollable rather than being discarded. With
 `NO_COLOR`, semantic labels remain present and output contains no ANSI styling.
+Repository FILES, DIFF, delete confirmation, Review, Running, and Result screens
+are held to the same boundary.
 
 ### Interactive terminal handoff
 
@@ -112,17 +129,22 @@ cancellation state. An optional real-PTY restoration smoke test uses only
 `/usr/bin/printf` and a temporary home:
 
 ```sh
-SYS_BOZO_PTY_SMOKE=1 go test ./internal/tui -run TestPTYTerminalHandoffSmoke -count=1 -v
+test_bin="$(mktemp -u "${TMPDIR:-/tmp}/sys-bozo-tui-test.XXXXXX")"
+go test -c -o "$test_bin" ./internal/tui
+/usr/bin/script -q /dev/null env SYS_BOZO_PTY_SMOKE=1 "$test_bin" \
+  -test.run '^TestPTYTerminalHandoffSmoke$' -test.v
+rm -f "$test_bin"
 ```
 
-Run that command from an actual terminal. It intentionally skips in ordinary
-non-PTY automation.
+The test binary must run directly under the pseudo-terminal; `go test` captures
+its child stdio and therefore cannot be the command wrapped by `script`. The
+test intentionally skips in ordinary non-PTY automation.
 
 ### Live package discovery pipeline
 
 ```sh
 go test -race ./internal/packages ./internal/tui -run 'Test(StartSearch|PackagePipeline|CompletedProvider|PackageTabs)' -count=1 -v
-SYS_BOZO_PTY_SMOKE=1 go test ./internal/tui -run TestPTYTerminalHandoffSmoke -count=1 -v
+# Run the compiled-binary PTY command from the section above.
 ```
 
 Provider tests use deterministic fakes. The PTY restoration smoke test invokes

@@ -368,6 +368,60 @@ func TestRepoHistoryExcludesPathsMessagesAndDiffs(t *testing.T) {
 	}
 }
 
+func TestRepoWorkflowViewsFit80x24(t *testing.T) {
+	base := repoTriageFixture()
+	base.width, base.height = 80, 24
+	base.styles = newUIStyles(true)
+	entry := base.repoFlow.status.Entries[0]
+	base.repoFlow.selected[repoEntryID(entry)] = true
+	operation := repostate.Operation{
+		Repo: "/repo", Kind: repostate.ActionCommit, Entries: []repostate.Entry{entry},
+		Commands: []repostate.Command{
+			{Name: "git", Args: []string{"add", "--", entry.Path}},
+			{Name: "git", Args: []string{"commit", "--only", "-m", "fixture", "--", entry.Path}, Interactive: true},
+		},
+	}
+	views := map[string]Model{
+		"files": base,
+	}
+	diff := base
+	diff.repoFlow.tab = repoDiff
+	diff.repoFlow.preview = repostate.Preview{Kind: repostate.PreviewDiff, Staged: "staged fixture", Unstaged: "unstaged fixture"}
+	diff.resizeRepoViewport()
+	views["diff"] = diff
+	confirm := base
+	confirm.repoFlow.stage = repoDeleteConfirm
+	confirm.repoFlow.deleteDryRun = "Would remove new file"
+	views["delete-confirm"] = confirm
+	review := base
+	review.screen = screenReview
+	review.reviewed = reviewedPlan{Action: "repo:commit:1", Repo: &repoReview{Operation: operation}}
+	views["review"] = review
+	running := review
+	running.screen, running.mode = screenRunning, modeRunning
+	running.reviewed.Items = repoWorkItems(operation)
+	running.queue = cloneWorkItems(running.reviewed.Items)
+	running.runStart = time.Now()
+	views["running"] = running
+	result := running
+	result.screen, result.mode = screenResult, modeDone
+	result.runElapsed = time.Second
+	result.stepResults = []stepResult{{Item: result.queue[0], Status: history.StatusSuccess}, {Item: result.queue[1], Status: history.StatusSuccess}}
+	views["result"] = result
+
+	for name, model := range views {
+		t.Run(name, func(t *testing.T) {
+			out := model.View()
+			if strings.Contains(out, "\x1b[") {
+				t.Fatalf("ANSI in NO_COLOR view: %q", out)
+			}
+			if width, height := lipgloss.Width(out), strings.Count(out, "\n")+1; width > 80 || height > 24 {
+				t.Fatalf("size=%dx%d want <=80x24:\n%s", width, height, out)
+			}
+		})
+	}
+}
+
 func testPackageModel(t *testing.T) Model {
 	t.Helper()
 	home := t.TempDir()

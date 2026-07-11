@@ -16,6 +16,7 @@
             version = "dev";
             src = ./.;
             vendorHash = "sha256-hzF4U/qjdwh8L4I90P4x3GGtwZzD2lvmMe3HLIDETx4=";
+            nativeCheckInputs = [ pkgs.git ];
             meta.mainProgram = "sys-bozo";
           };
         }

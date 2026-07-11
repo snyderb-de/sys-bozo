@@ -162,3 +162,106 @@ func TestDeleteUntrackedSymlinkDoesNotFollowTarget(t *testing.T) {
 		t.Fatalf("link still present or unexpected error: %v", err)
 	}
 }
+
+func TestRepositoryActionsStayPathScopedInRealTempRepos(t *testing.T) {
+	t.Run("stash", func(t *testing.T) {
+		repo := initTwoFileRepo(t)
+		writeFixture(t, repo, "tracked.txt", "selected change\n")
+		writeFixture(t, repo, "other.txt", "other change\n")
+		executeSelectedAction(t, repo, ActionStash, "tracked.txt")
+		if got := string(gitFixtureOutput(t, repo, "status", "--porcelain")); !strings.Contains(got, "other.txt") || strings.Contains(got, "tracked.txt") {
+			t.Fatalf("status=%q", got)
+		}
+	})
+
+	t.Run("restore", func(t *testing.T) {
+		repo := initTwoFileRepo(t)
+		writeFixture(t, repo, "tracked.txt", "selected change\n")
+		writeFixture(t, repo, "other.txt", "other change\n")
+		executeSelectedAction(t, repo, ActionRestore, "tracked.txt")
+		data, err := os.ReadFile(filepath.Join(repo, "tracked.txt"))
+		if err != nil || string(data) != "base\n" {
+			t.Fatalf("selected=%q err=%v", data, err)
+		}
+		if got := string(gitFixtureOutput(t, repo, "status", "--porcelain")); !strings.Contains(got, "other.txt") || strings.Contains(got, "tracked.txt") {
+			t.Fatalf("status=%q", got)
+		}
+	})
+
+	t.Run("delete", func(t *testing.T) {
+		repo := initTempRepo(t)
+		writeFixture(t, repo, "selected.tmp", "selected\n")
+		writeFixture(t, repo, "other.tmp", "other\n")
+		executeSelectedAction(t, repo, ActionDeleteUntracked, "selected.tmp")
+		if _, err := os.Stat(filepath.Join(repo, "selected.tmp")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("selected delete err=%v", err)
+		}
+		if _, err := os.Stat(filepath.Join(repo, "other.tmp")); err != nil {
+			t.Fatalf("unselected path touched: %v", err)
+		}
+	})
+}
+
+func initTwoFileRepo(t *testing.T) string {
+	t.Helper()
+	repo := initTempRepo(t)
+	writeFixture(t, repo, "other.txt", "base\n")
+	gitFixture(t, repo, "add", "--", "other.txt")
+	gitFixture(t, repo, "commit", "-qm", "second fixture")
+	return repo
+}
+
+func writeFixture(t *testing.T, repo, name, contents string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(repo, name), []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func executeSelectedAction(t *testing.T, repo string, kind ActionKind, selectedPath string) {
+	t.Helper()
+	status := mustInspect(t, repo)
+	var selected Entry
+	for _, entry := range status.Entries {
+		if entry.Path == selectedPath {
+			selected = entry
+		}
+	}
+	if selected.Path == "" {
+		t.Fatalf("missing selected path %q in %#v", selectedPath, status.Entries)
+	}
+	fingerprints, err := FingerprintEntries(context.Background(), ExecRunner{}, RealFileSystem{}, repo, "git", []Entry{selected})
+	if err != nil {
+		t.Fatal(err)
+	}
+	op, err := ProposeAction(ActionRequest{
+		Repo: repo, GitBin: "git", Kind: kind, Entries: []Entry{selected}, Fingerprints: fingerprints,
+		DeleteConfirmed: kind == ActionDeleteUntracked,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateOperation(context.Background(), ExecRunner{}, RealFileSystem{}, op); err != nil {
+		t.Fatal(err)
+	}
+	for _, command := range op.Commands {
+		cmd := exec.Command(command.Name, command.Args...)
+		cmd.Dir = repo
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %v: %s", command.Args, err, out)
+		}
+	}
+}
+
+func gitFixtureOutput(t *testing.T, repo string, args ...string) []byte {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = repo
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, out)
+	}
+	return out
+}

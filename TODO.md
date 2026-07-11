@@ -78,6 +78,8 @@
 - [x] Add non-interactive command parity for every TUI action — `sys-bozo run <action>`.
 - [x] Preview exact maintenance/package plans and require confirmation before execution.
 - [x] Preserve native interactive input with terminal handoff and restore the TUI afterward.
+- [x] Show exact dirty repository entries with FILES/DIFF triage, multi-select,
+  stale Review validation, and path-scoped commit/stash/restore/untracked delete.
 - [ ] Build dashboard stats:
   - host facts
   - repo dirty state
