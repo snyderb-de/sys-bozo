@@ -164,10 +164,22 @@ func numberedRow(s uiStyles, number, label, renderedStatus string, width int, ac
 }
 
 func packagePipelineRow(s uiStyles, label, status string, width int, kind statusKind) string {
-	renderedLabel := s.text.Render(label)
-	renderedStatus := statusText(s, status, kind)
-	gap := max(1, width-lipgloss.Width(renderedLabel)-lipgloss.Width(renderedStatus))
-	return truncateVisible(renderedLabel+strings.Repeat(" ", gap)+renderedStatus, width)
+	if width <= 0 {
+		return ""
+	}
+	label = packageDisplayText(label)
+	status = strings.TrimSpace(packageDisplayText(status))
+	if status == "" {
+		return s.text.Render(truncateVisible(label, width))
+	}
+	label = truncateVisible(label, max(1, width/3))
+	remaining := width - lipgloss.Width(label) - 1
+	if remaining <= 0 {
+		return s.text.Render(truncateVisible(label, width))
+	}
+	status = truncateVisible(status, remaining)
+	gap := max(1, width-lipgloss.Width(label)-lipgloss.Width(status))
+	return s.text.Render(label) + strings.Repeat(" ", gap) + statusText(s, status, kind)
 }
 
 func (m Model) logHeight() int {

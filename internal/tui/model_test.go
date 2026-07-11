@@ -182,6 +182,92 @@ func TestPackagePipelineShowsTruthfulTerminalAndDisabledProviderStates(t *testin
 	}
 }
 
+func TestPackagePipelineTrueColorTruncationDoesNotBleedStyles(t *testing.T) {
+	previousProfile := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(previousProfile) })
+
+	m := packageTabsFixture()
+	m.styles = newUIStyles(false)
+	m.runCtx.OSID = strings.Repeat("oversized-host-id-", 12)
+	m.runCtx.NixSystem = "x86_64-linux"
+	m.packageFlow.providers = append(m.packageFlow.providers, packageProviderState{
+		Spec: packages.ProviderSpec{
+			Provider:       packages.ProviderBrew,
+			Label:          strings.Repeat("OVERSIZED-PROVIDER-", 8),
+			DisabledReason: "missing\n" + strings.Repeat("disabled-reason-", 12),
+		},
+	})
+
+	contentWidth := primaryContentWidth(80)
+	rows := append(renderPackagePipeline(m, contentWidth), renderPackageTabs(m, contentWidth))
+	for _, row := range rows {
+		if got := lipgloss.Width(row); got > contentWidth {
+			t.Fatalf("row width=%d want <=%d: %q", got, contentWidth, row)
+		}
+		if strings.Contains(row, "…") && !strings.HasSuffix(row, "\x1b[0m") {
+			t.Fatalf("truncated colored row lacks final reset: %q", row)
+		}
+	}
+
+	view := m.viewPackage()
+	for _, line := range strings.Split(view, "\n") {
+		if got := lipgloss.Width(line); got > 80 {
+			t.Fatalf("frame line width=%d want <=80: %q", got, line)
+		}
+	}
+}
+
+func TestPackagePipelineTallViewShowsTwelveActiveProviderResults(t *testing.T) {
+	m := packageTabsFixture()
+	m.styles = newUIStyles(true)
+	m.height = 40
+	m.packageFlow.stage = packageChoose
+	m.packageFlow.providers[0].Candidates = nil
+	for i := 0; i < 15; i++ {
+		m.packageFlow.providers[0].Candidates = append(m.packageFlow.providers[0].Candidates, packages.Candidate{
+			Provider: packages.ProviderNix,
+			ID:       fmt.Sprintf("result-%02d", i),
+		})
+	}
+	m.packageFlow.providers[1].Candidates = []packages.Candidate{{Provider: packages.ProviderDNF, ID: "inactive-provider-only"}}
+	m.packageFlow.activeProvider = 0
+
+	view := m.viewPackage()
+	for i := 0; i < 12; i++ {
+		if want := fmt.Sprintf("result-%02d", i); !strings.Contains(view, want) {
+			t.Fatalf("missing tall result %q\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "result-12") || strings.Contains(view, "inactive-provider-only") {
+		t.Fatalf("view exceeded active-provider twelve-result window\n%s", view)
+	}
+}
+
+func TestPackagePipelineRenderDoesNotMutateProviderState(t *testing.T) {
+	m := packageTabsFixture()
+	m.styles = newUIStyles(true)
+	m.packageFlow.providers[0].Selected = 2
+	m.packageFlow.providers[0].Scroll = 1
+	m.packageFlow.animationFrame = 9
+
+	before := append([]packageProviderState(nil), m.packageFlow.providers...)
+	for i := range before {
+		before[i].Candidates = clonePackageCandidates(before[i].Candidates)
+	}
+	first := m.viewPackage()
+	second := m.viewPackage()
+	if first != second {
+		t.Fatalf("same model rendered different snapshots:\nfirst:\n%s\nsecond:\n%s", first, second)
+	}
+	if !reflect.DeepEqual(m.packageFlow.providers, before) {
+		t.Fatalf("render mutated provider state:\nbefore=%#v\nafter=%#v", before, m.packageFlow.providers)
+	}
+	if m.packageFlow.animationFrame != 9 {
+		t.Fatalf("render advanced animation frame to %d", m.packageFlow.animationFrame)
+	}
+}
+
 func TestCompletedProviderIsBrowsableWhileOtherProviderSearches(t *testing.T) {
 	m := packageTabsFixture()
 	m.packageFlow.stage = packageSearching

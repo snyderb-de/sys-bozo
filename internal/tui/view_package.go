@@ -89,20 +89,22 @@ func (m Model) viewPackage() string {
 
 func renderPackagePipeline(m Model, width int) []string {
 	s := m.styles
-	host := strings.ToUpper(strings.TrimSpace(m.runCtx.OSID))
+	host := strings.ToUpper(strings.TrimSpace(packageDisplayText(m.runCtx.OSID)))
 	if host == "" {
-		host = strings.ToUpper(strings.TrimSpace(m.runCtx.OS))
+		host = strings.ToUpper(strings.TrimSpace(packageDisplayText(m.runCtx.OS)))
 	}
 	if host == "" {
 		host = "UNKNOWN"
 	}
-	arch := strings.ToUpper(strings.TrimSpace(m.runCtx.NixSystem))
+	host = truncateVisible(host, 32)
+	arch := strings.ToUpper(strings.TrimSpace(packageDisplayText(m.runCtx.NixSystem)))
 	if prefix, _, ok := strings.Cut(arch, "-"); ok {
 		arch = prefix
 	}
 	if arch == "" {
 		arch = "UNKNOWN"
 	}
+	arch = truncateVisible(arch, 20)
 
 	rows := []string{
 		s.label.Render("DISCOVERY PIPELINE"),
@@ -117,14 +119,14 @@ func renderPackagePipeline(m Model, width int) []string {
 		case !provider.Spec.Enabled:
 			phase = "DISABLED"
 			kind = statusMuted
-			detail = provider.Spec.DisabledReason
+			detail = truncateVisible(strings.TrimSpace(packageDisplayText(provider.Spec.DisabledReason)), 32)
 		case provider.Phase == packages.SearchDone:
 			kind = statusSuccess
 			detail = fmt.Sprintf("%d FOUND  %s", len(provider.Candidates), packageElapsedLabel(provider.Elapsed))
 		case provider.Phase == packages.SearchFailed || provider.Phase == packages.SearchTimedOut:
 			kind = statusDanger
 			if provider.Err != nil {
-				detail = truncateVisible(sanitizedApplyDetail(provider.Err), 32)
+				detail = truncateVisible(strings.TrimSpace(packageDisplayText(sanitizedApplyDetail(provider.Err))), 32)
 			}
 			detail = strings.TrimSpace(detail + "  ESC SEARCH AGAIN")
 		case provider.Phase == packages.SearchCancelled:
@@ -155,7 +157,15 @@ func renderPackagePipeline(m Model, width int) []string {
 }
 
 func renderPackageTabs(m Model, width int) string {
-	tabs := make([]string, 0, len(m.packageFlow.providers))
+	if width <= 0 {
+		return ""
+	}
+	prefix := "RESULTS"
+	if len(m.packageFlow.providers) == 0 {
+		return m.styles.danger.Render(truncateVisible("NO PACKAGE PROVIDERS", width))
+	}
+	rendered := m.styles.label.Render(prefix)
+	used := lipgloss.Width(prefix)
 	for i, provider := range m.packageFlow.providers {
 		state := packagePhaseLabel(provider.Phase)
 		switch {
@@ -168,17 +178,25 @@ func renderPackageTabs(m Model, width int) string {
 		case !packageSearchTerminal(provider.Phase):
 			state = "…"
 		}
-		label := fmt.Sprintf("[ %s %s ]", packageProviderLabel(provider), state)
+		label := packageDisplayText(fmt.Sprintf("[ %s %s ]", packageProviderLabel(provider), state))
 		style := m.styles.muted
 		if i == m.packageFlow.activeProvider {
 			style = m.styles.active
 		}
-		tabs = append(tabs, style.Render(label))
+		separator := "  "
+		remaining := width - used - lipgloss.Width(separator)
+		if remaining <= 0 {
+			break
+		}
+		if lipgloss.Width(label) > remaining {
+			label = truncateVisible(label, remaining)
+			rendered += separator + style.Render(label)
+			break
+		}
+		rendered += separator + style.Render(label)
+		used += lipgloss.Width(separator) + lipgloss.Width(label)
 	}
-	if len(tabs) == 0 {
-		return m.styles.danger.Render("NO PACKAGE PROVIDERS")
-	}
-	return truncateVisible(m.styles.label.Render("RESULTS")+"  "+strings.Join(tabs, "  "), width)
+	return rendered
 }
 
 func renderProviderResults(m Model, provider packageProviderState, width, limit int) []string {
@@ -187,7 +205,7 @@ func renderProviderResults(m Model, provider packageProviderState, width, limit 
 		message := "NO PACKAGE MATCHES"
 		switch {
 		case !provider.Spec.Enabled:
-			message = strings.TrimSpace("DISABLED  " + provider.Spec.DisabledReason)
+			message = strings.TrimSpace("DISABLED  " + packageDisplayText(provider.Spec.DisabledReason))
 		case !packageSearchTerminal(provider.Phase):
 			message = "NO RESULTS YET"
 		case provider.Phase == packages.SearchFailed || provider.Phase == packages.SearchTimedOut:
@@ -206,9 +224,9 @@ func renderProviderResults(m Model, provider packageProviderState, width, limit 
 		providerName := strings.ToUpper(string(candidate.Provider))
 		kind := strings.ToUpper(string(candidate.Kind))
 		meta := strings.TrimSpace(providerName + " / " + kind + "  " + candidate.Version)
-		label := candidate.Name
+		label := strings.TrimSpace(packageDisplayText(candidate.Name))
 		if label == "" {
-			label = candidate.ID
+			label = strings.TrimSpace(packageDisplayText(candidate.ID))
 		}
 		if meta != "" {
 			label += "  " + meta
@@ -251,9 +269,18 @@ func packageElapsedLabel(elapsed time.Duration) string {
 
 func packageProviderLabel(provider packageProviderState) string {
 	if provider.Spec.Label != "" {
-		return provider.Spec.Label
+		return truncateVisible(strings.TrimSpace(packageDisplayText(provider.Spec.Label)), 20)
 	}
-	return strings.ToUpper(string(provider.Spec.Provider))
+	return truncateVisible(strings.ToUpper(strings.TrimSpace(packageDisplayText(string(provider.Spec.Provider)))), 20)
+}
+
+func packageDisplayText(text string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, text)
 }
 
 func packageVisibleResultLimit(height int) int {
