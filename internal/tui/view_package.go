@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/lipgloss"
@@ -34,14 +35,19 @@ func (m Model) viewPackage() string {
 			s.muted.Render("ESCAPE BACK")+"   "+s.active.Render("ENTER SEARCH"),
 		)
 	case packageSearching:
-		rows = append(rows,
-			s.label.Render("SEARCH"),
-			s.active.Render("SEARCHING")+"  "+s.text.Render(m.packageFlow.query.Value()),
-		)
-		rows = append(rows, m.packageProviderResultRows(contentWidth, true)...)
+		rows = append(rows, renderPackagePipeline(m, contentWidth)...)
+		rows = append(rows, renderPackageTabs(m, contentWidth))
+		if provider, ok := m.activePackageProvider(); ok {
+			rows = append(rows, renderProviderResults(m, provider, contentWidth, packageVisibleResultLimit(m.height))...)
+		}
+		rows = append(rows, "", s.muted.Render("TAB SOURCE   J/K MOVE   ESC CANCEL")+"   "+s.active.Render("ENTER PLACE"))
 	case packageChoose:
-		rows = append(rows, s.label.Render("RESULTS"), "")
-		rows = append(rows, m.packageProviderResultRows(contentWidth, false)...)
+		rows = append(rows, renderPackagePipeline(m, contentWidth)...)
+		rows = append(rows, renderPackageTabs(m, contentWidth))
+		if provider, ok := m.activePackageProvider(); ok {
+			rows = append(rows, renderProviderResults(m, provider, contentWidth, packageVisibleResultLimit(m.height))...)
+		}
+		rows = append(rows, "", s.muted.Render("TAB SOURCE   J/K MOVE   ESC SEARCH")+"   "+s.active.Render("ENTER PLACE"))
 	case packagePlacement:
 		candidate, _ := m.selectedPackageCandidate()
 		name := candidate.Name
@@ -81,63 +87,166 @@ func (m Model) viewPackage() string {
 	return primaryFrame(s, m.width, strings.Join(rows, "\n"))
 }
 
-func (m Model) packageProviderResultRows(contentWidth int, searching bool) []string {
+func renderPackagePipeline(m Model, width int) []string {
 	s := m.styles
+	host := strings.ToUpper(strings.TrimSpace(m.runCtx.OSID))
+	if host == "" {
+		host = strings.ToUpper(strings.TrimSpace(m.runCtx.OS))
+	}
+	if host == "" {
+		host = "UNKNOWN"
+	}
+	arch := strings.ToUpper(strings.TrimSpace(m.runCtx.NixSystem))
+	if prefix, _, ok := strings.Cut(arch, "-"); ok {
+		arch = prefix
+	}
+	if arch == "" {
+		arch = "UNKNOWN"
+	}
+
+	rows := []string{
+		s.label.Render("DISCOVERY PIPELINE"),
+		packagePipelineRow(s, "01  DETECT", host+" / "+arch, width, statusSuccess),
+		packagePipelineRow(s, "02  DISPATCH", "", width, statusMuted),
+	}
+	for _, provider := range m.packageFlow.providers {
+		phase := packagePhaseLabel(provider.Phase)
+		kind := statusActive
+		detail := ""
+		switch {
+		case !provider.Spec.Enabled:
+			phase = "DISABLED"
+			kind = statusMuted
+			detail = provider.Spec.DisabledReason
+		case provider.Phase == packages.SearchDone:
+			kind = statusSuccess
+			detail = fmt.Sprintf("%d FOUND  %s", len(provider.Candidates), packageElapsedLabel(provider.Elapsed))
+		case provider.Phase == packages.SearchFailed || provider.Phase == packages.SearchTimedOut:
+			kind = statusDanger
+			if provider.Err != nil {
+				detail = truncateVisible(sanitizedApplyDetail(provider.Err), 32)
+			}
+			detail = strings.TrimSpace(detail + "  ESC SEARCH AGAIN")
+		case provider.Phase == packages.SearchCancelled:
+			kind = statusAttention
+		default:
+			detail = packageSweep(m.packageFlow.animationFrame, 5)
+		}
+		status := strings.TrimSpace(strings.Join([]string{phase, detail}, "  "))
+		label := "    " + packageProviderLabel(provider)
+		rows = append(rows, packagePipelineRow(s, label, status, width, kind))
+	}
+
+	rank := "DONE"
+	rankKind := statusSuccess
+	if m.packageFlow.stage == packageSearching {
+		rank = "SEARCHING"
+		rankKind = statusActive
+	}
+	present := "READY"
+	if provider, ok := m.activePackageProvider(); ok {
+		present = packageProviderLabel(provider)
+	}
+	rows = append(rows,
+		packagePipelineRow(s, "03  RANK", rank, width, rankKind),
+		packagePipelineRow(s, "04  PRESENT", present, width, statusActive),
+	)
+	return rows
+}
+
+func renderPackageTabs(m Model, width int) string {
 	tabs := make([]string, 0, len(m.packageFlow.providers))
 	for i, provider := range m.packageFlow.providers {
-		label := packageProviderLabel(provider)
+		state := packagePhaseLabel(provider.Phase)
+		switch {
+		case !provider.Spec.Enabled:
+			state = "DISABLED"
+		case provider.Phase == packages.SearchDone:
+			state = fmt.Sprintf("%d", len(provider.Candidates))
+		case provider.Phase == packages.SearchFailed || provider.Phase == packages.SearchTimedOut:
+			state = "FAILED"
+		case !packageSearchTerminal(provider.Phase):
+			state = "…"
+		}
+		label := fmt.Sprintf("[ %s %s ]", packageProviderLabel(provider), state)
+		style := m.styles.muted
 		if i == m.packageFlow.activeProvider {
-			label = "[" + label + "]"
+			style = m.styles.active
 		}
-		tabs = append(tabs, label)
+		tabs = append(tabs, style.Render(label))
 	}
-	rows := []string{s.label.Render("PROVIDERS") + "  " + s.text.Render(strings.Join(tabs, "  "))}
-	providerState, providerOK := m.activePackageProvider()
-	if !providerOK {
-		return append(rows, s.danger.Render("NO PACKAGE PROVIDERS"))
+	if len(tabs) == 0 {
+		return m.styles.danger.Render("NO PACKAGE PROVIDERS")
 	}
-	phase := strings.ToUpper(string(providerState.Phase))
-	if phase == "" && !providerState.Spec.Enabled {
-		phase = "DISABLED"
-	}
-	rows = append(rows, s.label.Render("SOURCE")+"  "+s.text.Render(packageProviderLabel(providerState))+"  "+s.muted.Render(phase), "")
-	if len(providerState.Candidates) == 0 {
+	return truncateVisible(m.styles.label.Render("RESULTS")+"  "+strings.Join(tabs, "  "), width)
+}
+
+func renderProviderResults(m Model, provider packageProviderState, width, limit int) []string {
+	s := m.styles
+	if len(provider.Candidates) == 0 {
 		message := "NO PACKAGE MATCHES"
-		if searching && !packageSearchTerminal(providerState.Phase) {
+		switch {
+		case !provider.Spec.Enabled:
+			message = strings.TrimSpace("DISABLED  " + provider.Spec.DisabledReason)
+		case !packageSearchTerminal(provider.Phase):
 			message = "NO RESULTS YET"
+		case provider.Phase == packages.SearchFailed || provider.Phase == packages.SearchTimedOut:
+			message = "FAILED  ESC SEARCH AGAIN"
 		}
-		rows = append(rows, s.danger.Render(message))
+		return []string{s.danger.Render(truncateVisible(message, width))}
 	}
+	rows := make([]string, 0, limit)
 	defaultNix := -1
-	start, end := packageScrolledWindow(len(providerState.Candidates), providerState.Scroll, packageVisibleResultLimit(m.height))
+	start, end := packageScrolledWindow(len(provider.Candidates), provider.Scroll, limit)
 	for i := start; i < end; i++ {
-		candidate := providerState.Candidates[i]
+		candidate := provider.Candidates[i]
 		if defaultNix < 0 && candidate.Provider == packages.ProviderNix {
 			defaultNix = i
 		}
-		provider := strings.ToUpper(string(candidate.Provider))
+		providerName := strings.ToUpper(string(candidate.Provider))
 		kind := strings.ToUpper(string(candidate.Kind))
-		meta := strings.TrimSpace(provider + " / " + kind + "  " + candidate.Version)
+		meta := strings.TrimSpace(providerName + " / " + kind + "  " + candidate.Version)
 		label := candidate.Name
 		if label == "" {
 			label = candidate.ID
+		}
+		if meta != "" {
+			label += "  " + meta
 		}
 		status := statusText(s, "READY", statusMuted)
 		if i == defaultNix {
 			status = statusText(s, "DEFAULT", statusActive)
 		}
-		rows = append(rows, numberedRow(s, fmt.Sprintf("%02d", i+1), label, status, contentWidth, i == providerState.Selected))
-		detail := strings.TrimSpace(meta + "  " + candidate.Description)
-		rows = append(rows, "     "+s.muted.Render(truncateVisible(detail, max(1, contentWidth-5))))
+		labelWidth := max(1, width-lipgloss.Width(status)-8)
+		rows = append(rows, numberedRow(s, fmt.Sprintf("%02d", i+1), truncateVisible(label, labelWidth), status, width, i == provider.Selected))
 	}
-	if providerState.Err != nil {
-		rows = append(rows, s.danger.Render(truncateVisible(packageProviderLabel(providerState)+" SEARCH WARNING  "+providerState.Err.Error(), contentWidth)))
+	return rows
+}
+
+func packagePhaseLabel(phase packages.SearchPhase) string {
+	if phase == "" {
+		return "SEARCHING"
 	}
-	controls := s.muted.Render("TAB SOURCE   ESCAPE SEARCH   ↑/↓ MOVE") + "   " + s.active.Render("ENTER PLACE")
-	if searching {
-		controls = s.muted.Render("TAB SOURCE   ESCAPE CANCEL   ↑/↓ MOVE") + "   " + s.active.Render("ENTER PLACE")
+	return strings.ToUpper(strings.ReplaceAll(string(phase), "-", " "))
+}
+
+func packageSweep(frame, width int) string {
+	if width <= 0 {
+		return ""
 	}
-	return append(rows, "", controls)
+	blocks := make([]rune, width)
+	for i := range blocks {
+		blocks[i] = '·'
+	}
+	blocks[frame%width] = '█'
+	return string(blocks)
+}
+
+func packageElapsedLabel(elapsed time.Duration) string {
+	if elapsed < time.Millisecond {
+		return "0MS"
+	}
+	return strings.ToUpper(elapsed.Round(time.Millisecond).String())
 }
 
 func packageProviderLabel(provider packageProviderState) string {
@@ -149,7 +258,7 @@ func packageProviderLabel(provider packageProviderState) string {
 
 func packageVisibleResultLimit(height int) int {
 	if height > 0 && height <= 24 {
-		return 5
+		return 4
 	}
 	return 12
 }

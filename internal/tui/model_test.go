@@ -127,6 +127,61 @@ func packageTabsFixture() Model {
 	return m
 }
 
+func TestPackagePipelineShowsRealHostProviderPhasesAndImmediateTabs(t *testing.T) {
+	m := packageTabsFixture()
+	m.width, m.height = 80, 24
+	m.runCtx.OS, m.runCtx.OSID, m.runCtx.NixSystem = "linux", "fedora", "x86_64-linux"
+	m.packageFlow.stage = packageSearching
+	m.packageFlow.providers[0].Phase = packages.SearchDone
+	m.packageFlow.providers[0].Candidates = []packages.Candidate{{Provider: packages.ProviderNix, ID: "hello"}}
+	m.packageFlow.providers[1].Phase = packages.SearchQuerying
+	view := m.viewPackage()
+	for _, want := range []string{"DISCOVERY PIPELINE", "01  DETECT", "FEDORA / X86_64", "02  DISPATCH", "NIX", "DONE", "DNF", "QUERYING INDEX", "[ NIX 1 ]", "[ DNF … ]"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("missing %q\n%s", want, view)
+		}
+	}
+	if strings.Count(view, "\n")+1 > 24 {
+		t.Fatalf("view exceeds 24 rows\n%s", view)
+	}
+}
+
+func TestPackagePipelineNoColorHasNoANSIAndKeepsStateLabels(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	m := packageTabsFixture()
+	m.styles = newUIStyles(true)
+	view := m.viewPackage()
+	if strings.Contains(view, "\x1b[") {
+		t.Fatalf("ANSI in NO_COLOR view: %q", view)
+	}
+	for _, want := range []string{"DETECT", "DISPATCH", "DONE", "SEARCHING"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("missing %q", want)
+		}
+	}
+}
+
+func TestPackagePipelineShowsTruthfulTerminalAndDisabledProviderStates(t *testing.T) {
+	m := packageTabsFixture()
+	m.styles = newUIStyles(true)
+	m.packageFlow.stage = packageChoose
+	m.packageFlow.providers = []packageProviderState{
+		{Spec: packages.ProviderSpec{Provider: packages.ProviderNix, Label: "NIX", Enabled: true}, Phase: packages.SearchDone, Elapsed: 1250 * time.Millisecond, Candidates: []packages.Candidate{{Provider: packages.ProviderNix, ID: "hello"}}},
+		{Spec: packages.ProviderSpec{Provider: packages.ProviderAPT, Label: "APT", Enabled: true}, Phase: packages.SearchFailed, Err: errors.New("unsafe\nerror " + strings.Repeat("x", 100))},
+		{Spec: packages.ProviderSpec{Provider: packages.ProviderBrew, Label: "BREW", DisabledReason: "command not found"}},
+	}
+	m.packageFlow.activeProvider = 0
+	view := m.viewPackage()
+	for _, want := range []string{"DONE  1 FOUND  1.25S", "FAILED  unsafe error", "ESC SEARCH AGAIN", "DISABLED  command not found", "[ APT FAILED ]", "[ BREW DISABLED ]", "ESC SEARCH"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("missing %q\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "%") {
+		t.Fatalf("pipeline must not show fake percentage\n%s", view)
+	}
+}
+
 func TestCompletedProviderIsBrowsableWhileOtherProviderSearches(t *testing.T) {
 	m := packageTabsFixture()
 	m.packageFlow.stage = packageSearching
@@ -166,7 +221,7 @@ func TestPackageSearchingShowsActiveProviderAndOnlyPlacesCompletedVisibleResult(
 	next, _ := m.handlePackageKey(tea.KeyMsg{Type: tea.KeyTab})
 	m = next.(Model)
 	out = m.View()
-	if !strings.Contains(out, "DNF") || !strings.Contains(out, "native-one") || !strings.Contains(out, "QUERYING-INDEX") {
+	if !strings.Contains(out, "DNF") || !strings.Contains(out, "native-one") || !strings.Contains(out, "QUERYING INDEX") {
 		t.Fatalf("active querying provider not visible:\n%s", out)
 	}
 	next, _ = m.handlePackageKey(tea.KeyMsg{Type: tea.KeyEnter})
@@ -776,7 +831,7 @@ func TestPackageSearchTimeoutIsVisibleAndRestoresNavigation(t *testing.T) {
 		t.Fatalf("stage=%v", m.packageFlow.stage)
 	}
 	out := m.View()
-	if !strings.Contains(out, "deadline exceeded") || !strings.Contains(out, "ESCAPE SEARCH") {
+	if !strings.Contains(out, "deadline exceeded") || !strings.Contains(out, "ESC SEARCH") {
 		t.Fatalf("timeout not visible/navigation missing:\n%s", out)
 	}
 }

@@ -118,6 +118,16 @@ SYS_BOZO_PTY_SMOKE=1 go test ./internal/tui -run TestPTYTerminalHandoffSmoke -co
 Run that command from an actual terminal. It intentionally skips in ordinary
 non-PTY automation.
 
+### Live package discovery pipeline
+
+```sh
+go test -race ./internal/packages ./internal/tui -run 'Test(StartSearch|PackagePipeline|CompletedProvider|PackageTabs)' -count=1 -v
+SYS_BOZO_PTY_SMOKE=1 go test ./internal/tui -run TestPTYTerminalHandoffSmoke -count=1 -v
+```
+
+Provider tests use deterministic fakes. The PTY restoration smoke test invokes
+no package manager; it hands the terminal only to `/usr/bin/printf`.
+
 ### Tier 2: Linux Container Tests
 
 Runs Linux install flows in Docker, Podman, or a CI container.

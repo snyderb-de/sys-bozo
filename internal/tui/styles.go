@@ -163,6 +163,13 @@ func numberedRow(s uiStyles, number, label, renderedStatus string, width int, ac
 	return left + strings.Repeat(" ", gap) + renderedStatus
 }
 
+func packagePipelineRow(s uiStyles, label, status string, width int, kind statusKind) string {
+	renderedLabel := s.text.Render(label)
+	renderedStatus := statusText(s, status, kind)
+	gap := max(1, width-lipgloss.Width(renderedLabel)-lipgloss.Width(renderedStatus))
+	return truncateVisible(renderedLabel+strings.Repeat(" ", gap)+renderedStatus, width)
+}
+
 func (m Model) logHeight() int {
 	bodyH := m.height - 10
 	h := bodyH - len(m.tasks) - 10
