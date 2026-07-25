@@ -3,6 +3,7 @@ package runner
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +23,26 @@ func TestBuildContextResolvesAptCacheForInjectedUbuntuHost(t *testing.T) {
 	}
 	if ctx.AptCacheBin != aptCache {
 		t.Fatalf("apt-cache = %q, want %q", ctx.AptCacheBin, aptCache)
+	}
+}
+
+func TestBuildContextDiscoversOutdatedBrewCasks(t *testing.T) {
+	binDir := t.TempDir()
+	brew := filepath.Join(binDir, "brew")
+	script := `#!/bin/sh
+if [ "$1 $2 $3" = "outdated --cask --quiet" ]; then
+	printf 'displaylink\nfirefox@developer-edition\nzed\n--dangerous\nbad token\n'
+fi
+`
+	if err := os.WriteFile(brew, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+
+	ctx := buildContext("darwin", "arm64", "")
+	want := []string{"displaylink", "firefox@developer-edition", "zed"}
+	if !slices.Equal(ctx.BrewOutdatedCasks, want) {
+		t.Fatalf("outdated casks=%q want %q", ctx.BrewOutdatedCasks, want)
 	}
 }
 
@@ -114,6 +135,66 @@ func TestDefaultTasksIncludeFedoraSystemUpgrade(t *testing.T) {
 	}
 }
 
+func TestBrewUpgradeSeparatesDisplayLinkFromBulkCasks(t *testing.T) {
+	ctx := Context{
+		OS:                "darwin",
+		BrewBin:           "brew",
+		BrewOutdatedCasks: []string{"firefox", "displaylink", "zed"},
+	}
+
+	tasks := DefaultTasks(ctx)
+	var brew, displaylink *Task
+	for i := range tasks {
+		switch tasks[i].ID {
+		case "brew":
+			brew = &tasks[i]
+		case "displaylink":
+			displaylink = &tasks[i]
+		}
+	}
+	if brew == nil || displaylink == nil {
+		t.Fatalf("brew=%v displaylink=%v", brew != nil, displaylink != nil)
+	}
+	if !displaylink.Available(ctx) {
+		t.Fatal("pending DisplayLink upgrade should be separately selectable")
+	}
+
+	var brewCommands []string
+	for _, item := range BuildQueue(*brew, ctx) {
+		brewCommands = append(brewCommands, CmdLabel(item))
+	}
+	wantBrew := []string{
+		"brew update",
+		"brew upgrade --formula",
+		"brew upgrade --cask firefox zed",
+		"brew autoremove",
+	}
+	if !slices.Equal(brewCommands, wantBrew) {
+		t.Fatalf("brew commands=%q want %q", brewCommands, wantBrew)
+	}
+
+	queue := BuildQueue(*displaylink, ctx)
+	if len(queue) != 1 || CmdLabel(queue[0]) != "brew upgrade --cask displaylink" {
+		t.Fatalf("displaylink queue=%#v", queue)
+	}
+	if queue[0].Mode != ExecutionInteractive {
+		t.Fatalf("displaylink mode=%v want interactive", queue[0].Mode)
+	}
+}
+
+func TestDisplayLinkTaskUnavailableWhenNoUpdateIsPending(t *testing.T) {
+	ctx := Context{
+		OS:                "darwin",
+		BrewBin:           "brew",
+		BrewOutdatedCasks: []string{"firefox"},
+	}
+	for _, task := range DefaultTasks(ctx) {
+		if task.ID == "displaylink" && task.Available(ctx) {
+			t.Fatal("DisplayLink task should be unavailable without a pending update")
+		}
+	}
+}
+
 func TestBuildQueuePropagatesExecutionMode(t *testing.T) {
 	task := Task{
 		ID:        "prompting",
@@ -150,12 +231,13 @@ func TestDefaultTaskRetryPolicyIsExplicit(t *testing.T) {
 	ctx := Context{
 		OS: "darwin", Hostname: "mini", BrewBin: "brew", DarwinRebuild: "darwin-rebuild",
 		SudoBin: "sudo", NixBin: "nix", HomeManager: "home-manager", Topgrade: "topgrade",
+		BrewOutdatedCasks: []string{"displaylink", "zed"},
 	}
 	wantRetryable := map[string][]bool{
 		"nds": {true}, "ndu": {true, true}, "ndsd": {true}, "ndR": {false},
 		"hms": {true}, "hmu": {true, true}, "hmr": {false},
-		"fedora-upgrade": {true}, "brew": {true, true, true}, "topgrade": {true},
-		"all": {true, true, true, true, true, true},
+		"fedora-upgrade": {true}, "brew": {true, true, true, true}, "displaylink": {true}, "topgrade": {true},
+		"all": {true, true, true, true, true, true, true},
 	}
 	for _, task := range DefaultTasks(ctx) {
 		want, known := wantRetryable[task.ID]
@@ -181,11 +263,11 @@ func TestPromptingDefaultStepsAreInteractive(t *testing.T) {
 	ctx := Context{
 		OS: "darwin", Hostname: "mini", BrewBin: "brew",
 		DarwinRebuild: "darwin-rebuild", SudoBin: "sudo",
-		NixBin: "nix", HomeManager: "home-manager",
+		NixBin: "nix", HomeManager: "home-manager", BrewOutdatedCasks: []string{"displaylink"},
 	}
 	tasks := DefaultTasks(ctx)
 
-	wantInteractive := map[string]bool{"nds": true, "ndu": true, "ndR": true, "fedora-upgrade": true, "brew": true, "all": true}
+	wantInteractive := map[string]bool{"nds": true, "ndu": true, "ndR": true, "fedora-upgrade": true, "brew": true, "displaylink": true, "all": true}
 	for _, task := range tasks {
 		if !wantInteractive[task.ID] {
 			continue
@@ -193,7 +275,7 @@ func TestPromptingDefaultStepsAreInteractive(t *testing.T) {
 		found := false
 		for _, step := range task.Steps {
 			name, _ := step.Cmd(ctx)
-			if name == "sudo" || task.ID == "brew" && step.Title == "Upgrade Homebrew packages" {
+			if name == "sudo" || (task.ID == "brew" || task.ID == "displaylink") && step.Mode == ExecutionInteractive {
 				found = true
 				if step.Mode != ExecutionInteractive {
 					t.Fatalf("%s prompting step is not interactive", task.ID)
@@ -219,8 +301,8 @@ func TestExecutionModeClassificationCoversFedoraAndCombinedPaths(t *testing.T) {
 		},
 		{
 			name: "darwin",
-			ctx:  Context{OS: "darwin", Hostname: "mini", NixBin: "nix", HomeManager: "home-manager", DarwinRebuild: "darwin-rebuild", BrewBin: "brew"},
-			want: map[string][]ExecutionMode{"all": {ExecutionStreamed, ExecutionStreamed, ExecutionInteractive, ExecutionStreamed, ExecutionInteractive, ExecutionStreamed}},
+			ctx:  Context{OS: "darwin", Hostname: "mini", NixBin: "nix", HomeManager: "home-manager", DarwinRebuild: "darwin-rebuild", BrewBin: "brew", BrewOutdatedCasks: []string{"displaylink", "zed"}},
+			want: map[string][]ExecutionMode{"all": {ExecutionStreamed, ExecutionStreamed, ExecutionInteractive, ExecutionStreamed, ExecutionInteractive, ExecutionInteractive, ExecutionStreamed}},
 		},
 	}
 	for _, tt := range tests {

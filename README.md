@@ -59,6 +59,13 @@ interactive terminal handoff. The TUI gives the child process the terminal,
 then restores the Result screen when it exits. Interactive input is not copied
 into sys-bozo's captured output or history.
 
+On macOS, normal `brew` and combined `all` maintenance upgrade formulae and an
+explicit list of outdated casks with DisplayLink excluded. When DisplayLink is
+outdated, a separate `displaylink` action appears and remains unchecked until
+selected. Its Review shows `brew upgrade --cask displaylink`; confirmation uses
+the interactive terminal because the installer may require a password and
+reboot.
+
 ### Repository Triage
 
 Open the highlighted repository row on Home, or choose Repository under

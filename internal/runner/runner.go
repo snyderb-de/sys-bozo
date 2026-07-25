@@ -3,6 +3,7 @@ package runner
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -10,30 +11,32 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 // Context holds resolved binary paths and host identity for task execution.
 type Context struct {
-	Repo           string
-	SysBozoRepo    string
-	SysBozoBin     string
-	User           string
-	Hostname       string
-	OS             string
-	OSID           string
-	GitBin         string
-	GoBin          string
-	SudoBin        string
-	DnfBin         string
-	AptCacheBin    string
-	NixBin         string
-	NixStoreBin    string
-	NixSystem      string
-	BrewBin        string
-	HomeManager    string
-	DarwinRebuild  string
-	Topgrade       string
-	SopsAgeKeyFile string
+	Repo              string
+	SysBozoRepo       string
+	SysBozoBin        string
+	User              string
+	Hostname          string
+	OS                string
+	OSID              string
+	GitBin            string
+	GoBin             string
+	SudoBin           string
+	DnfBin            string
+	AptCacheBin       string
+	NixBin            string
+	NixStoreBin       string
+	NixSystem         string
+	BrewBin           string
+	BrewOutdatedCasks []string
+	HomeManager       string
+	DarwinRebuild     string
+	Topgrade          string
+	SopsAgeKeyFile    string
 }
 
 type ExecutionMode uint8
@@ -123,7 +126,7 @@ func buildContext(goos, goarch, osID string) Context {
 
 	sudoBin := findExe("sudo")
 
-	return Context{
+	ctx := Context{
 		Repo:           repo,
 		SysBozoRepo:    sysBozoRepo,
 		SysBozoBin:     sysBozoBin,
@@ -145,12 +148,97 @@ func buildContext(goos, goarch, osID string) Context {
 		Topgrade:       findExe("topgrade"),
 		SopsAgeKeyFile: sopsKey,
 	}
+	if ctx.OS == "darwin" && ctx.BrewBin != "" {
+		ctx.BrewOutdatedCasks = outdatedBrewCasks(ctx.BrewBin)
+	}
+	return ctx
 }
 
 func flakeSwitch(ctx Context) []string {
 	return []string{"switch", "--flake", ".#" + HMConfigKey(ctx.User, ctx.Hostname)}
 }
 func flakeUpdate() []string { return []string{"flake", "update"} }
+
+func outdatedBrewCasks(brew string) []string {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, brew, "outdated", "--cask", "--quiet")
+	cmd.Env = append(os.Environ(), "HOMEBREW_NO_AUTO_UPDATE=1")
+	output, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+
+	var casks []string
+	for _, line := range strings.Split(string(output), "\n") {
+		token := strings.TrimSpace(line)
+		if validBrewToken(token) {
+			casks = append(casks, token)
+		}
+	}
+	return casks
+}
+
+func validBrewToken(token string) bool {
+	if token == "" || token[0] == '-' {
+		return false
+	}
+	for _, r := range token {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' {
+			continue
+		}
+		switch r {
+		case '@', '+', '.', '_', '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func displayLinkPending(ctx Context) bool {
+	for _, cask := range ctx.BrewOutdatedCasks {
+		if cask == "displaylink" {
+			return true
+		}
+	}
+	return false
+}
+
+func brewMaintenanceSteps(ctx Context) []Step {
+	steps := []Step{
+		{Title: "Refresh Homebrew metadata", Retryable: true, Cmd: func(c Context) (string, []string) {
+			return c.BrewBin, []string{"update"}
+		}},
+		{Title: "Upgrade Homebrew formulae", Mode: ExecutionInteractive, Retryable: true, Cmd: func(c Context) (string, []string) {
+			return c.BrewBin, []string{"upgrade", "--formula"}
+		}},
+	}
+
+	var casks []string
+	for _, cask := range ctx.BrewOutdatedCasks {
+		if cask != "displaylink" {
+			casks = append(casks, cask)
+		}
+	}
+	if len(casks) > 0 {
+		args := append([]string{"upgrade", "--cask"}, casks...)
+		steps = append(steps, Step{
+			Title: "Upgrade Homebrew casks (DisplayLink excluded)", Mode: ExecutionInteractive, Retryable: true,
+			Cmd: func(c Context) (string, []string) {
+				return c.BrewBin, append([]string(nil), args...)
+			},
+		})
+	}
+
+	return append(steps, Step{
+		Title: "Remove unused Homebrew dependencies", Retryable: true,
+		Cmd: func(c Context) (string, []string) {
+			return c.BrewBin, []string{"autoremove"}
+		},
+	})
+}
 
 // DefaultTasks returns all known actions in display order.
 func DefaultTasks(ctx Context) []Task {
@@ -292,11 +380,23 @@ func DefaultTasks(ctx Context) []Task {
 			Desc:      "update + upgrade + autoremove",
 			Hint:      "sync GUI apps and brew-only packages",
 			Available: func(c Context) bool { return c.BrewBin != "" },
-			Steps: []Step{
-				{Title: "Refresh Homebrew metadata", Retryable: true, Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"update"} }},
-				{Title: "Upgrade Homebrew packages", Mode: ExecutionInteractive, Retryable: true, Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"upgrade"} }},
-				{Title: "Remove unused Homebrew dependencies", Retryable: true, Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"autoremove"} }},
+			Steps:     brewMaintenanceSteps(ctx),
+		},
+		{
+			ID:    "displaylink",
+			Group: "brew",
+			Label: "displaylink",
+			Desc:  "upgrade DisplayLink separately",
+			Hint:  "requires explicit selection; may need password + reboot",
+			Available: func(c Context) bool {
+				return c.OS == "darwin" && c.BrewBin != "" && displayLinkPending(c)
 			},
+			Steps: []Step{{
+				Title: "Upgrade DisplayLink", Mode: ExecutionInteractive, Retryable: true,
+				Cmd: func(c Context) (string, []string) {
+					return c.BrewBin, []string{"upgrade", "--cask", "displaylink"}
+				},
+			}},
 		},
 
 		// ── misc ─────────────────────────────────────────────────────────
@@ -351,11 +451,7 @@ func buildAllTask(ctx Context) Task {
 		desc += " → nds"
 	}
 	if ctx.BrewBin != "" {
-		steps = append(steps,
-			Step{Retryable: true, Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"update"} }},
-			Step{Mode: ExecutionInteractive, Retryable: true, Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"upgrade"} }},
-			Step{Retryable: true, Cmd: func(c Context) (string, []string) { return c.BrewBin, []string{"autoremove"} }},
-		)
+		steps = append(steps, brewMaintenanceSteps(ctx)...)
 		desc += " → brew"
 	}
 
