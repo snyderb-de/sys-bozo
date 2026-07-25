@@ -387,11 +387,13 @@ func (m *Model) preparePackageTarget() (tea.Cmd, error) {
 		if err != nil {
 			return nil, fmt.Errorf("scope %q: %w", m.packageFlow.scope, err)
 		}
-		original, readErr := os.ReadFile(target.Path)
-		if readErr != nil {
-			return nil, fmt.Errorf("read declaration file for editor handoff: %w", readErr)
+		if candidate.Provider != packages.ProviderBrew {
+			original, readErr := os.ReadFile(target.Path)
+			if readErr != nil {
+				return nil, fmt.Errorf("read declaration file for editor handoff: %w", readErr)
+			}
+			return m.openPackageEditor(packageEditorRequest{target: target, original: original, candidate: candidate}), nil
 		}
-		return m.openPackageEditor(packageEditorRequest{target: target, original: original, candidate: candidate}), nil
 	}
 	original, err := os.ReadFile(target.Path)
 	if err != nil {

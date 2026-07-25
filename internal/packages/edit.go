@@ -54,17 +54,50 @@ func ResolveEditorTarget(repo, goos, hostname string, provider Provider, kind Ki
 	if target, err := ResolveTarget(repo, goos, provider, kind, scope); err == nil {
 		return target, nil
 	}
-	if provider != ProviderNix || kind != KindPackage || scope != ScopeHost || hostname == "" {
+	if scope != ScopeHost {
 		return Target{}, ErrUnsupportedTarget
 	}
-	switch goos {
-	case "darwin":
-		return Target{Path: filepath.Join(repo, "hosts", hostname, "darwin.nix"), Assignment: "home.packages", ApplyAction: "nds", NixInput: "nixpkgs"}, nil
-	case "linux":
-		return Target{Path: filepath.Join(repo, "hosts", hostname, "home.nix"), Assignment: "home.packages", ApplyAction: "hms", NixInput: "nixpkgs"}, nil
-	default:
+	host, ok := hostDirectoryName(hostname)
+	if !ok {
 		return Target{}, ErrUnsupportedTarget
 	}
+	hostDir := filepath.Join(repo, "hosts", host)
+
+	if provider == ProviderNix && kind == KindPackage {
+		switch goos {
+		case "darwin":
+			return Target{Path: filepath.Join(hostDir, "darwin.nix"), Assignment: "home.packages", ApplyAction: "nds", NixInput: "nixpkgs"}, nil
+		case "linux":
+			return Target{Path: filepath.Join(hostDir, "home.nix"), Assignment: "home.packages", ApplyAction: "hms", NixInput: "nixpkgs"}, nil
+		}
+	}
+	if provider == ProviderBrew && goos == "darwin" {
+		switch kind {
+		case KindFormula:
+			return Target{Path: filepath.Join(hostDir, "darwin.nix"), Assignment: "extraBrews", Quoted: true, ApplyAction: "nds"}, nil
+		case KindCask:
+			return Target{Path: filepath.Join(hostDir, "darwin.nix"), Assignment: "extraCasks", Quoted: true, ApplyAction: "nds"}, nil
+		}
+	}
+	return Target{}, ErrUnsupportedTarget
+}
+
+func hostDirectoryName(hostname string) (string, bool) {
+	host := strings.TrimSpace(hostname)
+	if short, _, found := strings.Cut(host, "."); found {
+		host = short
+	}
+	host = strings.ToLower(host)
+	if host == "" || host[0] == '-' || host[len(host)-1] == '-' {
+		return "", false
+	}
+	for _, r := range host {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' {
+			continue
+		}
+		return "", false
+	}
+	return host, true
 }
 
 func Sections(original []byte, target Target) ([]Section, error) {

@@ -95,10 +95,12 @@ From Home, press `2` or select Add Package:
    provider is shown as a warning while results from the other provider remain
    usable; Nix is the default when available.
 2. Use the arrow keys or `j`/`k` to choose a result, then press `Enter`.
-3. Choose shared, platform, or host scope. Unsupported provider/scope pairs
-   fail without writing. For supported flat lists, choose the destination
-   section; `Misc` is selected when present. Ambiguous supported files use
-   `$EDITOR` on a temporary copy instead of guessing.
+3. Choose shared, platform, or host scope. Homebrew host scope maps formulae
+   and casks to the detected macOS host's `extraBrews` and `extraCasks`;
+   Homebrew platform scope remains unsupported. Other unsupported
+   provider/scope pairs fail without writing. For supported flat lists, choose
+   the destination section; `Misc` is selected when present. Ambiguous
+   supported files use `$EDITOR` on a temporary copy instead of guessing.
 4. Review the exact file, complete diff, apply command, and verification. Use
    `j`/`k` or `PgUp`/`PgDn` to inspect a long diff. Nothing changes until the
    final `Enter` confirmation.

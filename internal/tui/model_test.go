@@ -1650,27 +1650,54 @@ func TestNixHostEditorHandoffRequiresExistingFile(t *testing.T) {
 	}
 }
 
-func TestUnsupportedBrewScopeStaysSelectedAndDoesNotOpenEditor(t *testing.T) {
-	for _, scope := range []packages.Scope{packages.ScopePlatform, packages.ScopeHost} {
-		t.Run(string(scope), func(t *testing.T) {
-			m := testPackageModel(t)
-			m.runCtx.OS, m.runCtx.Hostname = "darwin", "fixture-host"
-			if err := os.WriteFile(filepath.Join(m.runCtx.Repo, "homebrew.nix"), []byte("{ brews = []; casks = []; }\n"), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			editorCalled := false
-			m.packageEditor = func(packageEditorRequest) tea.Cmd { editorCalled = true; return nil }
-			m.screen = screenPackage
-			m.packageFlow = packageFlow{stage: packagePlacement, scope: scope, providers: packageProviderFixture(packages.Candidate{
-				Provider: packages.ProviderBrew, Kind: packages.KindFormula, ID: "fixture", Name: "fixture",
-			})}
+func TestUnsupportedBrewPlatformScopeStaysSelectedAndDoesNotOpenEditor(t *testing.T) {
+	m := testPackageModel(t)
+	m.runCtx.OS, m.runCtx.Hostname = "darwin", "fixture-host"
+	if err := os.WriteFile(filepath.Join(m.runCtx.Repo, "homebrew.nix"), []byte("{ brews = []; casks = []; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	editorCalled := false
+	m.packageEditor = func(packageEditorRequest) tea.Cmd { editorCalled = true; return nil }
+	m.screen = screenPackage
+	m.packageFlow = packageFlow{stage: packagePlacement, scope: packages.ScopePlatform, providers: packageProviderFixture(packages.Candidate{
+		Provider: packages.ProviderBrew, Kind: packages.KindFormula, ID: "fixture", Name: "fixture",
+	})}
 
-			next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
-			got := next.(Model)
-			if cmd != nil || editorCalled || got.packageFlow.scope != scope || !errors.Is(got.packageFlow.err, packages.ErrUnsupportedTarget) {
-				t.Fatalf("cmd=%v editor=%v scope=%q err=%v", cmd, editorCalled, got.packageFlow.scope, got.packageFlow.err)
-			}
-		})
+	next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(Model)
+	if cmd != nil || editorCalled || got.packageFlow.scope != packages.ScopePlatform || !errors.Is(got.packageFlow.err, packages.ErrUnsupportedTarget) {
+		t.Fatalf("cmd=%v editor=%v scope=%q err=%v", cmd, editorCalled, got.packageFlow.scope, got.packageFlow.err)
+	}
+}
+
+func TestBrewHostScopeUsesDetectedHostDeclarationSection(t *testing.T) {
+	m := testPackageModel(t)
+	m.runCtx.OS, m.runCtx.Hostname = "darwin", "bags-Mac-mini.localdomain"
+	path := filepath.Join(m.runCtx.Repo, "hosts", "bags-mac-mini", "darwin.nix")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original := []byte("{\n  extraCasks = [\n    # Games\n    \"existing\"\n  ];\n}\n")
+	if err := os.WriteFile(path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	editorCalled := false
+	m.packageEditor = func(packageEditorRequest) tea.Cmd { editorCalled = true; return nil }
+	m.screen = screenPackage
+	m.packageFlow = packageFlow{stage: packagePlacement, scope: packages.ScopeHost, providers: packageProviderFixture(packages.Candidate{
+		Provider: packages.ProviderBrew, Kind: packages.KindCask, ID: "moonlight", Name: "Moonlight",
+	})}
+
+	next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(Model)
+	if cmd != nil || editorCalled || !got.packageFlow.placingSection {
+		t.Fatalf("cmd=%v editor=%v placingSection=%v err=%v", cmd, editorCalled, got.packageFlow.placingSection, got.packageFlow.err)
+	}
+	if got.packageFlow.target.Path != path || got.packageFlow.target.Assignment != "extraCasks" || got.packageFlow.target.ApplyAction != "nds" {
+		t.Fatalf("target=%#v", got.packageFlow.target)
+	}
+	if !reflect.DeepEqual(got.packageFlow.sections, []string{"Games"}) {
+		t.Fatalf("sections=%q", got.packageFlow.sections)
 	}
 }
 

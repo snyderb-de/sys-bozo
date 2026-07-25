@@ -105,6 +105,8 @@ func TestResolveEditorTargetOwnsExplicitFallbackPolicy(t *testing.T) {
 		{"known shared nix", "darwin", "mac", ProviderNix, KindPackage, ScopeShared, Target{Path: filepath.Join(repo, "home/modules/packages.nix"), Assignment: "home.packages", ApplyAction: "hms", NixInput: "nixpkgs"}},
 		{"darwin host nix", "darwin", "mac", ProviderNix, KindPackage, ScopeHost, Target{Path: filepath.Join(repo, "hosts/mac/darwin.nix"), Assignment: "home.packages", ApplyAction: "nds", NixInput: "nixpkgs"}},
 		{"linux host nix", "linux", "box", ProviderNix, KindPackage, ScopeHost, Target{Path: filepath.Join(repo, "hosts/box/home.nix"), Assignment: "home.packages", ApplyAction: "hms", NixInput: "nixpkgs"}},
+		{"darwin host brew formula", "darwin", "bags-Mac-mini.localdomain", ProviderBrew, KindFormula, ScopeHost, Target{Path: filepath.Join(repo, "hosts/bags-mac-mini/darwin.nix"), Assignment: "extraBrews", Quoted: true, ApplyAction: "nds"}},
+		{"darwin host brew cask", "darwin", "bags-Mac-mini.localdomain", ProviderBrew, KindCask, ScopeHost, Target{Path: filepath.Join(repo, "hosts/bags-mac-mini/darwin.nix"), Assignment: "extraCasks", Quoted: true, ApplyAction: "nds"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -114,7 +116,7 @@ func TestResolveEditorTargetOwnsExplicitFallbackPolicy(t *testing.T) {
 			}
 		})
 	}
-	for _, scope := range []Scope{ScopePlatform, ScopeHost} {
+	for _, scope := range []Scope{ScopePlatform} {
 		for _, kind := range []Kind{KindFormula, KindCask} {
 			got, err := ResolveEditorTarget(repo, "darwin", "mac", ProviderBrew, kind, scope)
 			if !errors.Is(err, ErrUnsupportedTarget) || got != (Target{}) {
