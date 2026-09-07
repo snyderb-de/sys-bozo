@@ -73,14 +73,17 @@ type Task struct {
 
 // WorkItem is a flattened (task, step) pair ready for execution.
 type WorkItem struct {
-	TaskLabel string
-	TaskFirst bool // first step of a new task — triggers header line in log
-	Name      string
-	Args      []string
-	Dir       string
-	EnvExtra  []string
-	Mode      ExecutionMode
-	Retryable bool
+	Title       string
+	Description string
+	ReadOnly    bool
+	TaskLabel   string
+	TaskFirst   bool // first step of a new task — triggers header line in log
+	Name        string
+	Args        []string
+	Dir         string
+	EnvExtra    []string
+	Mode        ExecutionMode
+	Retryable   bool
 }
 
 // HMConfigKey returns the flake homeConfigurations key for this host.
@@ -154,7 +157,7 @@ func buildContext(goos, goarch, osID string) Context {
 		NixSystem:      nixArch + "-" + goos,
 		BrewBin:        findExe("brew", "/opt/homebrew/bin/brew", "/usr/local/bin/brew"),
 		HomeManager:    findExe("home-manager", hmFallbacks...),
-		DarwinRebuild:  findExe("darwin-rebuild", "/run/current-system/sw/bin/darwin-rebuild"),
+		DarwinRebuild:  findExe("darwin-rebuild", "/run/current-system/sw/bin/darwin-rebuild", "/nix/var/nix/profiles/system/sw/bin/darwin-rebuild"),
 		Topgrade:       findExe("topgrade"),
 		SopsAgeKeyFile: sopsKey,
 	}

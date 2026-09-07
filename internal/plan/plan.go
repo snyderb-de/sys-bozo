@@ -189,6 +189,23 @@ func Update(selected []string) Plan {
 }
 
 func UpdateForContext(selected []string, ctx runner.Context) Plan {
+	if runner.IsMacMini(ctx) {
+		ids := normalizeKeepOrder(selected)
+		if len(ids) == 0 {
+			ids = []string{"recommended"}
+		}
+		queue, err := runner.BuildMiniUpdates(ctx, ids)
+		p := Plan{Title: "Mac mini update plan", Summary: "Recommended execution order. Preview only; use the TUI to review and confirm."}
+		if err != nil {
+			p.Summary = err.Error()
+			return p
+		}
+		p.Actions = append(p.Actions, Action{Kind: ActionInspect, Title: "Check readiness", Description: "Check required commands, repository status and conflicts before running."})
+		for _, item := range queue.Items {
+			p.Actions = append(p.Actions, Action{Kind: ActionCommand, Title: item.Title, Description: item.Description, Command: append([]string{item.Name}, item.Args...), Mutates: !item.ReadOnly})
+		}
+		return p
+	}
 	tasks := runner.DefaultTasks(ctx)
 	actions := updateActionsForTasks(selected, tasks, ctx)
 	host := ctx.Hostname

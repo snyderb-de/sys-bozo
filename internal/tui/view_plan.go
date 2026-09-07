@@ -15,6 +15,9 @@ import (
 // ── Guided planning ───────────────────────────────────────────────────────
 
 func (m Model) viewMaintenance() string {
+	if runner.IsMacMini(m.runCtx) {
+		return m.viewMiniUpdates()
+	}
 	contentWidth := primaryContentWidth(m.width)
 	s := m.styles
 
@@ -84,6 +87,9 @@ func (m Model) viewMaintenance() string {
 }
 
 func (m Model) viewReview() string {
+	if m.reviewed.Updates != nil {
+		return m.viewMiniUpdateReview()
+	}
 	if m.reviewed.Repo != nil {
 		return m.viewRepoReview()
 	}
@@ -264,6 +270,9 @@ func (m Model) viewRunning() string {
 }
 
 func (m Model) viewResult() string {
+	if m.reviewed.Updates != nil && !m.resultLogVisible {
+		return m.viewMiniUpdateResult()
+	}
 	contentWidth := primaryContentWidth(m.width)
 	s := m.styles
 	historyStatus := m.resultHistoryStatus()

@@ -112,7 +112,7 @@ func runPlan(args []string) error {
 
 	fmt.Println(strings.Join(p.Lines(), "\n"))
 	if p.MutatingActions() > 0 {
-		fmt.Printf("\n%d mutating action(s) require a future explicit apply step.\n", p.MutatingActions())
+		fmt.Printf("\n%d mutating action(s). Preview only; no changes were made.\n", p.MutatingActions())
 	}
 	return nil
 }
@@ -123,6 +123,9 @@ func runAction(args []string) error {
 	}
 	id := args[0]
 	ctx := runner.Build()
+	if runner.IsMacMini(ctx) {
+		return runMiniUpdateActions(ctx, args)
+	}
 	tasks := runner.DefaultTasks(ctx)
 
 	var found *runner.Task
@@ -150,6 +153,31 @@ func runAction(args []string) error {
 			return err
 		}
 	}
+	return nil
+}
+
+func runMiniUpdateActions(ctx runner.Context, ids []string) error {
+	p, err := runner.BuildMiniUpdates(ctx, ids)
+	if err != nil {
+		return err
+	}
+	ready, err := runner.CheckUpdateReadiness(ctx, p.Items)
+	if err != nil {
+		return err
+	}
+	if ready.Dirty > 0 {
+		fmt.Fprintf(os.Stderr, "Using local dotfiles changes: %d changed entries.\n", ready.Dirty)
+	}
+	for _, note := range p.Notes {
+		fmt.Fprintln(os.Stderr, note)
+	}
+	for _, item := range p.Items {
+		fmt.Fprintf(os.Stderr, "\n%s\n%s\n$ %s\n", item.Title, item.Description, runner.CmdLabel(item))
+		if err := runWorkItem(item); err != nil {
+			return err
+		}
+	}
+	fmt.Fprintln(os.Stderr, "Steps completed. Check terminal summaries for skipped or failed app upgrades.")
 	return nil
 }
 
@@ -213,7 +241,19 @@ Usage:
   sys-bozo version
 
 Actions:`)
-	runActionList(&sb, tasks, ctx)
+	if runner.IsMacMini(ctx) {
+		fmt.Fprintln(&sb, "\n  recommended  Recommended Mac mini update sequence (includes Topgrade when available)")
+		for _, option := range runner.MiniUpdateOptions(ctx) {
+			state := ""
+			if !option.Available {
+				state = " (unavailable)"
+			}
+			fmt.Fprintf(&sb, "  %-13s %s%s\n", option.ID, option.Label, state)
+		}
+		fmt.Fprintln(&sb, "\nPreview: sys-bozo plan update\nRun:     sys-bozo run recommended")
+	} else {
+		runActionList(&sb, tasks, ctx)
+	}
 	fmt.Println(sb.String())
 }
 

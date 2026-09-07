@@ -72,6 +72,13 @@
 
 ## Phase 1.5: Control Center TUI
 
+- [x] Add the Mac mini update picker with plain-language descriptions, recommended
+  selection/order, integrated Homebrew awareness, Topgrade, readiness checks,
+  scrollable Review/Result, and separate recovery.
+- [ ] Reconcile MacBook versus Mac mini drift before extending recommendations:
+  compare declared and installed packages, active generations, Homebrew behavior,
+  Topgrade configuration, and host-specific overrides. Read-only reconnaissance
+  first; no remote updates as part of the Mini workflow.
 - [x] Document the control-center target in `docs/control-center.html`.
 - [x] Use Go with Bubble Tea, Bubbles, and Lip Gloss.
 - [x] Add `sys-bozo` default TUI entrypoint.

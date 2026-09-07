@@ -86,6 +86,31 @@ func TestUpdatePlanForUnavailableExplicitTaskShowsSkip(t *testing.T) {
 	}
 }
 
+func TestMiniUpdatePlanCombinesOverlappingSelectionsOnce(t *testing.T) {
+	ctx := runner.Context{OS: "darwin", Hostname: "bags-Mac-mini", Repo: "/fixture", NixBin: "nix", NixStoreBin: "nix-store", SudoBin: "sudo", DarwinRebuild: "darwin-rebuild", HomeManager: "home-manager", BrewBin: "brew", Topgrade: "topgrade", BrewOutdatedCasks: []string{"displaylink", "zed"}}
+	p := UpdateForContext([]string{"all", "hmu", "ndu", "topgrade", "brew"}, ctx)
+	var commands []string
+	for _, action := range p.Actions {
+		if len(action.Command) > 0 {
+			commands = append(commands, strings.Join(action.Command, " "))
+		}
+	}
+	text := strings.Join(commands, "\n")
+	for _, command := range []string{"nix flake update", "sudo -H darwin-rebuild switch", "topgrade ", "brew update", "brew missing"} {
+		if strings.Count(text, command) != 1 {
+			t.Errorf("wanted exactly one %q in queue:\n%s", command, text)
+		}
+	}
+	for _, duplicate := range []string{"home-manager switch", "brew upgrade", "brew autoremove", "--rollback"} {
+		if strings.Contains(text, duplicate) {
+			t.Errorf("unexpected duplicate/optional command %q:\n%s", duplicate, text)
+		}
+	}
+	if !(strings.Index(text, "nix flake update") < strings.Index(text, "darwin-rebuild switch") && strings.Index(text, "darwin-rebuild switch") < strings.Index(text, "topgrade ") && strings.Index(text, "topgrade ") < strings.Index(text, "brew missing")) {
+		t.Errorf("incorrect recommended order:\n%s", text)
+	}
+}
+
 func TestPackageSearchPlanDoesNotMutateBeforeApply(t *testing.T) {
 	p := PackageSearch("yazi")
 	text := strings.Join(p.Lines(), "\n")

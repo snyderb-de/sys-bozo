@@ -77,6 +77,14 @@ func Probe() Facts {
 	facts.BrewPath, _ = exec.LookPath("brew")
 	facts.HomeManager, _ = exec.LookPath("home-manager")
 	facts.DarwinRebuild, _ = exec.LookPath("darwin-rebuild")
+	if facts.OS == "darwin" && facts.DarwinRebuild == "" {
+		for _, path := range []string{"/run/current-system/sw/bin/darwin-rebuild", "/nix/var/nix/profiles/system/sw/bin/darwin-rebuild"} {
+			if info, err := os.Stat(path); err == nil && !info.IsDir() && info.Mode().Perm()&0o111 != 0 {
+				facts.DarwinRebuild = path
+				break
+			}
+		}
+	}
 	facts.Topgrade, _ = exec.LookPath("topgrade")
 
 	facts.GitDirtyCount = gitDirtyCount(wd)

@@ -67,6 +67,7 @@ const (
 )
 
 type reviewedPlan struct {
+	Updates *updatesReview
 	Action  string
 	Items   []runner.WorkItem
 	Package *packageReview
@@ -122,6 +123,11 @@ type Model struct {
 	homeRepoFocused bool
 	inspectCursor   int
 	selected        map[string]bool
+	updatesRecovery bool
+	updatesNotice   string
+	updatesOffset   int
+	updatesCheckID  uint64
+	checkUpdates    func(runner.Context, []runner.WorkItem) (runner.UpdateReadiness, error)
 	reviewed        reviewedPlan
 	latestHistory   *history.Entry
 

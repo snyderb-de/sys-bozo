@@ -57,6 +57,19 @@ commands, and injected package-manager responses. They must not use real
 Homebrew state, Nix profiles, Home Manager generations, nix-darwin state, or
 the developer's config files.
 
+### Mac mini update workflow
+
+```sh
+go test ./internal/runner ./internal/plan ./internal/tui -run TestMini -count=1
+MINI_VISUAL_LOG=1 go test ./internal/tui -run TestMiniReviewScrollsEveryCommandAt80x24 -count=1 -v
+```
+
+Tests cover recommended selection without execution, expansion of overlapping
+aliases, integrated Homebrew ownership, terminal handoff for Topgrade, separate
+cleanup/recovery, readiness checks against temporary Git repositories, stale
+Review rejection, complete scrollable commands, and retries of the unfinished
+queue. They never run real system updates or contact another machine.
+
 ### Fake-repo package edit
 
 ```sh

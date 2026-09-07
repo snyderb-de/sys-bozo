@@ -27,6 +27,8 @@ func (m Model) Init() tea.Cmd {
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case updatesCheckedMsg:
+		return m, m.acceptUpdatesCheck(msg)
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -272,6 +274,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.screen == screenMaintenance && runner.IsMacMini(m.runCtx) {
+		return m.handleMiniUpdatesKey(msg)
+	}
 	// Apply prompt intercepts all keys
 	if m.applyPrompt {
 		switch strings.ToLower(msg.String()) {
@@ -376,6 +381,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	if m.screen == screenResult {
+		if m.reviewed.Updates != nil && !m.resultLogVisible && m.scrollUpdates(msg.String(), len(m.updateResultRows())) {
+			return m, nil
+		}
 		switch strings.ToLower(msg.String()) {
 		case "l":
 			m.resultLogVisible = !m.resultLogVisible
@@ -421,6 +429,14 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	case screenReview:
+		if m.reviewed.Updates != nil {
+			if m.scrollUpdates(msg.String(), len(m.updateReviewRows())) {
+				return m, nil
+			}
+			if msg.String() == "r" {
+				return m, m.checkMiniUpdates(false)
+			}
+		}
 		if m.reviewed.Config != nil && m.scrollConfigDiff(msg.String()) {
 			return m, nil
 		}
@@ -731,9 +747,14 @@ func (m *Model) prepareResultRetry() {
 		packagePlan.verificationStarted = false
 	}
 	retryItems := cloneWorkItems(m.queue[start:])
+	var updates *updatesReview
+	if m.reviewed.Updates != nil {
+		updates = &updatesReview{Notes: append([]string(nil), m.reviewed.Updates.Notes...)}
+	}
 	m.mode = modeView
 	m.screen = screenReview
-	m.reviewed = reviewedPlan{Action: action, Items: retryItems, Package: packagePlan}
+	m.reviewed = reviewedPlan{Action: action, Items: retryItems, Package: packagePlan, Updates: updates}
+	m.updatesOffset = 0
 	m.initPackageDiffViewport()
 	m.queue = nil
 	m.queuePos = 0

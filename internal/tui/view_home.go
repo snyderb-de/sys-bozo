@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/snyderb-de/sys-bozo/internal/runner"
 )
 
 // ── View ──────────────────────────────────────────────────────────────────
@@ -74,6 +75,9 @@ func (m Model) viewHome() string {
 	if m.facts.DotfilesDirty > 0 || m.facts.BrewOutdated > 0 {
 		health = statusText(s, "SYSTEM NEEDS ATTENTION", statusAttention)
 	}
+	if runner.IsMacMini(m.runCtx) {
+		health = statusText(s, "REVIEW BEFORE UPDATING", statusMuted)
+	}
 
 	host := m.targetHost()
 	branch := m.facts.DotfilesBranch
@@ -95,6 +99,13 @@ func (m Model) viewHome() string {
 		updates = fmt.Sprintf("%d PENDING", m.facts.BrewOutdated)
 		updatesKind = statusAttention
 	}
+	updatesLabel := "UPDATES"
+	if runner.IsMacMini(m.runCtx) {
+		updatesLabel = "BREW UPDATES"
+		if m.facts.BrewOutdated == 0 {
+			updates, updatesKind = "NO PENDING UPDATES REPORTED", statusMuted
+		}
+	}
 
 	rows := []string{
 		s.major.Render("SYS/BOZO"),
@@ -106,7 +117,7 @@ func (m Model) viewHome() string {
 		s.label.Render("HOST") + "  " + s.text.Render(host),
 		s.label.Render("BRANCH") + "  " + s.text.Render(branch),
 		homeRepoRow(s, repo, repoKind, m.homeRepoFocused),
-		s.label.Render("UPDATES") + "  " + statusText(s, updates, updatesKind),
+		s.label.Render(updatesLabel) + "  " + statusText(s, updates, updatesKind),
 	}
 	if m.latestHistory == nil {
 		rows = append(rows, s.label.Render("LAST RUN")+"  "+s.muted.Render("NO HISTORY"))
@@ -117,6 +128,9 @@ func (m Model) viewHome() string {
 	rows = append(rows, "", majorRule(s, contentWidth, false), "")
 
 	for i, entry := range homeEntries {
+		if i == 0 && runner.IsMacMini(m.runCtx) {
+			entry.label = "UPDATES"
+		}
 		kind := statusMuted
 		label := "LOCKED"
 		if !homeEntryLocked(i) {

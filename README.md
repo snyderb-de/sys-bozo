@@ -42,6 +42,63 @@ Run the development build from the repository:
 
 ## Guided Control Center
 
+### Mac mini updates
+
+On `bags-Mac-mini` (including its local DNS suffix), Home opens **Updates**.
+Press `A` to select the recommended options, use arrows or `j`/`k` to read each
+description, and use `Space` to adjust the selection. Press `Enter` to review;
+selection and readiness checks never execute an updater.
+
+The recommended sequence is:
+
+1. Update Nix version pins in the dotfiles `flake.lock`.
+2. Refresh Homebrew metadata.
+3. Build and apply the Mini's nix-darwin configuration, including Home Manager
+   and the dotfiles' interactive Homebrew review.
+4. Run Topgrade with native terminal input and the user's existing configuration.
+5. Query the system profile and check for missing Homebrew formula dependencies.
+
+Topgrade is recommended when available. Bozo adds exclusions for Nix, Home
+Manager, Homebrew, system updates, restart checks, and remote hosts; it does not
+rewrite Topgrade configuration or force `--yes`. The Mini's workstation rebuild
+already owns the Homebrew pass. Selecting it replaces **Upgrade Homebrew only**,
+so a later upgrade cannot reverse choices declined during activation.
+
+Standalone Homebrew upgrades exclude DisplayLink. **Upgrade DisplayLink** and
+**Remove unused dependencies** require their own selections. The workstation
+rebuild can still offer DisplayLink and undeclared-package removals in the
+dotfiles' existing native prompts; bozo does not change that activation script.
+`Tab` switches between Updates and Recovery, clearing the prior selection.
+Rollback does not revert the lock file or guarantee rollback of Homebrew apps.
+
+Review shows each step's purpose, command, working directory, and terminal
+handoff. Scroll with arrows, `j`/`k`, or Page Up/Down. Readiness checks verify
+required commands and Git status; conflicts or unavailable status block the run.
+Changed files are disclosed, and a changed Git status at confirmation requires
+another review. These checks are not a filesystem lock or a hash of every source
+file. Result distinguishes completed, failed, and unrun steps. Retry reviews only
+the failed step and remaining queue, with fresh readiness checks.
+
+The final checks establish command completion, a queryable system profile, and
+Homebrew dependency status. They do not prove every application works or that
+every upgrade offered by the interactive activation was accepted.
+
+CLI uses the same Mini plan:
+
+```sh
+sys-bozo plan update
+sys-bozo plan update nix-update nds topgrade
+sys-bozo run recommended
+```
+
+`run` is an explicit execution command; use `plan` or the TUI first to review.
+For compatibility, Mini selections `all`, `ndu`, `hmu`, and `hms` expand into the
+same system-owned workflow without duplicate input updates or a separate Home
+Manager apply. Other machines retain their existing workflows pending drift
+reconnaissance.
+
+### Existing workflows
+
 The Home screen has three launch entries: `1` Weekly Maintenance, `2` Add
 Package, and `3` Inspect System. When the detected dotfiles repository is dirty
 or Git status is unavailable, its status row also becomes selectable. Use the

@@ -19,6 +19,7 @@ import (
 )
 
 func (m *Model) openMaintenance(ids ...string) {
+	m.updatesRecovery, m.updatesNotice, m.updatesOffset = false, "", 0
 	m.screen = screenMaintenance
 	for i, tab := range m.tabs {
 		if tab == "Actions" {
@@ -29,6 +30,9 @@ func (m *Model) openMaintenance(ids ...string) {
 	}
 	m.selected = map[string]bool{}
 	for _, id := range ids {
+		if runner.IsMacMini(m.runCtx) && id == "hms" {
+			id = "nds"
+		}
 		m.selected[id] = true
 	}
 }
@@ -63,6 +67,12 @@ func (m Model) hasAvailableSelection() bool {
 }
 
 func (m *Model) confirmReviewedPlan() tea.Cmd {
+	if m.reviewed.Updates != nil {
+		if m.reviewed.Updates.Problem != "" {
+			return nil
+		}
+		return m.checkMiniUpdates(true)
+	}
 	if m.reviewed.Repo != nil {
 		if m.reviewed.Repo.Validating || m.validateRepo == nil {
 			return nil
@@ -115,6 +125,7 @@ func repoWorkItems(operation repostate.Operation) []runner.WorkItem {
 }
 
 func (m *Model) beginReviewedRun() {
+	m.updatesOffset = 0
 	m.queue = cloneWorkItems(m.reviewed.Items)
 	m.queuePos = 0
 	m.mode = modeRunning
@@ -272,6 +283,7 @@ func (m *Model) recordStepResult(index int, status history.Status, duration time
 }
 
 func (m *Model) finishRun(err error, cancelled bool, elapsed time.Duration) {
+	m.updatesOffset = 0
 	status := runStatus(err, cancelled)
 	m.mode = modeDone
 	m.screen = screenResult
