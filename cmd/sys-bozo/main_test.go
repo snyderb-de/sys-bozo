@@ -11,7 +11,34 @@ import (
 	"testing"
 
 	"github.com/snyderb-de/sys-bozo/internal/runner"
+	"github.com/snyderb-de/sys-bozo/internal/system"
 )
+
+func TestDoctorDistinguishesUnavailableCleanAndDirtyStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		facts system.Facts
+		want  string
+	}{
+		{"unavailable", system.Facts{DotfilesStatusUnavailable: true}, "unavailable"},
+		{"clean", system.Facts{}, "0"},
+		{"dirty", system.Facts{DotfilesDirty: 3}, "3"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			writeDoctor(&out, tc.facts)
+			for _, line := range strings.Split(out.String(), "\n") {
+				if value, ok := strings.CutPrefix(line, "dirty files:"); ok {
+					if strings.TrimSpace(value) != tc.want {
+						t.Fatalf("dirty status = %q, want %q", value, tc.want)
+					}
+					return
+				}
+			}
+			t.Fatal("missing dirty files status")
+		})
+	}
+}
 
 func TestRunWorkItemDispatchesInteractiveMode(t *testing.T) {
 	oldInteractive := runInteractive

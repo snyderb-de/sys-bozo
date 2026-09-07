@@ -33,8 +33,8 @@ type Preview struct {
 
 func LoadPreview(ctx context.Context, runner Runner, filesystem FileSystem, repo, gitBin string, entry Entry) Preview {
 	if entry.Index != StateUntracked && entry.Worktree != StateUntracked {
-		staged, stagedErr := runner.Output(ctx, repo, gitBin, "diff", "--cached", "--", entry.Path)
-		unstaged, unstagedErr := runner.Output(ctx, repo, gitBin, "diff", "--", entry.Path)
+		staged, stagedErr := runner.Output(ctx, repo, gitBin, "--literal-pathspecs", "diff", "--cached", "--", entry.Path)
+		unstaged, unstagedErr := runner.Output(ctx, repo, gitBin, "--literal-pathspecs", "diff", "--", entry.Path)
 		preview := Preview{Kind: PreviewDiff, Staged: boundedDisplay(staged, 1<<20), Unstaged: boundedDisplay(unstaged, 1<<20)}
 		if stagedErr != nil || unstagedErr != nil {
 			preview.Kind = PreviewUnreadable

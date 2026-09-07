@@ -20,8 +20,8 @@ func TestProposeCommitUsesOnlyAndPathBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []Command{
-		{Name: "git", Args: []string{"add", "--", "--odd name"}},
-		{Name: "git", Args: []string{"commit", "--only", "-m", "fix config", "--", "--odd name"}, Interactive: true},
+		{Name: "git", Args: []string{"--literal-pathspecs", "add", "--", "--odd name"}},
+		{Name: "git", Args: []string{"--literal-pathspecs", "commit", "--only", "-m", "fix config", "--", "--odd name"}, Interactive: true},
 	}
 	if !reflect.DeepEqual(op.Commands, want) {
 		t.Fatalf("commands=%#v", op.Commands)
@@ -87,7 +87,7 @@ func TestProposeStashUsesUntrackedFlagOnlyWhenSelected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"stash", "push", "-u", "-m", "sys-bozo reviewed stash", "--", "new", "tracked"}
+	want := []string{"--literal-pathspecs", "stash", "push", "-u", "-m", "sys-bozo reviewed stash", "--", "new", "tracked"}
 	if !reflect.DeepEqual(op.Commands[0].Args, want) {
 		t.Fatalf("args=%#v", op.Commands[0].Args)
 	}
@@ -236,6 +236,7 @@ func executeSelectedAction(t *testing.T, repo string, kind ActionKind, selectedP
 	}
 	op, err := ProposeAction(ActionRequest{
 		Repo: repo, GitBin: "git", Kind: kind, Entries: []Entry{selected}, Fingerprints: fingerprints,
+		Message:         "selected fixture",
 		DeleteConfirmed: kind == ActionDeleteUntracked,
 	})
 	if err != nil {
@@ -250,6 +251,32 @@ func executeSelectedAction(t *testing.T, repo string, kind ActionKind, selectedP
 		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("%v: %v: %s", command.Args, err, out)
+		}
+	}
+}
+
+func TestRepositoryActionsTreatSelectedPathsLiterally(t *testing.T) {
+	for _, kind := range []ActionKind{ActionCommit, ActionStash, ActionRestore, ActionDeleteUntracked} {
+		for _, name := range []string{"*.txt", ":(glob)*.txt"} {
+			t.Run(string(kind)+"/"+name, func(t *testing.T) {
+				repo := initTempRepo(t)
+				if kind != ActionDeleteUntracked {
+					writeFixture(t, repo, name, "base\n")
+					gitFixture(t, repo, "--literal-pathspecs", "add", "--", name)
+					gitFixture(t, repo, "commit", "-qm", "literal fixture")
+				}
+				writeFixture(t, repo, name, "selected change\n")
+				writeFixture(t, repo, "other.txt", "unselected change\n")
+				executeSelectedAction(t, repo, kind, name)
+				data, err := os.ReadFile(filepath.Join(repo, "other.txt"))
+				if err != nil || string(data) != "unselected change\n" {
+					t.Fatalf("unselected file changed: %q, %v", data, err)
+				}
+				status := mustInspect(t, repo)
+				if len(status.Entries) != 1 || status.Entries[0].Path != "other.txt" || status.Entries[0].Index != StateUntracked {
+					t.Fatalf("unselected file must remain untracked: %#v", status.Entries)
+				}
+			})
 		}
 	}
 }

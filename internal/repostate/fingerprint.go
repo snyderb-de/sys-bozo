@@ -30,6 +30,7 @@ type ActionFingerprint struct {
 	Path         string
 	OriginalPath string
 	Status       [32]byte
+	RepoStatus   [32]byte
 	Worktree     [32]byte
 	Mode         os.FileMode
 	Kind         FingerprintKind
@@ -57,6 +58,7 @@ func FingerprintEntries(ctx context.Context, runner Runner, filesystem FileSyste
 		return nil, current.Err
 	}
 	byPath := make(map[string]Entry, len(current.Entries))
+	repoStatus := statusFingerprint(current.Entries)
 	for _, entry := range current.Entries {
 		byPath[entryKey(entry)] = entry
 	}
@@ -81,7 +83,7 @@ func FingerprintEntries(ctx context.Context, runner Runner, filesystem FileSyste
 		}
 		result = append(result, ActionFingerprint{
 			Path: entry.Path, OriginalPath: entry.OriginalPath,
-			Status: entry.DisplayFingerprint, Worktree: identity, Mode: mode, Kind: kind,
+			Status: entry.DisplayFingerprint, RepoStatus: repoStatus, Worktree: identity, Mode: mode, Kind: kind,
 		})
 	}
 	return result, nil
@@ -93,11 +95,15 @@ func ValidateFingerprints(ctx context.Context, runner Runner, filesystem FileSys
 		return status.Err
 	}
 	byPath := make(map[string]Entry, len(status.Entries))
+	repoStatus := statusFingerprint(status.Entries)
 	for _, entry := range status.Entries {
 		byPath[entryKey(entry)] = entry
 	}
 	entries := make([]Entry, 0, len(expected))
 	for _, fingerprint := range expected {
+		if fingerprint.RepoStatus != repoStatus {
+			return ErrStaleStatus
+		}
 		entry, ok := byPath[fingerprint.Path+"\x00"+fingerprint.OriginalPath]
 		if !ok || entry.DisplayFingerprint != fingerprint.Status {
 			return ErrStaleStatus
@@ -123,6 +129,18 @@ func ValidateFingerprints(ctx context.Context, runner Runner, filesystem FileSys
 }
 
 func entryKey(entry Entry) string { return entry.Path + "\x00" + entry.OriginalPath }
+
+// Include every status entry, even when only a subset of paths is selected.
+// Each display fingerprint covers the complete porcelain record.
+func statusFingerprint(entries []Entry) [32]byte {
+	h := sha256.New()
+	for _, entry := range entries {
+		h.Write(entry.DisplayFingerprint[:])
+	}
+	var sum [32]byte
+	copy(sum[:], h.Sum(nil))
+	return sum
+}
 
 func containedPath(repo, name string) (string, error) {
 	if name == "" || filepath.IsAbs(name) {

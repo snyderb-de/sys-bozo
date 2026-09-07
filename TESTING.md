@@ -72,7 +72,9 @@ unchanged before confirmation.
 
 ```sh
 go test ./internal/repostate -run 'Test(CommitOperationExcludesUnrelatedStagedPath|RepositoryActionsStayPathScopedInRealTempRepos|DeleteUntrackedSymlinkDoesNotFollowTarget)' -count=1 -v
+go test ./internal/repostate -run 'Test(RepositoryActionsTreatSelectedPathsLiterally|LoadPreviewTreatsSelectedPathLiterally|ValidateFingerprintsRejectsUnselectedStatusChange)' -count=1 -v
 go test ./internal/tui -run 'TestRepo(ActionPreparationIsReadOnlyUntilReview|ReviewStaleValidationRunsNothing|CommitUsesTerminalHandoffAfterValidation|HistoryExcludesPathsMessagesAndDiffs)' -count=1 -v
+go test ./internal/tui -run TestRepoDeletePreviewTreatsSelectedPathLiterally -count=1 -v
 ```
 
 These tests initialize repositories under `t.TempDir`, disable system/global

@@ -28,6 +28,23 @@ func TestValidateFingerprintsRejectsSameStatusAfterContentChange(t *testing.T) {
 	}
 }
 
+func TestValidateFingerprintsRejectsUnselectedStatusChange(t *testing.T) {
+	repo := initTempRepo(t)
+	writeFixture(t, repo, "tracked.txt", "selected change\n")
+	entries := mustInspect(t, repo).Entries
+	fingerprints, err := FingerprintEntries(context.Background(), ExecRunner{}, RealFileSystem{}, repo, "git", entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateFingerprints(context.Background(), ExecRunner{}, RealFileSystem{}, repo, "git", fingerprints); err != nil {
+		t.Fatalf("unchanged review rejected: %v", err)
+	}
+	writeFixture(t, repo, "new.txt", "new work after review\n")
+	if err := ValidateFingerprints(context.Background(), ExecRunner{}, RealFileSystem{}, repo, "git", fingerprints); !errors.Is(err, ErrStaleStatus) {
+		t.Fatalf("changed repository status accepted: %v", err)
+	}
+}
+
 func initTempRepo(t *testing.T) string {
 	t.Helper()
 	repo := t.TempDir()

@@ -169,26 +169,33 @@ func runActionList(w io.Writer, tasks []runner.Task, ctx runner.Context) {
 }
 
 func printDoctor() {
-	facts := system.Probe()
-	fmt.Println("sys-bozo doctor")
-	fmt.Println("host:          ", value(facts.Hostname))
-	fmt.Println("user:          ", value(facts.User))
-	fmt.Println("os:            ", facts.OS+"/"+facts.Arch)
+	writeDoctor(os.Stdout, system.Probe())
+}
+
+func writeDoctor(w io.Writer, facts system.Facts) {
+	fmt.Fprintln(w, "sys-bozo doctor")
+	fmt.Fprintln(w, "host:          ", value(facts.Hostname))
+	fmt.Fprintln(w, "user:          ", value(facts.User))
+	fmt.Fprintln(w, "os:            ", facts.OS+"/"+facts.Arch)
 	if facts.OSID != "" {
-		fmt.Println("os id:         ", facts.OSID)
+		fmt.Fprintln(w, "os id:         ", facts.OSID)
 	}
-	fmt.Println("dotfiles repo: ", value(facts.DotfilesRepo))
-	fmt.Println("branch:        ", value(facts.DotfilesBranch))
-	fmt.Println("dirty files:   ", facts.DotfilesDirty)
-	fmt.Println("hm generation: ", value(facts.HMGeneration))
-	fmt.Println("age key:       ", facts.AgeKeyExists)
-	fmt.Println("github key:    ", facts.GitHubKeyExists)
+	fmt.Fprintln(w, "dotfiles repo: ", value(facts.DotfilesRepo))
+	fmt.Fprintln(w, "branch:        ", value(facts.DotfilesBranch))
+	if facts.DotfilesStatusUnavailable {
+		fmt.Fprintln(w, "dirty files:    unavailable")
+	} else {
+		fmt.Fprintln(w, "dirty files:   ", facts.DotfilesDirty)
+	}
+	fmt.Fprintln(w, "hm generation: ", value(facts.HMGeneration))
+	fmt.Fprintln(w, "age key:       ", facts.AgeKeyExists)
+	fmt.Fprintln(w, "github key:    ", facts.GitHubKeyExists)
 	if facts.TailscaleIP != "" {
-		fmt.Println("tailscale ip:  ", facts.TailscaleIP)
+		fmt.Fprintln(w, "tailscale ip:  ", facts.TailscaleIP)
 	}
-	fmt.Println()
+	fmt.Fprintln(w)
 	for _, status := range facts.ManagerStatus() {
-		fmt.Println(status)
+		fmt.Fprintln(w, status)
 	}
 }
 

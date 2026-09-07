@@ -98,6 +98,16 @@ func Build() Context {
 }
 
 func buildContext(goos, goarch, osID string) Context {
+	// Nix system attributes use GNU architecture names rather than Go names.
+	nixArch := goarch
+	switch goarch {
+	case "arm64":
+		nixArch = "aarch64"
+	case "amd64":
+		nixArch = "x86_64"
+	case "386":
+		nixArch = "i686"
+	}
 	user := os.Getenv("USER")
 	if user == "" {
 		user = os.Getenv("LOGNAME")
@@ -141,7 +151,7 @@ func buildContext(goos, goarch, osID string) Context {
 		AptCacheBin:    findExe("apt-cache", "/usr/bin/apt-cache"),
 		NixBin:         findExe("nix", "/nix/var/nix/profiles/default/bin/nix"),
 		NixStoreBin:    findExe("nix-store", "/nix/var/nix/profiles/default/bin/nix-store"),
-		NixSystem:      goarch + "-" + goos,
+		NixSystem:      nixArch + "-" + goos,
 		BrewBin:        findExe("brew", "/opt/homebrew/bin/brew", "/usr/local/bin/brew"),
 		HomeManager:    findExe("home-manager", hmFallbacks...),
 		DarwinRebuild:  findExe("darwin-rebuild", "/run/current-system/sw/bin/darwin-rebuild"),

@@ -21,6 +21,9 @@ func TestBuildContextResolvesAptCacheForInjectedUbuntuHost(t *testing.T) {
 	if ctx.OS != "linux" || ctx.OSID != "ubuntu" {
 		t.Fatalf("host identity = %s/%s, want linux/ubuntu", ctx.OS, ctx.OSID)
 	}
+	if ctx.NixSystem != "x86_64-linux" {
+		t.Fatalf("Nix system = %q, want x86_64-linux", ctx.NixSystem)
+	}
 	if ctx.AptCacheBin != aptCache {
 		t.Fatalf("apt-cache = %q, want %q", ctx.AptCacheBin, aptCache)
 	}
@@ -40,6 +43,9 @@ fi
 	t.Setenv("PATH", binDir)
 
 	ctx := buildContext("darwin", "arm64", "")
+	if ctx.NixSystem != "aarch64-darwin" {
+		t.Fatalf("Nix system = %q, want aarch64-darwin", ctx.NixSystem)
+	}
 	want := []string{"displaylink", "firefox@developer-edition", "zed"}
 	if !slices.Equal(ctx.BrewOutdatedCasks, want) {
 		t.Fatalf("outdated casks=%q want %q", ctx.BrewOutdatedCasks, want)

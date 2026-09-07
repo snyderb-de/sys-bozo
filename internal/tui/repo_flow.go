@@ -404,7 +404,7 @@ func (m Model) repoDeleteDryRunCmd() tea.Cmd {
 		paths = append(paths, entry.Path)
 	}
 	return func() tea.Msg {
-		args := []string{"clean", "-nd", "--"}
+		args := []string{"--literal-pathspecs", "clean", "-nd", "--"}
 		args = append(args, paths...)
 		out, err := runner.Output(context.Background(), repo, gitBin, args...)
 		return repoDeleteDryRunMsg{requestID: requestID, output: strings.TrimSpace(string(out)), err: err}

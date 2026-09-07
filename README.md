@@ -86,6 +86,8 @@ Every action builds an immutable Review with exact paths and argv. Confirmation
 rechecks the complete Git status plus selected file bytes or symlink text. A
 stale Review runs nothing. Commits use native terminal handoff for hooks,
 signing, and credential prompts; history stores only the action kind and count.
+All repository action paths and diff/delete previews use literal Git pathspecs,
+so filenames containing wildcards or pathspec syntax cannot select other files.
 
 ### Add Package
 
@@ -171,6 +173,9 @@ Go is the project test harness from the start:
 go test ./...
 go vet ./...
 ```
+
+For the pinned Nix build, run `nix build`. The committed `flake.lock` fixes the
+package set used by that build.
 
 Tests cover project smoke checks, planning and execution, terminal handoff,
 the TUI, package search/edit/apply/verify/revert behavior, and fake-home safety.

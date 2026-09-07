@@ -88,7 +88,8 @@ func ProposeAction(request ActionRequest) (Operation, error) {
 	op := Operation{Repo: request.Repo, GitBin: request.GitBin, Kind: request.Kind, Entries: entries, Fingerprints: fingerprints}
 
 	withPaths := func(prefix ...string) []string {
-		args := append([]string(nil), prefix...)
+		// The -- boundary stops options, but does not disable Git pathspec magic.
+		args := append([]string{"--literal-pathspecs"}, prefix...)
 		args = append(args, "--")
 		return append(args, paths...)
 	}

@@ -260,7 +260,7 @@ func TestRepoActionPreparationIsReadOnlyUntilReview(t *testing.T) {
 		t.Fatalf("screen=%v review=%#v", got.screen, got.reviewed.Repo)
 	}
 	view := got.viewRepoReview()
-	for _, want := range []string{"STASH", "tracked.txt", "git stash push", "STALE CHECK"} {
+	for _, want := range []string{"STASH", "tracked.txt", "--literal-pathspecs stash", "STALE CHECK"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("missing %q:\n%s", want, view)
 		}
@@ -284,6 +284,37 @@ func initTUIRepo(t *testing.T) string {
 	gitTUIOutput(t, repo, "add", "--", "tracked.txt")
 	gitTUIOutput(t, repo, "commit", "-qm", "fixture base")
 	return repo
+}
+
+func TestRepoDeletePreviewTreatsSelectedPathLiterally(t *testing.T) {
+	repo := initTUIRepo(t)
+	for _, name := range []string{"*.tmp", "other.tmp"} {
+		if err := os.WriteFile(filepath.Join(repo, name), []byte("fixture\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	status := repostate.Inspect(context.Background(), repostate.ExecRunner{}, repo, "git")
+	if status.Err != nil {
+		t.Fatal(status.Err)
+	}
+	m := testGuidedModel()
+	m.facts.DotfilesRepo = repo
+	m.repoRunner = repostate.ExecRunner{}
+	m.repoFlow = repoFlow{status: status, selected: map[[32]byte]bool{}}
+	for _, entry := range status.Entries {
+		if entry.Path == "*.tmp" {
+			m.repoFlow.selected[repoEntryID(entry)] = true
+		}
+	}
+	msg := m.repoDeleteDryRunCmd()().(repoDeleteDryRunMsg)
+	if msg.err != nil || !strings.Contains(msg.output, "*.tmp") || strings.Contains(msg.output, "other.tmp") {
+		t.Fatalf("delete preview=%q err=%v", msg.output, msg.err)
+	}
+	for _, name := range []string{"*.tmp", "other.tmp"} {
+		if _, err := os.Stat(filepath.Join(repo, name)); err != nil {
+			t.Fatalf("preview touched %s: %v", name, err)
+		}
+	}
 }
 
 func gitTUIOutput(t *testing.T, repo string, args ...string) []byte {
