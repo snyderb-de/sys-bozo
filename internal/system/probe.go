@@ -95,7 +95,7 @@ func Probe() Facts {
 		facts.BrewOutdated = brewOutdatedCount(facts.BrewPath)
 	}
 
-	facts.HMGeneration = hmGeneration(facts.HomeManager)
+	facts.HMGeneration = hmGeneration(facts.HomeManager, facts.User)
 
 	ageKey := os.Getenv("SOPS_AGE_KEY_FILE")
 	if ageKey == "" {
@@ -377,7 +377,16 @@ func gitBranch(dir string) string {
 	return strings.TrimSpace(string(out))
 }
 
-func hmGeneration(hmBin string) string {
+// hmGeneration reports the generation that actually activated this user's
+// Home Manager configuration. As a nix-darwin module, Home Manager activates
+// with the system generation and never advances the standalone counter that
+// `home-manager generations` reads, so that counter freezes at whatever it
+// reached before the migration. Reporting it unconditionally shows a real but
+// long-stale number with nothing marking it stale.
+func hmGeneration(hmBin, user string) string {
+	if generation := darwinModuleGeneration(user); generation != "" {
+		return generation
+	}
 	if hmBin == "" {
 		return "none"
 	}
@@ -403,6 +412,40 @@ func hmGeneration(hmBin string) string {
 		return strings.TrimSpace(line)
 	}
 	return "none"
+}
+
+// Overridable so tests can point at a fixture tree.
+var (
+	darwinPerUserProfiles = "/etc/profiles/per-user"
+	darwinSystemProfile   = "/nix/var/nix/profiles/system"
+)
+
+// darwinModuleGeneration returns the system generation when Home Manager is a
+// nix-darwin module, identified by the per-user profile nix-darwin builds at
+// /etc/profiles/per-user. It returns "" for a standalone install so the caller
+// falls back to `home-manager generations`.
+func darwinModuleGeneration(user string) string {
+	if user == "" {
+		return ""
+	}
+	if _, err := os.Stat(filepath.Join(darwinPerUserProfiles, user)); err != nil {
+		return ""
+	}
+	systemProfile := darwinSystemProfile
+	target, err := os.Readlink(systemProfile)
+	if err != nil {
+		return ""
+	}
+	id := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(target), "system-"), "-link")
+	if id == "" {
+		return ""
+	}
+	label := "gen " + id + " (nix-darwin)"
+	info, err := os.Lstat(systemProfile)
+	if err != nil {
+		return label
+	}
+	return label + " · " + info.ModTime().Format("2006-01-02")
 }
 
 func tailscaleIP() string {

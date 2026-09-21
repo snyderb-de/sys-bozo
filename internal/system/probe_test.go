@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -111,4 +112,55 @@ func findAuditItem(t *testing.T, items []AuditItem, name string) AuditItem {
 	}
 	t.Fatalf("missing audit item %q", name)
 	return AuditItem{}
+}
+
+func TestDarwinModuleGenerationReportsSystemGeneration(t *testing.T) {
+	root := t.TempDir()
+	perUser := filepath.Join(root, "etc", "profiles", "per-user")
+	if err := os.MkdirAll(filepath.Join(perUser, "bag"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	profiles := filepath.Join(root, "nix", "profiles")
+	if err := os.MkdirAll(profiles, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	system := filepath.Join(profiles, "system")
+	if err := os.Symlink("system-84-link", system); err != nil {
+		t.Fatal(err)
+	}
+
+	defer swapProfilePaths(perUser, system)()
+
+	got := darwinModuleGeneration("bag")
+	if !strings.HasPrefix(got, "gen 84 (nix-darwin) · ") {
+		t.Fatalf("darwinModuleGeneration = %q, want gen 84 (nix-darwin) with a date", got)
+	}
+}
+
+func TestDarwinModuleGenerationEmptyForStandaloneInstall(t *testing.T) {
+	root := t.TempDir()
+	// No /etc/profiles/per-user/<user>: Home Manager is standalone, so the
+	// caller must fall back to `home-manager generations`.
+	perUser := filepath.Join(root, "etc", "profiles", "per-user")
+	if err := os.MkdirAll(perUser, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	system := filepath.Join(root, "system")
+	if err := os.Symlink("system-84-link", system); err != nil {
+		t.Fatal(err)
+	}
+
+	defer swapProfilePaths(perUser, system)()
+
+	for _, user := range []string{"bag", ""} {
+		if got := darwinModuleGeneration(user); got != "" {
+			t.Fatalf("darwinModuleGeneration(%q) = %q, want empty", user, got)
+		}
+	}
+}
+
+func swapProfilePaths(perUser, system string) func() {
+	prevPerUser, prevSystem := darwinPerUserProfiles, darwinSystemProfile
+	darwinPerUserProfiles, darwinSystemProfile = perUser, system
+	return func() { darwinPerUserProfiles, darwinSystemProfile = prevPerUser, prevSystem }
 }
