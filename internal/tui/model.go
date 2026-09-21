@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -161,7 +162,8 @@ type Model struct {
 
 	activeScanner *bufio.Scanner
 	activeWait    func() error
-	terminalExec  func(runner.WorkItem, time.Time) tea.Cmd
+	terminalExec  func(runner.WorkItem, time.Time, io.Writer) tea.Cmd
+	termCapture   *terminalCapture // stderr tee for the running interactive step
 
 	auditItems []system.AuditItem
 	auditReady bool

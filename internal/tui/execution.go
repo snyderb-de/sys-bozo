@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"syscall"
@@ -137,6 +139,7 @@ func (m *Model) beginReviewedRun() {
 	m.runElapsed = 0
 	m.stepResults = nil
 	m.stepLogStart = 0
+	m.termCapture = nil
 	m.resultLogVisible = false
 	m.logLines = nil
 	m.logFollow = true
@@ -158,8 +161,17 @@ func cloneWorkItems(items []runner.WorkItem) []runner.WorkItem {
 
 // ── Run logic ─────────────────────────────────────────────────────────────
 
-func runInteractiveWork(item runner.WorkItem, start time.Time) tea.Cmd {
-	return tea.ExecProcess(runner.Command(item), func(err error) tea.Msg {
+// runInteractiveWork hands the terminal to the child process and tees its
+// stderr into capture. Bubbletea only wires up a stream it finds unset, so
+// presetting Stderr keeps stdin and stdout pointed at the real terminal: the
+// child still sees a tty for prompts and progress, and errors are still
+// printed, they are just also recorded for the result screen.
+func runInteractiveWork(item runner.WorkItem, start time.Time, capture io.Writer) tea.Cmd {
+	cmd := runner.Command(item)
+	if capture != nil {
+		cmd.Stderr = io.MultiWriter(os.Stderr, capture)
+	}
+	return tea.ExecProcess(cmd, func(err error) tea.Msg {
 		return stepDoneMsg{err: err, elapsed: time.Since(start), cancelled: terminalWorkCancelled(err)}
 	})
 }
@@ -251,7 +263,8 @@ func (m *Model) advanceQueue() tea.Cmd {
 		if execInteractive == nil {
 			execInteractive = runInteractiveWork
 		}
-		return execInteractive(item, m.stepStart)
+		m.termCapture = newTerminalCapture(stepOutputTailLines)
+		return execInteractive(item, m.stepStart, m.termCapture)
 	}
 
 	scanner, wait, err := runner.StartWork(item)
@@ -283,7 +296,12 @@ func (m *Model) recordStepResult(index int, status history.Status, duration time
 	item := cloneWorkItems(m.queue[index : index+1])[0]
 	var output []string
 	if status != history.StatusSuccess {
-		output = m.stepOutputExcerpt()
+		if item.Mode == runner.ExecutionInteractive && m.termCapture != nil {
+			output = m.termCapture.Lines()
+		}
+		if len(output) == 0 {
+			output = m.stepOutputExcerpt()
+		}
 	}
 	m.stepResults[index] = stepResult{Item: item, Status: status, Duration: duration, Err: err, Output: output}
 }

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -37,7 +38,7 @@ func testGuidedModel() Model {
 		tasks:    runner.DefaultTasks(ctx),
 		tabs:     []string{"Dashboard", "Actions", "Config", "Audit", "Doctor"},
 		selected: map[string]bool{},
-		terminalExec: func(runner.WorkItem, time.Time) tea.Cmd {
+		terminalExec: func(runner.WorkItem, time.Time, io.Writer) tea.Cmd {
 			return nil
 		},
 	}
@@ -334,7 +335,7 @@ func TestRepoCommitUsesTerminalHandoffAfterValidation(t *testing.T) {
 	m.screen = screenReview
 	m.validateRepo = func(context.Context, repostate.Operation) error { return nil }
 	called := 0
-	m.terminalExec = func(item runner.WorkItem, _ time.Time) tea.Cmd {
+	m.terminalExec = func(item runner.WorkItem, _ time.Time, _ io.Writer) tea.Cmd {
 		called++
 		if item.Mode != runner.ExecutionInteractive || item.Name != "git" {
 			t.Fatalf("item=%#v", item)
@@ -364,7 +365,7 @@ func TestRepoFailedAddNeverInvokesCommit(t *testing.T) {
 	}
 	m.reviewed = reviewedPlan{Action: "repo:commit:1", Repo: &repoReview{Operation: repostate.Operation{Kind: repostate.ActionCommit}}, Items: cloneWorkItems(m.queue)}
 	called := 0
-	m.terminalExec = func(runner.WorkItem, time.Time) tea.Cmd { called++; return nil }
+	m.terminalExec = func(runner.WorkItem, time.Time, io.Writer) tea.Cmd { called++; return nil }
 	next, cmd := m.Update(stepDoneMsg{err: errors.New("add failed"), elapsed: time.Millisecond})
 	got := next.(Model)
 	if cmd != nil || called != 0 || got.screen != screenResult {
@@ -921,7 +922,7 @@ func TestConfigEditUsesTempResultAndAppliesOnlyAfterReviewedConfirmation(t *test
 		return fileedit.Apply(proposal)
 	}
 	rebuilds := 0
-	m.terminalExec = func(item runner.WorkItem, _ time.Time) tea.Cmd {
+	m.terminalExec = func(item runner.WorkItem, _ time.Time, _ io.Writer) tea.Cmd {
 		rebuilds++
 		if runner.CmdLabel(item) != "fixture-hms --safe" {
 			t.Fatalf("item=%q", runner.CmdLabel(item))
@@ -1405,7 +1406,7 @@ func TestConfirmedPackageRunsApplyThenReviewedQueueThenVerify(t *testing.T) {
 		order = append(order, "apply")
 		return edit, nil
 	}
-	m.terminalExec = func(item runner.WorkItem, _ time.Time) tea.Cmd {
+	m.terminalExec = func(item runner.WorkItem, _ time.Time, _ io.Writer) tea.Cmd {
 		order = append(order, "rebuild:"+runner.CmdLabel(item))
 		return func() tea.Msg { return stepDoneMsg{elapsed: time.Second} }
 	}
@@ -1451,7 +1452,7 @@ func TestPackageApplyFailureStopsBeforeRebuildAndVerify(t *testing.T) {
 	wantErr := errors.New("fixture stale apply")
 	m.applyPackage = func(packages.Proposal) (packages.AppliedEdit, error) { return packages.AppliedEdit{}, wantErr }
 	rebuildCalled := false
-	m.terminalExec = func(runner.WorkItem, time.Time) tea.Cmd { rebuildCalled = true; return nil }
+	m.terminalExec = func(runner.WorkItem, time.Time, io.Writer) tea.Cmd { rebuildCalled = true; return nil }
 	verifyCalled := false
 	m.verifyPackage = func(packages.VerifySpec) packages.VerifyResult {
 		verifyCalled = true
@@ -1979,7 +1980,7 @@ func TestPackageWorkflowFakeRepoSmoke(t *testing.T) {
 		return packages.Apply(proposal)
 	}
 	rebuilds := 0
-	m.terminalExec = func(item runner.WorkItem, _ time.Time) tea.Cmd {
+	m.terminalExec = func(item runner.WorkItem, _ time.Time, _ io.Writer) tea.Cmd {
 		rebuilds++
 		if runner.CmdLabel(item) != "fixture-hms --safe" {
 			t.Fatalf("rebuild=%q", runner.CmdLabel(item))
@@ -2110,7 +2111,7 @@ func TestPackageRetryReviewsFailedTailWithoutReapplyingDeclaration(t *testing.T)
 		return packages.AppliedEdit{}, nil
 	}
 	rebuildCalled := false
-	m.terminalExec = func(item runner.WorkItem, _ time.Time) tea.Cmd {
+	m.terminalExec = func(item runner.WorkItem, _ time.Time, _ io.Writer) tea.Cmd {
 		rebuildCalled = true
 		return func() tea.Msg { return stepDoneMsg{} }
 	}
@@ -2145,7 +2146,7 @@ func TestReversePackageRebuildRetrySkipsAppliedReverseEdit(t *testing.T) {
 		return packages.AppliedEdit{Path: "/fixture/packages.nix", Before: []byte("new"), After: []byte("old")}, nil
 	}
 	rebuildCalls := 0
-	m.terminalExec = func(runner.WorkItem, time.Time) tea.Cmd {
+	m.terminalExec = func(runner.WorkItem, time.Time, io.Writer) tea.Cmd {
 		rebuildCalls++
 		if rebuildCalls == 1 {
 			return func() tea.Msg {
@@ -2527,7 +2528,7 @@ func TestResultRetryReviewsFailedTailWithoutExecuting(t *testing.T) {
 		{Item: items[1], Status: history.StatusFailure, Duration: time.Second, Err: m.runErr},
 	}
 	called := false
-	m.terminalExec = func(runner.WorkItem, time.Time) tea.Cmd {
+	m.terminalExec = func(runner.WorkItem, time.Time, io.Writer) tea.Cmd {
 		called = true
 		return func() tea.Msg { return stepDoneMsg{} }
 	}
@@ -3283,7 +3284,7 @@ func TestConfirmRunsExactReviewedItems(t *testing.T) {
 	m.reviewed = reviewedPlan{Action: "hms", Items: []runner.WorkItem{want}}
 	var executed runner.WorkItem
 	called := false
-	m.terminalExec = func(item runner.WorkItem, _ time.Time) tea.Cmd {
+	m.terminalExec = func(item runner.WorkItem, _ time.Time, _ io.Writer) tea.Cmd {
 		called = true
 		executed = item
 		return func() tea.Msg { return stepDoneMsg{} }
@@ -3325,7 +3326,7 @@ func TestReviewedAndQueuedWorkItemsDoNotAlias(t *testing.T) {
 		runCtx:   runner.Context{},
 		tasks:    []runner.Task{task},
 		selected: map[string]bool{"safe-test-task": true},
-		terminalExec: func(runner.WorkItem, time.Time) tea.Cmd {
+		terminalExec: func(runner.WorkItem, time.Time, io.Writer) tea.Cmd {
 			return func() tea.Msg { return stepDoneMsg{} }
 		},
 	}
@@ -3708,7 +3709,7 @@ func TestAdvanceQueueUsesTerminalHandoffForInteractiveWork(t *testing.T) {
 	m := Model{
 		mode:  modeRunning,
 		queue: []runner.WorkItem{{Name: "sudo", Args: []string{"-v"}, Mode: runner.ExecutionInteractive}},
-		terminalExec: func(item runner.WorkItem, start time.Time) tea.Cmd {
+		terminalExec: func(item runner.WorkItem, start time.Time, _ io.Writer) tea.Cmd {
 			called = true
 			return func() tea.Msg { return stepDoneMsg{elapsed: time.Second} }
 		},
@@ -3733,7 +3734,7 @@ func TestInteractiveHandoffReturnAdvancesToSuccessResult(t *testing.T) {
 		queue:     []runner.WorkItem{item},
 		runAction: "fixture-terminal",
 		runStart:  time.Now().Add(-time.Second),
-		terminalExec: func(runner.WorkItem, time.Time) tea.Cmd {
+		terminalExec: func(runner.WorkItem, time.Time, io.Writer) tea.Cmd {
 			return func() tea.Msg { return stepDoneMsg{elapsed: time.Second} }
 		},
 	}
