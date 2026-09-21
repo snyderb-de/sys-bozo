@@ -283,30 +283,49 @@ func (m *Model) recordStepResult(index int, status history.Status, duration time
 	item := cloneWorkItems(m.queue[index : index+1])[0]
 	var output []string
 	if status != history.StatusSuccess {
-		output = m.stepOutputTail()
+		output = m.stepOutputExcerpt()
 	}
 	m.stepResults[index] = stepResult{Item: item, Status: status, Duration: duration, Err: err, Output: output}
 }
 
 const stepOutputTailLines = 8
 
-// stepOutputTail returns the last lines the running step printed. An exec error
-// is only ever "exit status 1", so the tool's own message is the actionable part.
+// stepOutputExcerpt returns what a reader needs to diagnose a failed step. An
+// exec error is only ever "exit status 1", so the tool's own words are the
+// actionable part. Tools disagree on where those words sit: Nix prints the root
+// cause first and then cascading "Cannot build" lines, so a plain tail keeps
+// only the cascade. Keep the first error line as well, and say how much was cut.
 // Interactive steps write straight to the terminal and return nothing here.
-func (m Model) stepOutputTail() []string {
+func (m Model) stepOutputExcerpt() []string {
 	var lines []string
+	firstError := -1
 	for _, line := range m.logLines[clamp(m.stepLogStart, 0, len(m.logLines)):] {
 		if line.kind != logOutput && line.kind != logError {
 			continue
 		}
-		if text := strings.TrimSpace(line.text); text != "" {
-			lines = append(lines, text)
+		text := strings.TrimSpace(line.text)
+		if text == "" {
+			continue
 		}
+		if firstError < 0 && line.kind == logError {
+			firstError = len(lines)
+		}
+		lines = append(lines, text)
 	}
-	if len(lines) > stepOutputTailLines {
-		lines = lines[len(lines)-stepOutputTailLines:]
+	if len(lines) <= stepOutputTailLines {
+		return lines
 	}
-	return lines
+	tailFrom := len(lines) - stepOutputTailLines
+	// The first error already survives inside the tail, or there is no error
+	// line to rescue; the tail alone is the whole story.
+	if firstError < 0 || firstError >= tailFrom {
+		return lines[tailFrom:]
+	}
+	excerpt := []string{lines[firstError]}
+	if omitted := tailFrom - firstError - 1; omitted > 0 {
+		excerpt = append(excerpt, fmt.Sprintf("… %d more lines …", omitted))
+	}
+	return append(excerpt, lines[tailFrom:]...)
 }
 
 // failedStep reports the step a run stopped on, so history and the result

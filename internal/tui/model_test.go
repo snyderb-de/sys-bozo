@@ -3979,3 +3979,75 @@ func TestHistoryViewShowsFailureReason(t *testing.T) {
 		t.Fatalf("success entry produced rows: %q", got)
 	}
 }
+
+func TestStepOutputKeepsFirstErrorAheadOfCascade(t *testing.T) {
+	// Real shape of a failed darwin-rebuild: the root cause is printed first and
+	// nine cascading "Cannot build" lines follow it.
+	output := []string{
+		"building the system configuration...",
+		"evaluation warning: stdenv.isLinux is deprecated",
+		"warning: Using 'builtins.derivation' to create a derivation named 'etc'",
+		"error: creating file '/nix/store/bjq-cfg-if-1.0.4/CHANGELOG.md': Too many open files",
+		"error: some substitutes for the outputs of derivation 'cfg-if-1.0.4.drv' failed",
+		"error: Cannot build '/nix/store/m3r-cargo-vendor-dir.drv'.",
+		"error: Cannot build '/nix/store/fmh-herdr-0.9.1.drv'.",
+		"error: Cannot build '/nix/store/33b-home-manager-applications.drv'.",
+		"error: Cannot build '/nix/store/a3l-home-manager-fonts.drv'.",
+		"error: Cannot build '/nix/store/jws-home-manager-path.drv'.",
+		"error: Cannot build '/nix/store/9pr-home-manager-generation.drv'.",
+		"error: Cannot build '/nix/store/nh4-user-environment.drv'.",
+		"error: Cannot build '/nix/store/7mn-darwin-system-26.05.drv'.",
+	}
+	m := testGuidedModel()
+	m.logLines = []logLine{{kind: logCmd, text: "    $ darwin-rebuild switch"}}
+	m.stepLogStart = len(m.logLines)
+	for _, line := range output {
+		m.logLines = append(m.logLines, classifyLine(line))
+	}
+
+	got := m.stepOutputExcerpt()
+
+	if !strings.Contains(got[0], "Too many open files") {
+		t.Fatalf("root cause not kept first, got:\n%s", strings.Join(got, "\n"))
+	}
+	if !strings.Contains(got[1], "1 more lines") {
+		t.Fatalf("elision marker missing, got:\n%s", strings.Join(got, "\n"))
+	}
+	if last := got[len(got)-1]; !strings.Contains(last, "darwin-system") {
+		t.Fatalf("tail not kept, last=%q", last)
+	}
+	if len(got) != 2+stepOutputTailLines {
+		t.Fatalf("excerpt length=%d want %d", len(got), 2+stepOutputTailLines)
+	}
+}
+
+func TestStepOutputSkipsElisionWhenFirstErrorIsInTail(t *testing.T) {
+	m := testGuidedModel()
+	m.logLines = []logLine{{kind: logCmd, text: "    $ brew upgrade"}}
+	m.stepLogStart = len(m.logLines)
+	for i := range 10 {
+		m.logLines = append(m.logLines, classifyLine(fmt.Sprintf("line %d", i)))
+	}
+	m.logLines = append(m.logLines, classifyLine("error: the only failure"))
+
+	got := m.stepOutputExcerpt()
+
+	if len(got) != stepOutputTailLines {
+		t.Fatalf("excerpt length=%d want %d: %q", len(got), stepOutputTailLines, got)
+	}
+	for _, line := range got {
+		if strings.Contains(line, "more lines") {
+			t.Fatalf("unexpected elision marker: %q", got)
+		}
+	}
+}
+
+func TestStepOutputKeepsShortOutputWhole(t *testing.T) {
+	m := testGuidedModel()
+	m.stepLogStart = 0
+	m.logLines = []logLine{classifyLine("error: boom"), classifyLine("context line")}
+
+	if got := m.stepOutputExcerpt(); len(got) != 2 || !strings.Contains(got[0], "boom") {
+		t.Fatalf("short output altered: %q", got)
+	}
+}
