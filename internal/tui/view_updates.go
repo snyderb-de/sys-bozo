@@ -116,7 +116,7 @@ func (m Model) updateResultRows() []string {
 		}
 		rows = append(rows, numberedRow(s, fmt.Sprintf("%02d", i+1), updateStepTitle(item), statusText(s, state, kind), width, false))
 		if i < len(m.stepResults) && m.stepResults[i].Err != nil {
-			rows = append(rows, resultErrorRows(s, m.stepResults[i].Err.Error(), width, false)...)
+			rows = append(rows, stepFailureRows(s, m.stepResults[i], width, false)...)
 		}
 	}
 	rows = append(rows, "")

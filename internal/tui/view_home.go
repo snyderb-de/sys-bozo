@@ -55,7 +55,7 @@ func (m Model) viewLegacy() string {
 	if w <= 0 {
 		w = 120
 	}
-	inner := clamp(w-4, 80, 140)
+	inner := max(80, w-4)
 
 	parts := []string{
 		m.viewHeader(inner),

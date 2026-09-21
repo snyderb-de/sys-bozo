@@ -65,6 +65,7 @@ func (m Model) viewHistory() string {
 		labelWidth := max(1, contentWidth-6-lipgloss.Width(renderedStatus))
 		label = truncateVisible(label, labelWidth)
 		rows = append(rows, numberedRow(s, fmt.Sprintf("%02d", i+1), label, renderedStatus, contentWidth, false))
+		rows = append(rows, historyFailureRows(s, entry, contentWidth)...)
 	}
 	footer := "ESCAPE BACK"
 	if visible < len(entries) {
@@ -72,6 +73,28 @@ func (m Model) viewHistory() string {
 	}
 	rows = append(rows, "", majorRule(s, contentWidth, false), "", s.muted.Render(footer))
 	return primaryFrame(s, m.width, strings.Join(rows, "\n"))
+}
+
+// historyFailureRows names the step a past run stopped on and the message the
+// tool printed, so a failure stays readable after the TUI has exited.
+func historyFailureRows(s uiStyles, entry history.Entry, width int) []string {
+	if entry.EffectiveStatus() == history.StatusSuccess {
+		return nil
+	}
+	const indent = "      "
+	lineWidth := max(1, width-len(indent))
+	var rows []string
+	if entry.Step != "" {
+		rows = append(rows, s.muted.Render(indent+truncateVisible("at: "+entry.Step, lineWidth)))
+	}
+	if entry.Error != "" {
+		rows = append(rows, s.danger.Render(indent+truncateVisible(entry.Error, lineWidth)))
+	}
+	if len(entry.Output) > 0 {
+		last := entry.Output[len(entry.Output)-1]
+		rows = append(rows, s.danger.Render(indent+truncateVisible(last, lineWidth)))
+	}
+	return rows
 }
 
 // ── Config ────────────────────────────────────────────────────────────────

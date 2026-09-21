@@ -343,7 +343,7 @@ func (m Model) viewResult() string {
 		}
 		rows = append(rows, reviewCommandRows(s, fmt.Sprintf("%02d", i+1), command, statusText(s, label, rowKind), contentWidth)...)
 		if i < len(m.stepResults) && m.stepResults[i].Err != nil {
-			rows = append(rows, resultErrorRows(s, m.stepResults[i].Err.Error(), contentWidth, m.height > 0 && m.height <= 24)...)
+			rows = append(rows, stepFailureRows(s, m.stepResults[i], contentWidth, m.height > 0 && m.height <= 24)...)
 			renderedError = true
 		}
 	}
@@ -355,6 +355,42 @@ func (m Model) viewResult() string {
 	}
 	rows = append(rows, "", majorRule(s, contentWidth, false), "", s.muted.Render(m.resultFooter(false)))
 	return primaryFrame(s, m.width, strings.Join(rows, "\n"))
+}
+
+const stepFailureIndent = "      "
+
+// stepFailureRows shows the tool's own last output and the exact command to
+// rerun, so a failed step is actionable without opening the log pane.
+func stepFailureRows(s uiStyles, result stepResult, width int, compact bool) []string {
+	var rows []string
+	if result.Err != nil {
+		rows = append(rows, resultErrorRows(s, result.Err.Error(), width, compact)...)
+	}
+	lineWidth := max(1, width-len(stepFailureIndent))
+	output := result.Output
+	if compact && len(output) > 2 {
+		output = output[len(output)-2:]
+	}
+	for _, line := range output {
+		rows = append(rows, s.muted.Render(stepFailureIndent+truncateVisible(line, lineWidth)))
+	}
+	if rerun := rerunCommand(result.Item); rerun != "" {
+		rows = append(rows, s.attention.Render(stepFailureIndent+truncateVisible("Rerun by hand: "+rerun, lineWidth)))
+	}
+	return rows
+}
+
+// rerunCommand spells the failed step as something the user can paste into a
+// shell, including the directory the step ran in.
+func rerunCommand(item runner.WorkItem) string {
+	if item.Name == "" {
+		return ""
+	}
+	command := runner.CmdLabel(item)
+	if item.Dir != "" {
+		return "cd " + item.Dir + " && " + command
+	}
+	return command
 }
 
 func resultErrorRows(s uiStyles, message string, width int, compact bool) []string {

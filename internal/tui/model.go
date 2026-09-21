@@ -80,6 +80,9 @@ type stepResult struct {
 	Status   history.Status
 	Duration time.Duration
 	Err      error
+	// Output is the tail of the step's own output, kept so a failure can be
+	// read on the result screen instead of only in the log pane.
+	Output []string
 }
 
 // ── Config file entry ─────────────────────────────────────────────────────
@@ -147,6 +150,7 @@ type Model struct {
 	runCancelled     bool
 	runElapsed       time.Duration
 	stepResults      []stepResult
+	stepLogStart     int // index into logLines where the running step began
 	resultLogVisible bool
 	revertErr        error
 

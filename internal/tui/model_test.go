@@ -2283,11 +2283,26 @@ func isTerminalFile(file *os.File) bool {
 	return cmd.Run() == nil
 }
 
-func TestLayoutWidthTargets100AndCaps140(t *testing.T) {
-	for _, tc := range []struct{ input, want int }{{72, 72}, {80, 80}, {100, 100}, {160, 140}} {
+func TestLayoutWidthFollowsTerminalWidth(t *testing.T) {
+	for _, tc := range []struct{ input, want int }{{0, 100}, {72, 72}, {80, 80}, {100, 100}, {160, 160}, {240, 240}} {
 		if got := layoutWidth(tc.input); got != tc.want {
 			t.Fatalf("layoutWidth(%d)=%d want %d", tc.input, got, tc.want)
 		}
+	}
+}
+
+func TestResizeWidensRenderedFrame(t *testing.T) {
+	m := testGuidedModel()
+	m.styles = newUIStyles(true)
+	narrow, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+	wide, _ := narrow.(Model).Update(tea.WindowSizeMsg{Width: 200, Height: 40})
+	narrowWidth := lipgloss.Width(narrow.(Model).View())
+	wideWidth := lipgloss.Width(wide.(Model).View())
+	if wideWidth <= narrowWidth {
+		t.Fatalf("frame did not widen: 100 cols rendered %d, 200 cols rendered %d", narrowWidth, wideWidth)
+	}
+	if wideWidth > 200 {
+		t.Fatalf("frame overflowed the terminal: rendered %d for 200 cols", wideWidth)
 	}
 }
 
@@ -3874,5 +3889,93 @@ func TestStreamedStartFailureLogHasSingleCommandPrefix(t *testing.T) {
 	entries := history.Read(1)
 	if len(entries) != 1 || entries[0].OK || entries[0].Status != history.StatusFailure {
 		t.Fatalf("start failure history=%#v", entries)
+	}
+}
+
+func TestFailedStepKeepsToolOutputAndRerunCommand(t *testing.T) {
+	m := testGuidedModel()
+	m.width, m.height = 100, 40
+	m.styles = newUIStyles(true)
+	m.queue = []runner.WorkItem{{
+		Title: "Update Nix version pins", TaskLabel: "Update Nix version pins",
+		Name: "/nix/bin/nix", Args: []string{"flake", "update"}, Dir: "/Users/bag/code/dotfiles",
+	}}
+	m.logLines = []logLine{{kind: logCmd, text: "    $ nix flake update"}}
+	m.stepLogStart = len(m.logLines)
+	m.logLines = append(m.logLines,
+		logLine{kind: logOutput, text: "  unpacking 'github:NixOS/nixpkgs/abc'..."},
+		logLine{kind: logError, text: "  error: unable to download 'https://api.github.com/...': HTTP error 403"},
+	)
+
+	m.recordStepResult(0, history.StatusFailure, 7*time.Second, errors.New("exit status 1"))
+
+	got := m.stepResults[0].Output
+	if len(got) != 2 || !strings.Contains(got[1], "HTTP error 403") {
+		t.Fatalf("output tail=%q", got)
+	}
+
+	rendered := strings.Join(stepFailureRows(m.styles, m.stepResults[0], 100, false), "\n")
+	for _, want := range []string{"exit status 1", "HTTP error 403", "Rerun by hand: cd /Users/bag/code/dotfiles && /nix/bin/nix flake update"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("result rows missing %q in:\n%s", want, rendered)
+		}
+	}
+}
+
+func TestSuccessfulStepKeepsNoOutputTail(t *testing.T) {
+	m := testGuidedModel()
+	m.queue = []runner.WorkItem{{Title: "Refresh Homebrew metadata", Name: "brew", Args: []string{"update"}}}
+	m.stepLogStart = 0
+	m.logLines = []logLine{{kind: logOutput, text: "  Already up-to-date."}}
+
+	m.recordStepResult(0, history.StatusSuccess, time.Second, nil)
+
+	if got := m.stepResults[0].Output; got != nil {
+		t.Fatalf("success kept output tail: %q", got)
+	}
+}
+
+func TestHistoryRecordsFailingStepAndError(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	m := testGuidedModel()
+	m.width, m.height = 100, 40
+	m.styles = newUIStyles(true)
+	m.runAction = "nix-update"
+	m.runStart = time.Now()
+	m.queue = []runner.WorkItem{{Title: "Update Nix version pins", Name: "nix", Args: []string{"flake", "update"}}}
+	m.reviewed = reviewedPlan{Action: "nix-update", Items: cloneWorkItems(m.queue)}
+	m.stepLogStart = 0
+	m.logLines = []logLine{{kind: logError, text: "  error: unable to download: HTTP error 403"}}
+	m.recordStepResult(0, history.StatusFailure, 7*time.Second, errors.New("exit status 1"))
+
+	m.finishRun(errors.New("exit status 1"), false, 7*time.Second)
+
+	entries := history.Read(1)
+	if len(entries) != 1 {
+		t.Fatalf("entries=%d", len(entries))
+	}
+	entry := entries[0]
+	if entry.Step != "Update Nix version pins" || entry.Error != "exit status 1" {
+		t.Fatalf("step=%q error=%q", entry.Step, entry.Error)
+	}
+	if len(entry.Output) != 1 || !strings.Contains(entry.Output[0], "HTTP error 403") {
+		t.Fatalf("output=%q", entry.Output)
+	}
+}
+
+func TestHistoryViewShowsFailureReason(t *testing.T) {
+	s := newUIStyles(true)
+	entry := history.Entry{
+		Status: history.StatusFailure, Step: "Update Nix version pins",
+		Error: "exit status 1", Output: []string{"warning: ignoring", "error: HTTP error 403"},
+	}
+	rendered := strings.Join(historyFailureRows(s, entry, 100), "\n")
+	for _, want := range []string{"at: Update Nix version pins", "exit status 1", "HTTP error 403"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("history rows missing %q in:\n%s", want, rendered)
+		}
+	}
+	if got := historyFailureRows(s, history.Entry{Status: history.StatusSuccess}, 100); got != nil {
+		t.Fatalf("success entry produced rows: %q", got)
 	}
 }

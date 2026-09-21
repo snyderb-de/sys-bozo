@@ -115,12 +115,11 @@ var (
 
 // ── Layout helpers ────────────────────────────────────────────────────────
 
+// layoutWidth follows the terminal so a resized window uses the new columns.
+// The frame carries no border, so the full width renders without wrapping.
 func layoutWidth(width int) int {
 	if width <= 0 {
 		return 100
-	}
-	if width > 140 {
-		return 140
 	}
 	return width
 }

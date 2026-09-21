@@ -136,6 +136,7 @@ func (m *Model) beginReviewedRun() {
 	m.runCancelled = false
 	m.runElapsed = 0
 	m.stepResults = nil
+	m.stepLogStart = 0
 	m.resultLogVisible = false
 	m.logLines = nil
 	m.logFollow = true
@@ -236,6 +237,7 @@ func (m *Model) advanceQueue() tea.Cmd {
 
 	m.logLines = append(m.logLines, logLine{kind: logCmd,
 		text: "    $ " + runner.CmdLabel(item)})
+	m.stepLogStart = len(m.logLines)
 
 	m.stepStart = time.Now()
 	if item.Mode == runner.ExecutionInteractive {
@@ -279,7 +281,43 @@ func (m *Model) recordStepResult(index int, status history.Status, duration time
 		m.stepResults = append(m.stepResults, stepResult{})
 	}
 	item := cloneWorkItems(m.queue[index : index+1])[0]
-	m.stepResults[index] = stepResult{Item: item, Status: status, Duration: duration, Err: err}
+	var output []string
+	if status != history.StatusSuccess {
+		output = m.stepOutputTail()
+	}
+	m.stepResults[index] = stepResult{Item: item, Status: status, Duration: duration, Err: err, Output: output}
+}
+
+const stepOutputTailLines = 8
+
+// stepOutputTail returns the last lines the running step printed. An exec error
+// is only ever "exit status 1", so the tool's own message is the actionable part.
+// Interactive steps write straight to the terminal and return nothing here.
+func (m Model) stepOutputTail() []string {
+	var lines []string
+	for _, line := range m.logLines[clamp(m.stepLogStart, 0, len(m.logLines)):] {
+		if line.kind != logOutput && line.kind != logError {
+			continue
+		}
+		if text := strings.TrimSpace(line.text); text != "" {
+			lines = append(lines, text)
+		}
+	}
+	if len(lines) > stepOutputTailLines {
+		lines = lines[len(lines)-stepOutputTailLines:]
+	}
+	return lines
+}
+
+// failedStep reports the step a run stopped on, so history and the result
+// screen name it instead of only the action.
+func (m Model) failedStep() (stepResult, bool) {
+	for i := len(m.stepResults) - 1; i >= 0; i-- {
+		if m.stepResults[i].Status == history.StatusFailure || m.stepResults[i].Status == history.StatusCancelled {
+			return m.stepResults[i], true
+		}
+	}
+	return stepResult{}, false
 }
 
 func (m *Model) finishRun(err error, cancelled bool, elapsed time.Duration) {
@@ -292,13 +330,25 @@ func (m *Model) finishRun(err error, cancelled bool, elapsed time.Duration) {
 	m.runElapsed = elapsed
 	m.logVP.SetContent(m.renderLog())
 	m.logVP.GotoBottom()
-	history.Append(history.Entry{
+	entry := history.Entry{
 		Ts:     time.Now(),
 		Action: m.runAction,
 		Secs:   elapsed.Seconds(),
 		OK:     status == history.StatusSuccess,
 		Status: status,
-	})
+	}
+	if status != history.StatusSuccess {
+		if failed, ok := m.failedStep(); ok {
+			entry.Step, entry.Output = failed.Item.Title, failed.Output
+			if failed.Err != nil {
+				entry.Error = failed.Err.Error()
+			}
+		}
+		if entry.Error == "" && err != nil {
+			entry.Error = err.Error()
+		}
+	}
+	history.Append(entry)
 	m.refreshLatestHistory()
 }
 

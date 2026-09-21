@@ -17,12 +17,17 @@ const (
 	StatusCancelled Status = "cancelled"
 )
 
+// Step, Error and Output record why a run stopped. Without them a failure is
+// only "ok": false, and the tool's own message is lost when the TUI exits.
 type Entry struct {
 	Ts     time.Time `json:"ts"`
 	Action string    `json:"action"`
 	Secs   float64   `json:"secs"`
 	OK     bool      `json:"ok"`
 	Status Status    `json:"status,omitempty"`
+	Step   string    `json:"step,omitempty"`
+	Error  string    `json:"error,omitempty"`
+	Output []string  `json:"output,omitempty"`
 }
 
 func (e Entry) EffectiveStatus() Status {
