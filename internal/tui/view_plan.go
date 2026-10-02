@@ -2,8 +2,11 @@ package tui
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
 
@@ -374,8 +377,16 @@ func stepFailureRows(s uiStyles, result stepResult, width int, compact bool) []s
 	for _, line := range output {
 		rows = append(rows, s.muted.Render(stepFailureIndent+truncateVisible(line, lineWidth)))
 	}
-	if rerun := rerunCommand(result.Item); rerun != "" {
-		rows = append(rows, s.attention.Render(stepFailureIndent+truncateVisible("Rerun by hand: "+rerun, lineWidth)))
+	if result.Item.Name != "" {
+		retry := "Manual retry unavailable: command contains non-displayable text."
+		if rerun := rerunCommand(result.Item); rerun != "" {
+			retry = "Rerun by hand: " + rerun
+			if lipgloss.Width(retry) > lineWidth {
+				retry = "Manual retry hidden: widen terminal to show the complete command."
+			}
+		}
+		// Never advertise a truncated command as safe to paste into a shell.
+		rows = append(rows, s.attention.Render(stepFailureIndent+truncateVisible(retry, lineWidth)))
 	}
 	return rows
 }
@@ -386,11 +397,44 @@ func rerunCommand(item runner.WorkItem) string {
 	if item.Name == "" {
 		return ""
 	}
-	command := runner.CmdLabel(item)
+	words := append([]string{item.Name}, item.Args...)
+	quoted := make([]string, len(words))
+	for i, word := range words {
+		var ok bool
+		quoted[i], ok = shellRetryWord(word)
+		if !ok {
+			return ""
+		}
+	}
+	command := "command " + strings.Join(quoted, " ")
 	if item.Dir != "" {
-		return "cd " + item.Dir + " && " + command
+		dir := item.Dir
+		if !filepath.IsAbs(dir) {
+			// Relative paths must not be redirected by the operator's CDPATH.
+			dir = "./" + dir
+		}
+		quotedDir, ok := shellRetryWord(dir)
+		if !ok {
+			return ""
+		}
+		// Physical resolution matches the working directory used by exec.Command.
+		return "cd -P -- " + quotedDir + " && " + command
 	}
 	return command
+}
+
+// shellRetryWord preserves a literal shell word without exposing terminal
+// controls or invalid text that the display or clipboard might reinterpret.
+func shellRetryWord(word string) (string, bool) {
+	if !utf8.ValidString(word) {
+		return "", false
+	}
+	for _, r := range word {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Zl, r) || unicode.Is(unicode.Zp, r) {
+			return "", false
+		}
+	}
+	return "'" + strings.ReplaceAll(word, "'", "'\"'\"'") + "'", true
 }
 
 func resultErrorRows(s uiStyles, message string, width int, compact bool) []string {

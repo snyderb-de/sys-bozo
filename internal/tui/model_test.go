@@ -3915,8 +3915,8 @@ func TestFailedStepKeepsToolOutputAndRerunCommand(t *testing.T) {
 		t.Fatalf("output tail=%q", got)
 	}
 
-	rendered := strings.Join(stepFailureRows(m.styles, m.stepResults[0], 100, false), "\n")
-	for _, want := range []string{"exit status 1", "HTTP error 403", "Rerun by hand: cd /Users/bag/code/dotfiles && /nix/bin/nix flake update"} {
+	rendered := strings.Join(stepFailureRows(m.styles, m.stepResults[0], 140, false), "\n")
+	for _, want := range []string{"exit status 1", "HTTP error 403", "Rerun by hand: cd -P -- '/Users/bag/code/dotfiles' && command '/nix/bin/nix' 'flake' 'update'"} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("result rows missing %q in:\n%s", want, rendered)
 		}

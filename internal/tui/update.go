@@ -71,7 +71,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case repoValidatedMsg:
-		if msg.requestID != m.repoValidationID || m.reviewed.Repo == nil {
+		if msg.requestID != m.repoValidationID || m.screen != screenReview || m.mode != modeView ||
+			m.reviewed.Repo == nil || msg.review != m.reviewed.Repo || !m.reviewed.Repo.Validating {
 			return m, nil
 		}
 		m.reviewed.Repo.Validating = false
@@ -79,7 +80,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.reviewed.Repo.Notice = "STALE — " + msg.err.Error()
 			return m, nil
 		}
-		m.reviewed.Items = repoWorkItems(m.reviewed.Repo.Operation)
+		m.reviewed.Repo.Operation = cloneRepoOperation(msg.operation)
+		m.reviewed.Items = repoWorkItems(msg.operation)
 		m.beginReviewedRun()
 		return m, tea.Batch(m.advanceQueue(), m.spinner.Tick)
 
@@ -455,6 +457,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.screen = screenPackage
 				m.packageFlow.stage = packagePlacement
 			} else if m.reviewed.Repo != nil {
+				m.repoValidationID++
 				m.screen = screenRepoTriage
 			} else {
 				m.screen = screenMaintenance

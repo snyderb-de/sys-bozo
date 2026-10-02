@@ -76,6 +76,8 @@ type repoDeleteDryRunMsg struct {
 
 type repoValidatedMsg struct {
 	requestID uint64
+	review    *repoReview
+	operation repostate.Operation
 	err       error
 }
 
@@ -380,6 +382,7 @@ func (m *Model) acceptRepoAction(msg repoActionPreparedMsg) {
 		return
 	}
 	m.repoFlow.stage = repoBrowse
+	m.repoValidationID++
 	m.reviewed = reviewedPlan{
 		Action: fmt.Sprintf("repo:%s:%d", msg.operation.Kind, len(msg.operation.Entries)),
 		Repo:   &repoReview{Operation: cloneRepoOperation(msg.operation)},

@@ -81,12 +81,14 @@ func (m *Model) confirmReviewedPlan() tea.Cmd {
 		}
 		m.repoValidationID++
 		requestID := m.repoValidationID
+		review := m.reviewed.Repo
 		operation := cloneRepoOperation(m.reviewed.Repo.Operation)
 		validate := m.validateRepo
 		m.reviewed.Repo.Validating = true
 		m.reviewed.Repo.Notice = "validating exact status and bytes…"
 		return func() tea.Msg {
-			return repoValidatedMsg{requestID: requestID, err: validate(context.Background(), operation)}
+			err := validate(context.Background(), operation)
+			return repoValidatedMsg{requestID: requestID, review: review, operation: operation, err: err}
 		}
 	}
 	if m.reviewed.Config != nil {
