@@ -14,12 +14,30 @@ import (
 )
 
 const MacMiniHost = "bags-Mac-mini"
+const MacBookHost = "bagbook-pro"
 
-// This first update workflow describes the inspected Mini dotfiles setup.
-// Other machines keep their existing actions until their drift is reviewed.
-func IsMacMini(c Context) bool {
+// ManagedMacHost resolves only hosts whose integrated nix-darwin ownership
+// has been reviewed. Other hosts retain their existing workflow.
+func ManagedMacHost(c Context) string {
+	if c.OS != "darwin" {
+		return ""
+	}
 	host, _, _ := strings.Cut(c.Hostname, ".")
-	return c.OS == "darwin" && strings.EqualFold(host, MacMiniHost)
+	for _, known := range []string{MacMiniHost, MacBookHost} {
+		if strings.EqualFold(host, known) {
+			return known
+		}
+	}
+	return ""
+}
+
+func HasManagedMacWorkflow(c Context) bool { return ManagedMacHost(c) != "" }
+
+func ManagedMacLabel(c Context) string {
+	if ManagedMacHost(c) == MacBookHost {
+		return "MacBook"
+	}
+	return "Mac mini"
 }
 
 type UpdateOption struct {
@@ -27,26 +45,26 @@ type UpdateOption struct {
 	Recommended, Recovery, Available bool
 }
 
-func MiniUpdateOptions(c Context) []UpdateOption {
-	if !IsMacMini(c) {
+func MacUpdateOptions(c Context) []UpdateOption {
+	if !HasManagedMacWorkflow(c) {
 		return nil
 	}
 	darwin := c.NixBin != "" && c.DarwinRebuild != "" && c.SudoBin != "" && c.NixStoreBin != ""
 	return []UpdateOption{
 		{"nix-update", "Update Nix version pins", "Refresh flake.lock; installed packages stay unchanged until Apply.", "Recommended first. Changes the dotfiles lock file, not your live profile.", true, false, c.NixBin != ""},
-		{"nds", "Apply Mac mini configuration", "Build and activate system + user configuration; includes Homebrew review.", "Password and app prompts use the terminal. Declined upgrades stay declined; removals require separate prompts.", true, false, darwin},
+		{"nds", "Apply " + ManagedMacLabel(c) + " configuration", "Build and activate system + user configuration; includes Homebrew review.", "Password and app prompts use the terminal. Declined upgrades stay declined; removals require separate prompts.", true, false, darwin},
 		{"topgrade", "Run Topgrade", "Update other tools using your Topgrade configuration.", "Bozo also skips Nix, Home Manager, Brew, system updates, restart checks and remote hosts. Prompts use the terminal.", true, false, c.Topgrade != ""},
 		{"brew", "Upgrade Homebrew only", "Upgrade formulae and reviewed casks without a workstation rebuild.", "Alternative to Apply. DisplayLink is excluded; no dependency cleanup is included.", false, false, c.BrewBin != ""},
 		{"displaylink", "Upgrade DisplayLink", "Upgrade the display driver explicitly; a restart may be needed.", "The workstation rebuild can also offer this upgrade in its native Homebrew prompts.", false, false, c.BrewBin != "" && displayLinkPending(c)},
 		{"brew-cleanup", "Remove unused dependencies", "Run Homebrew autoremove after update checks succeed.", "Optional cleanup. Does not remove Nix generations or purge app data.", false, false, c.BrewBin != ""},
-		{"ndsd", "Preview Homebrew changes", "Build the Mini configuration and preview its Homebrew activation.", "Creates Nix build/cache output but does not activate the system or install apps.", false, false, c.NixBin != "" && c.BrewBin != ""},
+		{"ndsd", "Preview Homebrew changes", "Build this Mac’s configuration and preview its Homebrew activation.", "Creates Nix build/cache output but does not activate the system or install apps.", false, false, c.NixBin != "" && c.BrewBin != ""},
 		{"ndR", "Roll back workstation configuration", "Activate the previous system generation, including its user profile.", "Recovery only. Does not revert flake.lock or guarantee rollback of Homebrew apps.", false, true, darwin},
 	}
 }
 
-func RecommendedMiniUpdates(c Context) []string {
+func RecommendedMacUpdates(c Context) []string {
 	var ids []string
-	for _, option := range MiniUpdateOptions(c) {
+	for _, option := range MacUpdateOptions(c) {
 		if option.Recommended && option.Available {
 			ids = append(ids, option.ID)
 		}
@@ -59,17 +77,17 @@ type UpdatePlan struct {
 	Notes []string
 }
 
-// BuildMiniUpdates expands aliases into one ordered set of operations. A system
+// BuildMacUpdates expands aliases into one ordered set of operations. A system
 // activation owns its Homebrew pass, so a second brew pass must not reverse skips.
-func BuildMiniUpdates(c Context, ids []string) (UpdatePlan, error) {
-	if !IsMacMini(c) {
-		return UpdatePlan{}, fmt.Errorf("recommended updates are currently scoped to %s", MacMiniHost)
+func BuildMacUpdates(c Context, ids []string) (UpdatePlan, error) {
+	if !HasManagedMacWorkflow(c) {
+		return UpdatePlan{}, fmt.Errorf("recommended updates are unavailable for host %q", c.Hostname)
 	}
 	selected := map[string]bool{}
 	for _, id := range ids {
 		switch id {
 		case "all", "recommended":
-			for _, recommended := range RecommendedMiniUpdates(c) {
+			for _, recommended := range RecommendedMacUpdates(c) {
 				selected[recommended] = true
 			}
 		case "ndu", "hmu":
@@ -81,13 +99,13 @@ func BuildMiniUpdates(c Context, ids []string) (UpdatePlan, error) {
 		}
 	}
 	options := map[string]UpdateOption{}
-	for _, option := range MiniUpdateOptions(c) {
+	for _, option := range MacUpdateOptions(c) {
 		options[option.ID] = option
 	}
 	for id := range selected {
 		option, exists := options[id]
 		if !exists {
-			return UpdatePlan{}, fmt.Errorf("unknown Mini update option %q", id)
+			return UpdatePlan{}, fmt.Errorf("unknown Mac update option %q", id)
 		}
 		if !option.Available {
 			return UpdatePlan{}, fmt.Errorf("%s is unavailable on this host", option.Label)
@@ -118,10 +136,10 @@ func BuildMiniUpdates(c Context, ids []string) (UpdatePlan, error) {
 		add("Refresh Homebrew metadata", "Refresh available versions before the Homebrew review or selected upgrades.", c.BrewBin, []string{"update"}, false, false, true, "")
 	}
 	if selected["ndsd"] {
-		add(options["ndsd"].Label, options["ndsd"].Detail, "bash", []string{filepath.Join(c.Repo, "scripts", "nds-dryrun"), MacMiniHost}, true, false, true, c.Repo)
+		add(options["ndsd"].Label, options["ndsd"].Detail, "bash", []string{filepath.Join(c.Repo, "scripts", "nds-dryrun"), ManagedMacHost(c)}, true, false, true, c.Repo)
 	}
 	if selected["nds"] {
-		add(options["nds"].Label, options["nds"].Description+" "+options["nds"].Detail, c.SudoBin, []string{"-H", c.DarwinRebuild, "switch", "--flake", ".#" + MacMiniHost, "--impure"}, true, false, true, c.Repo)
+		add(options["nds"].Label, options["nds"].Description+" "+options["nds"].Detail, c.SudoBin, []string{"-H", c.DarwinRebuild, "switch", "--flake", ".#" + ManagedMacHost(c), "--impure"}, true, false, true, c.Repo)
 		if c.SopsAgeKeyFile != "" {
 			p.Items[len(p.Items)-1].EnvExtra = []string{"SOPS_AGE_KEY_FILE=" + c.SopsAgeKeyFile}
 		}
@@ -161,8 +179,8 @@ type UpdateReadiness struct {
 
 // CheckUpdateReadiness is read-only and bounded; it never invokes an updater.
 func CheckUpdateReadiness(c Context, items []WorkItem) (UpdateReadiness, error) {
-	if !IsMacMini(c) {
-		return UpdateReadiness{}, fmt.Errorf("this update workflow is only for %s", MacMiniHost)
+	if !HasManagedMacWorkflow(c) {
+		return UpdateReadiness{}, fmt.Errorf("this update workflow is unavailable for host %q", c.Hostname)
 	}
 	if c.Repo == "" {
 		return UpdateReadiness{}, fmt.Errorf("dotfiles repository is not configured")

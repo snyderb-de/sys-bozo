@@ -75,7 +75,7 @@ func (m Model) viewHome() string {
 	if m.facts.DotfilesDirty > 0 || m.facts.BrewOutdated > 0 {
 		health = statusText(s, "SYSTEM NEEDS ATTENTION", statusAttention)
 	}
-	if runner.IsMacMini(m.runCtx) {
+	if runner.HasManagedMacWorkflow(m.runCtx) {
 		health = statusText(s, "REVIEW BEFORE UPDATING", statusMuted)
 	}
 
@@ -100,7 +100,7 @@ func (m Model) viewHome() string {
 		updatesKind = statusAttention
 	}
 	updatesLabel := "UPDATES"
-	if runner.IsMacMini(m.runCtx) {
+	if runner.HasManagedMacWorkflow(m.runCtx) {
 		updatesLabel = "BREW UPDATES"
 		if m.facts.BrewOutdated == 0 {
 			updates, updatesKind = "NO PENDING UPDATES REPORTED", statusMuted
@@ -128,7 +128,7 @@ func (m Model) viewHome() string {
 	rows = append(rows, "", majorRule(s, contentWidth, false), "")
 
 	for i, entry := range homeEntries {
-		if i == 0 && runner.IsMacMini(m.runCtx) {
+		if i == 0 && runner.HasManagedMacWorkflow(m.runCtx) {
 			entry.label = "UPDATES"
 		}
 		kind := statusMuted

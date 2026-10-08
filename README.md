@@ -42,9 +42,9 @@ Run the development build from the repository:
 
 ## Guided Control Center
 
-### Mac mini updates
+### Managed Mac updates
 
-On `bags-Mac-mini` (including its local DNS suffix), Home opens **Updates**.
+On `bags-Mac-mini` and `bagbook-pro` (including local DNS suffixes), Home opens **Updates**.
 Press `A` to select the recommended options, use arrows or `j`/`k` to read each
 description, and use `Space` to adjust the selection. Press `Enter` to review;
 selection and readiness checks never execute an updater.
@@ -53,14 +53,14 @@ The recommended sequence is:
 
 1. Update Nix version pins in the dotfiles `flake.lock`.
 2. Refresh Homebrew metadata.
-3. Build and apply the Mini's nix-darwin configuration, including Home Manager
+3. Build and apply this Mac's nix-darwin configuration, including Home Manager
    and the dotfiles' interactive Homebrew review.
 4. Run Topgrade with native terminal input and the user's existing configuration.
 5. Query the system profile and check for missing Homebrew formula dependencies.
 
 Topgrade is recommended when available. Bozo adds exclusions for Nix, Home
 Manager, Homebrew, system updates, restart checks, and remote hosts; it does not
-rewrite Topgrade configuration or force `--yes`. The Mini's workstation rebuild
+rewrite Topgrade configuration or force `--yes`. The workstation rebuild
 already owns the Homebrew pass. Selecting it replaces **Upgrade Homebrew only**,
 so a later upgrade cannot reverse choices declined during activation.
 
@@ -83,7 +83,7 @@ The final checks establish command completion, a queryable system profile, and
 Homebrew dependency status. They do not prove every application works or that
 every upgrade offered by the interactive activation was accepted.
 
-CLI uses the same Mini plan:
+CLI uses the same host-specific plan:
 
 ```sh
 sys-bozo plan update
@@ -92,10 +92,11 @@ sys-bozo run recommended
 ```
 
 `run` is an explicit execution command; use `plan` or the TUI first to review.
-For compatibility, Mini selections `all`, `ndu`, `hmu`, and `hms` expand into the
+For compatibility, managed Mac selections `all`, `ndu`, `hmu`, and `hms` expand into the
 same system-owned workflow without duplicate input updates or a separate Home
 Manager apply. Other machines retain their existing workflows pending drift
-reconnaissance.
+reconnaissance. The MacBook workflow was enabled after verifying that nix-darwin
+owns its Home Manager packages and interactive Homebrew activation.
 
 ### Existing workflows
 

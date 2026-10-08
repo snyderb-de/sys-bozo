@@ -24,7 +24,7 @@ type updatesCheckedMsg struct {
 
 func (m Model) miniUpdateOptions() []runner.UpdateOption {
 	var options []runner.UpdateOption
-	for _, option := range runner.MiniUpdateOptions(m.runCtx) {
+	for _, option := range runner.MacUpdateOptions(m.runCtx) {
 		if option.Recovery == m.updatesRecovery {
 			options = append(options, option)
 		}
@@ -46,7 +46,7 @@ func (m Model) handleMiniUpdatesKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "a":
 		if !m.updatesRecovery {
 			m.selected = map[string]bool{}
-			for _, id := range runner.RecommendedMiniUpdates(m.runCtx) {
+			for _, id := range runner.RecommendedMacUpdates(m.runCtx) {
 				m.selected[id] = true
 			}
 			m.updatesNotice = "Recommended options selected. Enter reviews the exact order."
@@ -106,7 +106,7 @@ func (m Model) selectedUpdateIDs() []string {
 
 func (m *Model) prepareMiniUpdatesReview() tea.Cmd {
 	ids := m.selectedUpdateIDs()
-	p, err := runner.BuildMiniUpdates(m.runCtx, ids)
+	p, err := runner.BuildMacUpdates(m.runCtx, ids)
 	if err != nil {
 		m.updatesNotice = err.Error()
 		return nil

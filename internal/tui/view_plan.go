@@ -18,7 +18,7 @@ import (
 // ── Guided planning ───────────────────────────────────────────────────────
 
 func (m Model) viewMaintenance() string {
-	if runner.IsMacMini(m.runCtx) {
+	if runner.HasManagedMacWorkflow(m.runCtx) {
 		return m.viewMiniUpdates()
 	}
 	contentWidth := primaryContentWidth(m.width)

@@ -189,13 +189,13 @@ func Update(selected []string) Plan {
 }
 
 func UpdateForContext(selected []string, ctx runner.Context) Plan {
-	if runner.IsMacMini(ctx) {
+	if runner.HasManagedMacWorkflow(ctx) {
 		ids := normalizeKeepOrder(selected)
 		if len(ids) == 0 {
 			ids = []string{"recommended"}
 		}
-		queue, err := runner.BuildMiniUpdates(ctx, ids)
-		p := Plan{Title: "Mac mini update plan", Summary: "Recommended execution order. Preview only; use the TUI to review and confirm."}
+		queue, err := runner.BuildMacUpdates(ctx, ids)
+		p := Plan{Title: runner.ManagedMacLabel(ctx) + " update plan", Summary: "Recommended execution order. Preview only; use the TUI to review and confirm."}
 		if err != nil {
 			p.Summary = err.Error()
 			return p

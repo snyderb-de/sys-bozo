@@ -276,7 +276,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if m.screen == screenMaintenance && runner.IsMacMini(m.runCtx) {
+	if m.screen == screenMaintenance && runner.HasManagedMacWorkflow(m.runCtx) {
 		return m.handleMiniUpdatesKey(msg)
 	}
 	// Apply prompt intercepts all keys

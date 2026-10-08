@@ -185,3 +185,8 @@
 - [ ] Add docs screenshots or visual checks.
 - [ ] Add install dry-run fixtures.
 - [ ] Decide first release shape.
+
+## MacBook rollout
+
+- [x] Enable the reviewed integrated nix-darwin workflow for `bagbook-pro`, including local DNS suffixes. Apply Home Manager through its system owner and omit the duplicate Brew upgrade pass.
+- [ ] Complete MacBook Nix package installation and verify the terminal UI and a read-only Brew preview.

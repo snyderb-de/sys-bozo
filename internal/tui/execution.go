@@ -32,7 +32,7 @@ func (m *Model) openMaintenance(ids ...string) {
 	}
 	m.selected = map[string]bool{}
 	for _, id := range ids {
-		if runner.IsMacMini(m.runCtx) && id == "hms" {
+		if runner.HasManagedMacWorkflow(m.runCtx) && id == "hms" {
 			id = "nds"
 		}
 		m.selected[id] = true

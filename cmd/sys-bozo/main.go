@@ -123,7 +123,7 @@ func runAction(args []string) error {
 	}
 	id := args[0]
 	ctx := runner.Build()
-	if runner.IsMacMini(ctx) {
+	if runner.HasManagedMacWorkflow(ctx) {
 		return runMiniUpdateActions(ctx, args)
 	}
 	tasks := runner.DefaultTasks(ctx)
@@ -157,7 +157,7 @@ func runAction(args []string) error {
 }
 
 func runMiniUpdateActions(ctx runner.Context, ids []string) error {
-	p, err := runner.BuildMiniUpdates(ctx, ids)
+	p, err := runner.BuildMacUpdates(ctx, ids)
 	if err != nil {
 		return err
 	}
@@ -241,9 +241,9 @@ Usage:
   sys-bozo version
 
 Actions:`)
-	if runner.IsMacMini(ctx) {
-		fmt.Fprintln(&sb, "\n  recommended  Recommended Mac mini update sequence (includes Topgrade when available)")
-		for _, option := range runner.MiniUpdateOptions(ctx) {
+	if runner.HasManagedMacWorkflow(ctx) {
+		fmt.Fprintln(&sb, "\n  recommended  Recommended "+runner.ManagedMacLabel(ctx)+" update sequence (includes Topgrade when available)")
+		for _, option := range runner.MacUpdateOptions(ctx) {
 			state := ""
 			if !option.Available {
 				state = " (unavailable)"

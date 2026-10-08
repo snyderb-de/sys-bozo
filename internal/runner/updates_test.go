@@ -13,7 +13,7 @@ func miniContext() Context {
 }
 
 func TestMiniQueueSeparatesCleanupAndKeepsTopgradeInteractive(t *testing.T) {
-	p, err := BuildMiniUpdates(miniContext(), []string{"brew-cleanup", "topgrade", "brew"})
+	p, err := BuildMacUpdates(miniContext(), []string{"brew-cleanup", "topgrade", "brew"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +38,7 @@ func TestMiniPlanRejectsOtherHostsUnavailableOptionsAndMixedRecovery(t *testing.
 		change func(*Context)
 		ids    []string
 	}{
-		{"other host", func(c *Context) { c.Hostname = "bagbook-pro" }, []string{"recommended"}},
+		{"other host", func(c *Context) { c.Hostname = "unreviewed-mac" }, []string{"recommended"}},
 		{"missing Topgrade", func(c *Context) { c.Topgrade = "" }, []string{"topgrade"}},
 		{"mixed recovery", func(*Context) {}, []string{"ndR", "nds"}},
 		{"unknown", func(*Context) {}, []string{"surprise"}},
@@ -46,14 +46,14 @@ func TestMiniPlanRejectsOtherHostsUnavailableOptionsAndMixedRecovery(t *testing.
 		t.Run(tc.name, func(t *testing.T) {
 			c := miniContext()
 			tc.change(&c)
-			if p, err := BuildMiniUpdates(c, tc.ids); err == nil || len(p.Items) != 0 {
+			if p, err := BuildMacUpdates(c, tc.ids); err == nil || len(p.Items) != 0 {
 				t.Fatal("unsupported plan was accepted")
 			}
 		})
 	}
 	c := miniContext()
 	c.Topgrade = ""
-	for _, id := range RecommendedMiniUpdates(c) {
+	for _, id := range RecommendedMacUpdates(c) {
 		if id == "topgrade" {
 			t.Fatal("missing Topgrade was recommended")
 		}
@@ -87,5 +87,50 @@ func TestMiniReadinessDoesNotExecuteUpdaterAndRejectsMissingTools(t *testing.T) 
 	}
 	if _, err := CheckUpdateReadiness(c, []WorkItem{{Name: filepath.Join(bin, "missing")}}); err == nil {
 		t.Fatal("missing executable was accepted")
+	}
+}
+
+func TestManagedMacHostResolution(t *testing.T) {
+	for _, tc := range []struct{ os, host, want string }{
+		{"darwin", "bagbook-pro", MacBookHost},
+		{"darwin", "BAGBOOK-PRO.local", MacBookHost},
+		{"darwin", "bags-Mac-mini.local", MacMiniHost},
+		{"darwin", "unreviewed-mac", ""},
+		{"linux", "bagbook-pro", ""},
+	} {
+		if got := ManagedMacHost(Context{OS: tc.os, Hostname: tc.host}); got != tc.want {
+			t.Errorf("%s/%s: got %q, want %q", tc.os, tc.host, got, tc.want)
+		}
+	}
+}
+
+func TestMacBookWorkflowUsesOneSystemOwner(t *testing.T) {
+	c := miniContext()
+	c.Hostname = "BAGBOOK-PRO.local"
+	p, err := BuildMacUpdates(c, []string{"all", "hms", "hmu", "ndu", "brew"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var commands []string
+	for _, item := range p.Items {
+		commands = append(commands, CmdLabel(item))
+	}
+	text := strings.Join(commands, "\n")
+	for _, want := range []string{"nix flake update", "brew update", "darwin-rebuild switch --flake .#bagbook-pro", "topgrade ", "brew missing"} {
+		if strings.Count(text, want) != 1 {
+			t.Errorf("expected one %q in:\n%s", want, text)
+		}
+	}
+	for _, unwanted := range []string{"home-manager switch", "brew upgrade", "brew autoremove", MacMiniHost, "--yes"} {
+		if strings.Contains(text, unwanted) {
+			t.Errorf("unexpected %q in:\n%s", unwanted, text)
+		}
+	}
+	preview, err := BuildMacUpdates(c, []string{"ndsd"})
+	if err != nil || len(preview.Items) != 1 {
+		t.Fatalf("preview: %#v, %v", preview, err)
+	}
+	if got := preview.Items[0].Args; len(got) != 2 || got[1] != MacBookHost {
+		t.Fatalf("wrong preview target: %q", got)
 	}
 }

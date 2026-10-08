@@ -158,3 +158,26 @@ func TestMiniResultRetryRetainsReviewedTailAndReadinessGate(t *testing.T) {
 		t.Fatal("retry repeated a completed update or dropped remaining steps")
 	}
 }
+
+func TestMacBookOpensReviewedUpdatesWithoutExecuting(t *testing.T) {
+	m := miniUpdateModel()
+	m.runCtx.Hostname = "bagbook-pro.local"
+	m.openMaintenance("hms")
+	if !m.selected["nds"] || m.selected["hms"] {
+		t.Fatal("user profile must use its system owner")
+	}
+	next, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	got := next.(Model)
+	if cmd != nil || got.screen != screenMaintenance || len(got.queue) != 0 {
+		t.Fatal("selection executed or left picker")
+	}
+	if !got.selected["nds"] || !got.selected["nix-update"] || !got.selected["topgrade"] {
+		t.Fatal("missing MacBook recommendations")
+	}
+	if !strings.Contains(got.View(), "Apply MacBook configuration") {
+		t.Fatal("MacBook is using the wrong update picker")
+	}
+	if got.selected["brew"] || got.selected["brew-cleanup"] || got.selected["displaylink"] {
+		t.Fatal("optional mutation selected automatically")
+	}
+}
