@@ -20,7 +20,7 @@ var homeEntries = []struct {
 	{"03", "INSPECT SYSTEM", screenInspect},
 }
 
-func (m Model) View() string {
+func (m Model) rawView() string {
 	switch m.screen {
 	case screenHome:
 		return m.viewHome()
@@ -68,79 +68,57 @@ func (m Model) viewLegacy() string {
 }
 
 func (m Model) viewHome() string {
-	contentWidth := primaryContentWidth(m.width)
-	s := m.styles
-
-	health := statusText(s, "SYSTEM HEALTHY", statusSuccess)
-	if m.facts.DotfilesDirty > 0 || m.facts.BrewOutdated > 0 {
-		health = statusText(s, "SYSTEM NEEDS ATTENTION", statusAttention)
-	}
-	if runner.HasManagedMacWorkflow(m.runCtx) {
-		health = statusText(s, "REVIEW BEFORE UPDATING", statusMuted)
-	}
-
-	host := m.targetHost()
+	w, s := primaryContentWidth(m.width), m.styles
 	branch := m.facts.DotfilesBranch
 	if branch == "" {
 		branch = "unknown"
 	}
-	repo := "CLEAN"
-	repoKind := statusSuccess
+	repo, repoKind := "CLEAN", statusSuccess
 	if m.facts.DotfilesStatusUnavailable {
-		repo = "STATUS UNAVAILABLE"
-		repoKind = statusDanger
+		repo, repoKind = "STATUS UNAVAILABLE", statusDanger
 	} else if m.facts.DotfilesDirty > 0 {
-		repo = fmt.Sprintf("%d DIRTY", m.facts.DotfilesDirty)
-		repoKind = statusDanger
+		repo, repoKind = fmt.Sprintf("%d DIRTY", m.facts.DotfilesDirty), statusAttention
 	}
-	updates := "CURRENT"
-	updatesKind := statusSuccess
+	updates := "No pending Homebrew updates reported"
 	if m.facts.BrewOutdated > 0 {
-		updates = fmt.Sprintf("%d PENDING", m.facts.BrewOutdated)
-		updatesKind = statusAttention
+		updates = fmt.Sprintf("%d Homebrew updates available", m.facts.BrewOutdated)
 	}
-	updatesLabel := "UPDATES"
-	if runner.HasManagedMacWorkflow(m.runCtx) {
-		updatesLabel = "BREW UPDATES"
-		if m.facts.BrewOutdated == 0 {
-			updates, updatesKind = "NO PENDING UPDATES REPORTED", statusMuted
-		}
+	if m.facts.BrewPath == "" && m.runCtx.BrewBin == "" {
+		updates = "Homebrew is not available on this host"
 	}
-
-	rows := []string{
-		s.major.Render("SYS/BOZO"),
-		s.label.Render("WORKSTATION CONTROL"),
-		majorRule(s, contentWidth, true),
-		"",
-		s.title.Render("SYSTEM") + "  " + health,
-		"",
-		s.label.Render("HOST") + "  " + s.text.Render(host),
-		s.label.Render("BRANCH") + "  " + s.text.Render(branch),
-		homeRepoRow(s, repo, repoKind, m.homeRepoFocused),
-		s.label.Render(updatesLabel) + "  " + statusText(s, updates, updatesKind),
-	}
-	if m.latestHistory == nil {
-		rows = append(rows, s.label.Render("LAST RUN")+"  "+s.muted.Render("NO HISTORY"))
-	} else {
+	historyLine := "NO HISTORY · Your first run starts here."
+	if m.latestHistory != nil {
 		entry := m.latestHistory
-		rows = append(rows, s.label.Render("LAST RUN")+"  "+s.text.Render(entry.Action+"  "+strings.ToUpper(string(entry.EffectiveStatus()))+"  "+entry.Ts.Local().Format(time.DateTime)))
+		historyLine = entry.Action + "  " + strings.ToUpper(string(entry.EffectiveStatus())) + "  " + entry.Ts.Local().Format(time.DateTime)
 	}
-	rows = append(rows, "", majorRule(s, contentWidth, false), "")
-
+	host := s.text.Render(truncateVisible(m.targetHost(), w-8))
+	status := s.label.Render("HOST") + "  " + host + "\n" +
+		s.label.Render("BRANCH") + "  " + s.text.Render(branch) + "\n" +
+		homeRepoRow(s, repo, repoKind, m.homeRepoFocused) + "\n" +
+		s.attention.Render("↗ "+updates)
+	rows := []string{s.badge.Render("SYS/BOZO") + "  " + s.muted.Render("A little personality. A lot of control."), ""}
+	if w >= 100 && m.height >= 30 {
+		logo := []string{"██████╗  ██████╗ ███████╗ ██████╗ ", "██╔══██╗██╔═══██╗╚══███╔╝██╔═══██╗", "██████╔╝██║   ██║  ███╔╝ ██║   ██║", "██╔══██╗██║   ██║ ███╔╝  ██║   ██║", "██████╔╝╚██████╔╝███████╗╚██████╔╝", "╚═════╝  ╚═════╝ ╚══════╝ ╚═════╝ "}
+		art := s.major.Render(strings.Join(logo, "\n")) + "\n" + s.attention.Render("WORKSTATION CONTROL, WITH CHARACTER.")
+		rows = append(rows, lipgloss.JoinHorizontal(lipgloss.Top, lipgloss.NewStyle().Width(40).Render(art), panel(s, "💻 Your workstation", status, w-40, m.homeRepoFocused)))
+	} else {
+		rows = append(rows, s.major.Render("✦ Make yourself at home."), s.muted.Render("Choose a task. Review the plan. You're in control."), "", status)
+	}
+	rows = append(rows, "", s.label.Render("LET'S GET TO WORK"))
+	icons := []string{"🧰", "📦", "🔭"}
+	descriptions := []string{"Update tools and rebuild your configuration", "Find a tool. Choose where it belongs.", "Configuration, diagnostics, history, and Git"}
 	for i, entry := range homeEntries {
 		if i == 0 && runner.HasManagedMacWorkflow(m.runCtx) {
 			entry.label = "UPDATES"
+			icons[i] = "✨"
+			descriptions[i] = "A guided update for your Mac mini"
 		}
-		kind := statusMuted
-		label := "LOCKED"
-		if !homeEntryLocked(i) {
-			kind = statusSuccess
-			label = "READY"
-		}
-		rows = append(rows, numberedRow(s, entry.number, entry.label, statusText(s, label, kind), contentWidth, i == m.homeCursor && !homeEntryLocked(i)))
+		active := i == m.homeCursor && !m.homeRepoFocused
+		label := icons[i] + "  " + entry.label
+		rows = append(rows, numberedRow(s, entry.number, label, s.muted.Render("↵"), w, active))
+		rows = append(rows, "     "+s.muted.Render(truncateVisible(descriptions[i], w-5)))
 	}
-	rows = append(rows, "", s.muted.Render("↑/↓ MOVE   ENTER OPEN   Q QUIT"))
-
+	rows = append(rows, "", s.muted.Render(truncateVisible("🕘 LAST RUN  "+historyLine, w)), majorRule(s, w, false), helpLine(s, w, "↑/↓", "MOVE", "1–3", "OPEN", "ENTER", "OPEN", "Q", "QUIT", "?", "HELP"))
 	return primaryFrame(s, m.width, strings.Join(rows, "\n"))
 }
 
@@ -160,8 +138,10 @@ func primaryContentWidth(width int) int {
 
 func primaryFrame(s uiStyles, width int, content string) string {
 	return s.field.
-		Width(layoutWidth(width)).
-		Padding(1, primaryFramePadding).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(s.rule.GetForeground()).
+		Width(layoutWidth(width)-2).
+		Padding(0, primaryFramePadding-1).
 		Render(content)
 }
 

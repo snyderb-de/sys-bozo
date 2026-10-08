@@ -268,3 +268,68 @@ Tests inspect the plan first. Execution is a separate layer. This is how sys-boz
 6. Add fake-home install tests.
 7. Add Linux container tests.
 8. Add macOS runner smoke tests.
+
+## Terminal redesign checks
+
+`go test ./internal/tui -run 'TestStudio|TestHelpDoes|TestLongReview|TestStyledTruncation|TestTinyTerminal|TestWriteCLI'`
+checks the layouts at 60/80/120/180 columns with true color and `NO_COLOR`,
+read-only help navigation, literal question marks in search, scroll access to
+every command in long plans, intact emoji/ANSI truncation, tiny-terminal
+confirmation blocking, and plain redirected CLI output. The optional
+`TestRenderStudioGallery` writes only fictional fixtures to `BOZO_RENDER_DIR`;
+it never probes the host or executes maintenance.
+
+## Keyboard responsiveness
+
+```sh
+go test ./internal/tui -run 'TestCtrlC|TestInspectEscapeBack|TestTinyTerminal|TestRefreshReturns|TestLateHostRefresh|TestHostRefresh' -count=1
+go test -c -o .tmp/keyboard-tests ./internal/tui
+python3 scripts/keyboard-pty-smoke.py .tmp/keyboard-tests
+python3 scripts/keyboard-pty-smoke.py .tmp/keyboard-tests --color
+```
+
+The refresh test holds a fake Homebrew query open and verifies that Escape and
+Ctrl-C still work. The PTY test runs only a harmless `printf` fixture, performs
+30 cycles through Package, Inspect, Doctor, and Repository after terminal
+handoff, waits 15 seconds on Inspect and Repository before Escape, reports
+Escape-to-redraw latency, checks Escape after shrinking the
+terminal below its minimum width or height, then
+quits from the query field with Ctrl-C. Neither test runs workstation maintenance.
+
+Paired Escape bytes are also tested: Bubble Tea decodes these as Alt+Esc, which
+must still navigate back. For an intermittent input failure in a real terminal,
+run `./scripts/sys-bozo --trace-input`. This writes a private JSONL log under
+`${XDG_STATE_HOME:-$HOME/.local/state}/sys-bozo/` with input byte counts, key types,
+screen transitions, and handler/render timings. It does not log typed text,
+rendered content, repository data, or environment values, and does not attach a
+debugger or pause on keypresses. The trace path is printed before and after the UI.
+
+### Herdr input delivery on macOS
+
+The direct PTY test cannot detect keys discarded by a terminal multiplexer.
+Run the same fixture through an isolated Herdr client/server as well:
+
+```sh
+python3 scripts/keyboard-herdr-smoke.py .tmp/keyboard-tests --herdr /path/to/herdr
+```
+
+Use `--server-herdr /path/to/old/herdr` to verify that a patched client can
+attach to an older compatible server without replacing its persistent panes.
+
+This test uses temporary configuration, state, and sockets. It runs the harmless
+terminal handoff with input tracing enabled, checks 2/3/12-Escape bursts and
+separately timed presses, waits 15 seconds on Inspect and Repository, and checks
+Ctrl-C from package input. It stops only the server it created. No existing
+Herdr session or workstation maintenance is involved.
+
+Herdr 0.9.1's macOS input policy preserves doubled Escape for legacy Alt-arrow
+shortcuts. At timeout, repeated Escape bytes can reach its event decoder as an
+incomplete sequence and disappear. The affected build fails this test with
+`2 rapid Escapes (0s spacing): delivered 0/2; back page=no`. The local dotfiles
+patch `patches/herdr-repeated-escape.patch` emits each Escape separately after
+the timeout while retaining complete Alt-arrow sequences. Re-run this test
+when updating or removing that patch.
+
+Tracing must also preserve a real terminal file during child-process handoff.
+Passing the tracing reader directly to `os/exec` creates a stdin copy goroutine
+that can block child completion. The traced Herdr fixture covers that failure.

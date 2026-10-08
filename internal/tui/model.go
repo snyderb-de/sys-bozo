@@ -13,7 +13,6 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/snyderb-de/sys-bozo/internal/fileedit"
 	"github.com/snyderb-de/sys-bozo/internal/history"
@@ -135,11 +134,15 @@ type Model struct {
 	reviewed        reviewedPlan
 	latestHistory   *history.Entry
 
-	tabs   []string
-	tab    int
-	cursor int
-	width  int
-	height int
+	tabs        []string
+	tab         int
+	cursor      int
+	width       int
+	height      int
+	helpVisible bool
+	frameOffset int
+	refreshing  bool
+	refreshID   uint64
 
 	mode             appMode
 	queue            []runner.WorkItem
@@ -206,7 +209,7 @@ func New() Model {
 
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
-	sp.Style = lipgloss.NewStyle().Foreground(clrCyan)
+	sp.Style = newUIStyles(os.Getenv("NO_COLOR") != "").active
 	startPackageSearch := func(searchCtx context.Context, request packages.SearchRequest, specs []packages.ProviderSpec) <-chan packages.SearchEvent {
 		adapters := packages.NewSearchAdapters(specs, packages.ExecRunner{})
 		return packages.StartSearch(searchCtx, request, adapters)

@@ -173,9 +173,35 @@ func runInteractiveWork(item runner.WorkItem, start time.Time, capture io.Writer
 	if capture != nil {
 		cmd.Stderr = io.MultiWriter(os.Stderr, capture)
 	}
-	return tea.ExecProcess(cmd, func(err error) tea.Msg {
+	return tea.Exec(&terminalExecCommand{Cmd: cmd}, func(err error) tea.Msg {
 		return stepDoneMsg{err: err, elapsed: time.Since(start), cancelled: terminalWorkCancelled(err)}
 	})
+}
+
+// Keep the actual terminal file when input tracing is enabled. os/exec turns
+// an arbitrary io.Reader into a pipe and waits for its copying goroutine;
+// a terminal read can then block Wait even after the child has exited.
+type terminalExecCommand struct{ *exec.Cmd }
+
+func (c *terminalExecCommand) SetStdin(input io.Reader) {
+	if traced, ok := input.(*tracedInput); ok {
+		input = traced.File
+	}
+	if c.Stdin == nil {
+		c.Stdin = input
+	}
+}
+
+func (c *terminalExecCommand) SetStdout(output io.Writer) {
+	if c.Stdout == nil {
+		c.Stdout = output
+	}
+}
+
+func (c *terminalExecCommand) SetStderr(output io.Writer) {
+	if c.Stderr == nil {
+		c.Stderr = output
+	}
 }
 
 func terminalWorkCancelled(err error) bool {

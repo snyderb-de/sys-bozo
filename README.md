@@ -40,6 +40,38 @@ Run the development build from the repository:
 ./scripts/sys-bozo
 ```
 
+## Terminal experience
+
+The TUI uses a violet, peach, and soft-white palette, emoji landmarks, a large
+BOZO wordmark on wide terminals, and a compact layout at 80 × 24. Wide update
+screens place explanations alongside the selection list. Running plans show
+completed-step progress, an activity spinner, and live output. Results retain
+the command, failure detail, and reviewed retry controls.
+
+- Press `?` for the keyboard guide; `Esc` closes it.
+- `Ctrl-C` quits from every TUI screen, including text fields and results.
+- Host refresh runs in the background, so Escape and quit remain responsive.
+- Use `PgUp` / `PgDn` when a long screen shows a paging indicator.
+- Keep the terminal at least 60 columns by 20 rows. Smaller windows block
+  forward actions until resized; Escape/back and quit remain available, and
+  an already running command continues.
+- `NO_COLOR=1` removes styling while retaining labels and selection markers.
+- `doctor` and `help` share the terminal palette; redirected output stays plain.
+
+The UI uses [Bubble Tea](https://github.com/charmbracelet/bubbletea),
+[Lip Gloss](https://github.com/charmbracelet/lipgloss), and Bubbles' help, progress,
+text input, spinner, and viewport components. Progress measures completed
+commands, not the internal progress of a package-manager operation. Interactive
+commands still receive the native terminal for passwords and prompts.
+
+Generate a gallery of actual UI renders with fictional data:
+
+```sh
+BOZO_RENDER_DIR="$PWD/.tmp/tui-preview" go test ./internal/tui -run TestRenderStudioGallery
+python3 scripts/tui-preview.py .tmp/tui-preview/screens.json
+open .tmp/tui-preview/index.html
+```
+
 ## Guided Control Center
 
 ### Managed Mac updates
