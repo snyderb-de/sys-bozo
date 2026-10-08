@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -30,6 +31,8 @@ func run(args []string) error {
 	}
 
 	switch args[0] {
+	case "--trace-input":
+		return runInputTrace()
 	case "help", "-h", "--help":
 		printHelp()
 	case "doctor":
@@ -45,6 +48,31 @@ func run(args []string) error {
 	}
 
 	return nil
+}
+
+func runInputTrace() error {
+	stateDir := os.Getenv("XDG_STATE_HOME")
+	if stateDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return err
+		}
+		stateDir = filepath.Join(home, ".local", "state")
+	}
+	dir := filepath.Join(stateDir, "sys-bozo")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	log, err := os.CreateTemp(dir, "input-trace-*.jsonl")
+	if err != nil {
+		return err
+	}
+	defer log.Close()
+	fmt.Fprintln(os.Stderr, "Input timing trace:", log.Name())
+	model, input := tui.TraceInput(tui.New(), os.Stdin, log)
+	_, err = tea.NewProgram(model, tea.WithInput(input), tea.WithAltScreen()).Run()
+	fmt.Fprintln(os.Stderr, "Input timing trace:", log.Name())
+	return err
 }
 
 var runInteractive = func(item runner.WorkItem) error {
@@ -197,7 +225,9 @@ func runActionList(w io.Writer, tasks []runner.Task, ctx runner.Context) {
 }
 
 func printDoctor() {
-	writeDoctor(os.Stdout, system.Probe())
+	var report strings.Builder
+	writeDoctor(&report, system.Probe())
+	tui.WriteCLI(os.Stdout, report.String())
 }
 
 func writeDoctor(w io.Writer, facts system.Facts) {
@@ -254,7 +284,7 @@ Actions:`)
 	} else {
 		runActionList(&sb, tasks, ctx)
 	}
-	fmt.Println(sb.String())
+	tui.WriteCLI(os.Stdout, sb.String())
 }
 
 func splitCSV(value string) []string {

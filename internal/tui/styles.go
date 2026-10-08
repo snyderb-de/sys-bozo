@@ -5,15 +5,17 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/snyderb-de/sys-bozo/internal/system"
 )
 
-// uiStyles contains semantic roles for the Monolith/Afterburner visual system.
-// Existing screens keep their legacy styles until they migrate to this system.
+// uiStyles is the shared terminal palette. Meaning never depends on color alone.
 type uiStyles struct {
 	field, major, title, label, text, muted  lipgloss.Style
 	attention, active, success, danger, rule lipgloss.Style
+	panel, selected, badge                   lipgloss.Style
+	noColor                                  bool
 }
 
 type statusKind uint8
@@ -35,17 +37,21 @@ func newUIStyles(noColor bool) uiStyles {
 	}
 
 	return uiStyles{
-		field:     lipgloss.NewStyle().Background(color("#0a0d10")).Foreground(color("#dae4ea")),
-		major:     lipgloss.NewStyle().Foreground(color("#f4f7f8")).Bold(!noColor),
-		title:     lipgloss.NewStyle().Foreground(color("#dae4ea")).Bold(!noColor),
-		label:     lipgloss.NewStyle().Foreground(color("#60717c")),
-		text:      lipgloss.NewStyle().Foreground(color("#dae4ea")),
-		muted:     lipgloss.NewStyle().Foreground(color("#60717c")),
-		attention: lipgloss.NewStyle().Foreground(color("#ffcb6b")).Bold(!noColor),
-		active:    lipgloss.NewStyle().Foreground(color("#66d9ef")).Bold(!noColor),
-		success:   lipgloss.NewStyle().Foreground(color("#7ee787")).Bold(!noColor),
-		danger:    lipgloss.NewStyle().Foreground(color("#ff8f70")).Bold(!noColor),
-		rule:      lipgloss.NewStyle().Foreground(color("#27343c")),
+		field:     lipgloss.NewStyle().Background(color("#191724")).Foreground(color("#eee9ff")),
+		major:     lipgloss.NewStyle().Foreground(color("#c4a7ff")).Bold(!noColor),
+		title:     lipgloss.NewStyle().Foreground(color("#eee9ff")).Bold(!noColor),
+		label:     lipgloss.NewStyle().Foreground(color("#b7a8d1")),
+		text:      lipgloss.NewStyle().Foreground(color("#eee9ff")),
+		muted:     lipgloss.NewStyle().Foreground(color("#a59ab8")),
+		attention: lipgloss.NewStyle().Foreground(color("#f6c177")).Bold(!noColor),
+		active:    lipgloss.NewStyle().Foreground(color("#c4a7ff")).Bold(!noColor),
+		success:   lipgloss.NewStyle().Foreground(color("#9de0b2")).Bold(!noColor),
+		danger:    lipgloss.NewStyle().Foreground(color("#ff8fa3")).Bold(!noColor),
+		rule:      lipgloss.NewStyle().Foreground(color("#514466")),
+		panel:     lipgloss.NewStyle().Background(color("#221e30")).Foreground(color("#eee9ff")),
+		selected:  lipgloss.NewStyle().Background(color("#392d50")).Foreground(color("#eee9ff")),
+		badge:     lipgloss.NewStyle().Background(color("#c4a7ff")).Foreground(color("#191724")).Bold(!noColor).Padding(0, 1),
+		noColor:   noColor,
 	}
 }
 
@@ -157,9 +163,15 @@ func numberedRow(s uiStyles, number, label, renderedStatus string, width int, ac
 		marker = "> "
 	}
 
+	label = truncateVisible(label, max(1, width-4-lipgloss.Width(number)-lipgloss.Width(renderedStatus)))
 	left := marker + numberStyle.Render(number) + " " + labelStyle.Render(label)
 	gap := max(1, width-lipgloss.Width(left)-lipgloss.Width(renderedStatus))
-	return left + strings.Repeat(" ", gap) + renderedStatus
+	row := left + strings.Repeat(" ", gap) + renderedStatus
+	if active {
+		plain := marker + number + " " + label + strings.Repeat(" ", gap) + ansi.Strip(renderedStatus)
+		return s.selected.Bold(!s.noColor).Width(width).Render(plain)
+	}
+	return row
 }
 
 func packagePipelineRow(s uiStyles, label, status string, width int, kind statusKind) string {

@@ -25,15 +25,18 @@ func (m Model) viewInspect() string {
 	contentWidth := primaryContentWidth(m.width)
 	s := m.styles
 	rows := []string{
-		s.major.Render("INSPECT/SYSTEM"),
+		screenTitle(s, "INSPECT/SYSTEM", contentWidth),
 		s.label.Render("REVIEW-GATED SYSTEM OPERATIONS"),
 		majorRule(s, contentWidth, true),
 		"",
 	}
+	icons := []string{"📝", "🧪", "🩺", "🕘", "🌿"}
+	descriptions := []string{"Edit a temporary copy, then review the changes", "Find configuration issues and their fixes", "Check managers, generations, and key presence", "See completed runs and failure details", "Inspect exact changes before committing or restoring"}
 	for i, entry := range inspectEntries {
-		rows = append(rows, numberedRow(s, entry.number, entry.label, statusText(s, "OPEN", statusSuccess), contentWidth, i == m.inspectCursor))
+		rows = append(rows, numberedRow(s, entry.number, icons[i]+"  "+entry.label, s.muted.Render("OPEN"), contentWidth, i == m.inspectCursor))
+		rows = append(rows, "     "+s.muted.Render(truncateVisible(descriptions[i], contentWidth-5)))
 	}
-	rows = append(rows, "", majorRule(s, contentWidth, false), "", s.muted.Render("ESCAPE BACK   ENTER OPEN"))
+	rows = append(rows, "", majorRule(s, contentWidth, false), "", helpLine(s, contentWidth, "ESCAPE", "BACK", "ENTER", "OPEN", "?", "HELP"))
 	return primaryFrame(s, m.width, strings.Join(rows, "\n"))
 }
 
@@ -41,7 +44,7 @@ func (m Model) viewHistory() string {
 	contentWidth := primaryContentWidth(m.width)
 	s := m.styles
 	rows := []string{
-		s.major.Render("INSPECT/HISTORY"),
+		screenTitle(s, "INSPECT/HISTORY", contentWidth),
 		s.label.Render("RECENT EXECUTION METADATA"),
 		majorRule(s, contentWidth, true),
 		"",
@@ -103,7 +106,7 @@ func (m Model) viewConfig() string {
 	contentWidth := primaryContentWidth(m.width)
 	s := m.styles
 	rows := []string{
-		s.major.Render("INSPECT/CONFIG"),
+		screenTitle(s, "INSPECT/CONFIG", contentWidth),
 		s.label.Render("DECLARATIVE SOURCE FILES"),
 		majorRule(s, contentWidth, true),
 		"",
@@ -123,7 +126,7 @@ func (m Model) viewConfig() string {
 	if m.configNotice != "" {
 		rows = append(rows, "", s.muted.Render(truncateVisible(m.configNotice, contentWidth)))
 	}
-	rows = append(rows, "", majorRule(s, contentWidth, false), "", s.muted.Render("ESCAPE BACK   J/K MOVE   ENTER EDIT"))
+	rows = append(rows, "", majorRule(s, contentWidth, false), "", helpLine(s, contentWidth, "ESCAPE", "BACK", "J/K", "MOVE", "ENTER", "EDIT", "?", "HELP"))
 	return primaryFrame(s, m.width, strings.Join(rows, "\n"))
 }
 
@@ -133,10 +136,10 @@ func (m Model) viewAudit() string {
 	contentWidth := primaryContentWidth(m.width)
 	s := m.styles
 	compact := m.height > 0 && m.height <= 24
-	header := []string{s.major.Render("INSPECT/AUDIT"), s.label.Render("LOCAL CONFIGURATION AUDIT"), majorRule(s, contentWidth, true), ""}
+	header := []string{screenTitle(s, "INSPECT/AUDIT", contentWidth), s.label.Render("LOCAL CONFIGURATION AUDIT"), majorRule(s, contentWidth, true), ""}
 
 	if !m.auditReady {
-		rows := append(header, s.muted.Render("SCANNING..."), "", s.muted.Render("ESCAPE BACK   A RESCAN"))
+		rows := append(header, s.muted.Render("SCANNING..."), "", helpLine(s, contentWidth, "ESCAPE", "BACK", "A", "RESCAN", "?", "HELP"))
 		return primaryFrame(s, m.width, strings.Join(rows, "\n"))
 	}
 
@@ -174,7 +177,7 @@ func (m Model) viewAudit() string {
 		summary += "  " + s.danger.Render(fmt.Sprintf("%d ISSUES", fail))
 	}
 	rows = append(rows, summary)
-	rows = append(rows, "", majorRule(s, contentWidth, false), "", s.muted.Render("ESCAPE BACK   A RESCAN"))
+	rows = append(rows, "", majorRule(s, contentWidth, false), "", helpLine(s, contentWidth, "ESCAPE", "BACK", "A", "RESCAN", "?", "HELP"))
 	if compact {
 		rows = nonEmptyRows(rows)
 	}
@@ -230,7 +233,7 @@ func (m Model) viewDoctor() string {
 	compact := m.height > 0 && m.height <= 24
 	f := m.facts
 
-	rows := []string{s.major.Render("INSPECT/DOCTOR"), s.label.Render("WORKSTATION DIAGNOSTICS"), majorRule(s, contentWidth, true), ""}
+	rows := []string{screenTitle(s, "INSPECT/DOCTOR", contentWidth), s.label.Render("WORKSTATION DIAGNOSTICS"), majorRule(s, contentWidth, true), ""}
 
 	rows = append(rows, s.title.Render("DOTFILES"))
 	branch := f.DotfilesBranch
@@ -299,7 +302,7 @@ func (m Model) viewDoctor() string {
 		rows = append(rows, s.title.Render("NETWORK"))
 		rows = append(rows, s.label.Render("TAILSCALE")+"  "+s.success.Render(f.TailscaleIP))
 	}
-	rows = append(rows, "", majorRule(s, contentWidth, false), "", s.muted.Render("ESCAPE BACK   R REFRESH"))
+	rows = append(rows, "", majorRule(s, contentWidth, false), "", helpLine(s, contentWidth, "ESCAPE", "BACK", "R", "REFRESH", "?", "HELP"))
 	if compact {
 		rows = nonEmptyRows(rows)
 	}

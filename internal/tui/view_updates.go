@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"github.com/charmbracelet/lipgloss"
 	"strings"
 
 	"github.com/snyderb-de/sys-bozo/internal/history"
@@ -10,44 +11,73 @@ import (
 
 func (m Model) viewMiniUpdates() string {
 	s, width := m.styles, primaryContentWidth(m.width)
-	title, subtitle := "UPDATES / MAC MINI", "Recommended order: version pins, configuration, Topgrade."
+	title, subtitle := "UPDATES / MAC MINI", "Select your updates. Review the exact plan before anything runs."
 	if m.updatesRecovery {
-		title, subtitle = "RECOVERY / MAC MINI", "Recovery is separate from routine updates."
+		title, subtitle = "RECOVERY / MAC MINI", "Restore a previous generation. Review the recovery plan first."
 	}
-	rows := []string{s.major.Render(title), s.muted.Render(subtitle), majorRule(s, width, true), ""}
+	rows := []string{screenTitle(s, title, width), s.muted.Render(subtitle), majorRule(s, width, true), ""}
 	options := m.miniUpdateOptions()
+	selected := 0
+	listWidth := width
+	wide := width >= 104 && m.height >= 28
+	if wide {
+		listWidth = width * 3 / 5
+	}
+	var choices []string
 	for i, option := range options {
-		mark, state, kind := "[ ] ", "OPTIONAL", statusMuted
+		mark, state, kind := "[ ] ", "optional", statusMuted
 		if option.Recommended {
-			state = "RECOMMENDED"
+			state = "recommended"
 		}
 		if option.Recovery {
-			state = "RECOVERY"
+			state = "recovery"
 		}
 		if !option.Available {
-			state = "UNAVAILABLE"
+			state = "unavailable"
 		}
 		if m.selected[option.ID] {
 			mark, state, kind = "[x] ", "SELECTED", statusActive
+			selected++
 		}
-		rows = append(rows, numberedRow(s, fmt.Sprintf("%02d", i+1), mark+option.Label, statusText(s, state, kind), width, i == m.cursor))
+		choices = append(choices, numberedRow(s, fmt.Sprintf("%02d", i+1), mark+option.Label, statusText(s, state, kind), listWidth, i == m.cursor))
+		if wide {
+			choices = append(choices, "")
+		}
 	}
-	rows = append(rows, "", majorRule(s, width, false))
+	var details []string
 	if m.cursor >= 0 && m.cursor < len(options) {
 		option := options[m.cursor]
-		for _, line := range wrapText(option.Description+" "+option.Detail, width) {
-			rows = append(rows, s.text.Render(line))
+		detailWidth := width
+		if wide {
+			detailWidth = width - listWidth - 6
+		}
+		details = append(details, s.title.Render("💡 "+option.Label))
+		for _, line := range wrapText(option.Description+" "+option.Detail, detailWidth) {
+			details = append(details, s.text.Render(line))
 		}
 	}
+	if wide {
+		side := panel(s, "ABOUT THIS STEP", strings.Join(details, "\n"), width-listWidth-2, false)
+		rows = append(rows, lipgloss.JoinHorizontal(lipgloss.Top, strings.Join(choices, "\n"), "  ", side))
+	} else {
+		rows = append(rows, choices...)
+		rows = append(rows, "", majorRule(s, width, false))
+		// The focused option remains explained even at 80 × 24.
+		if len(details) > 1 {
+			rows = append(rows, details[1:]...)
+		}
+	}
+	rows = append(rows, "", s.active.Render(fmt.Sprintf("%d selected", selected))+"  "+s.muted.Render("① Select  →  ② Review  →  ③ Run"))
 	if m.updatesNotice != "" {
 		rows = append(rows, s.attention.Render(truncateVisible(m.updatesNotice, width)))
 	}
-	footer := "A SELECT RECOMMENDED   SPACE TOGGLE   ENTER REVIEW"
-	other := "TAB RECOVERY   ESC BACK"
+	footer := helpLine(s, width, "A", "SELECT RECOMMENDED", "SPACE", "TOGGLE", "ENTER", "REVIEW")
+	other := helpLine(s, width, "TAB", "RECOVERY", "ESC", "BACK", "?", "HELP")
 	if m.updatesRecovery {
-		footer, other = "SPACE SELECT   ENTER REVIEW", "TAB UPDATES   ESC BACK"
+		footer = helpLine(s, width, "SPACE", "SELECT", "ENTER", "REVIEW")
+		other = helpLine(s, width, "TAB", "UPDATES", "ESC", "BACK", "?", "HELP")
 	}
-	rows = append(rows, "", s.active.Render(footer), s.muted.Render(other))
+	rows = append(rows, footer, other)
 	return primaryFrame(s, m.width, strings.Join(rows, "\n"))
 }
 
@@ -86,7 +116,7 @@ func (m Model) updateReviewRows() []string {
 
 func (m Model) viewMiniUpdateReview() string {
 	s, width := m.styles, primaryContentWidth(m.width)
-	rows := []string{s.major.Render("REVIEW / MAC MINI"), s.muted.Render("Exact execution order. Nothing runs until confirmation."), majorRule(s, width, true)}
+	rows := []string{screenTitle(s, "REVIEW / MAC MINI", width), s.muted.Render("Exact execution order. Nothing runs until confirmation."), majorRule(s, width, true)}
 	label := m.updatesReadinessLabel()
 	for _, line := range wrapText(label, width) {
 		rows = append(rows, s.attention.Render(line))
@@ -139,7 +169,7 @@ func (m Model) viewMiniUpdateResult() string {
 	if m.runCancelled {
 		state = "CANCELLED"
 	}
-	rows := []string{s.major.Render("RESULT / MAC MINI"), s.title.Render(state) + "  " + formatRunElapsed(m.runElapsed), majorRule(s, width, true), ""}
+	rows := []string{screenTitle(s, "RESULT / MAC MINI", width), resultBanner(s, state) + "  " + formatRunElapsed(m.runElapsed), majorRule(s, width, true), ""}
 	return m.updateScrollableFrame(rows, m.updateResultRows(), "UP/DOWN SCROLL   "+m.resultFooter(false))
 }
 

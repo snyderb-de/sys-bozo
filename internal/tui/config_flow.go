@@ -155,7 +155,7 @@ func (m *Model) configApplyStale(err error) bool {
 func (m Model) viewConfigReview() string {
 	review := m.reviewed.Config
 	width := primaryContentWidth(m.width)
-	rows := []string{m.styles.major.Render("REVIEW/CONFIG"), m.styles.label.Render("REVIEWED FILE REPLACEMENT"), majorRule(m.styles, width, true), ""}
+	rows := []string{screenTitle(m.styles, "REVIEW/CONFIG", width), m.styles.label.Render("REVIEWED FILE REPLACEMENT"), majorRule(m.styles, width, true), ""}
 	rows = append(rows, packageLabeledValueRows(m.styles, "FILE", review.Proposal.Path, width)...)
 	if review.Warning != "" {
 		rows = append(rows, m.styles.danger.Render("WARNING  "+review.Warning))

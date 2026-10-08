@@ -18,7 +18,7 @@ func (m Model) viewRepoTriage() string {
 		diffTab = "[DIFF]"
 	}
 	rows := []string{
-		s.major.Render("REPO/TRIAGE"),
+		screenTitle(s, "REPO/TRIAGE", contentWidth),
 		s.label.Render("EXACT WORKTREE STATE") + "   " + s.text.Render(filesTab+"  "+diffTab),
 		majorRule(s, contentWidth, true),
 	}

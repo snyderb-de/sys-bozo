@@ -2324,15 +2324,15 @@ func TestNoColorStylesRenderSemanticLabelsWithoutANSI(t *testing.T) {
 	}
 }
 
-func TestFieldStyleUsesGraphiteAndDropsBackgroundWithoutColor(t *testing.T) {
+func TestFieldStyleUsesAubergineAndDropsBackgroundWithoutColor(t *testing.T) {
 	colored := newUIStyles(false)
 	background, ok := colored.field.GetBackground().(lipgloss.Color)
-	if !ok || string(background) != "#0a0d10" {
-		t.Fatalf("field background=%T(%v), want graphite #0a0d10", colored.field.GetBackground(), colored.field.GetBackground())
+	if !ok || string(background) != "#191724" {
+		t.Fatalf("field background=%T(%v), want aubergine #191724", colored.field.GetBackground(), colored.field.GetBackground())
 	}
 	foreground, ok := colored.field.GetForeground().(lipgloss.Color)
-	if !ok || string(foreground) != "#dae4ea" {
-		t.Fatalf("field foreground=%T(%v), want bone #dae4ea", colored.field.GetForeground(), colored.field.GetForeground())
+	if !ok || string(foreground) != "#eee9ff" {
+		t.Fatalf("field foreground=%T(%v), want soft white #eee9ff", colored.field.GetForeground(), colored.field.GetForeground())
 	}
 
 	previousProfile := lipgloss.ColorProfile()
@@ -2434,7 +2434,7 @@ func TestSplitPreservesAuditConfigAndDoctorViews(t *testing.T) {
 	}
 }
 
-func TestHomeUsesMonolithHierarchyAt80And100Columns(t *testing.T) {
+func TestHomeUsesLaunchpadHierarchyAt80And100Columns(t *testing.T) {
 	for _, width := range []int{80, 100} {
 		m := testGuidedModel()
 		m.width, m.height = width, 30
@@ -2714,7 +2714,7 @@ func TestReviewWrapsLongExactCommandWithin80Columns(t *testing.T) {
 	if lipgloss.Width(out) > 80 {
 		t.Fatalf("rendered width=%d want <=80:\n%s", lipgloss.Width(out), out)
 	}
-	compact := strings.Join(strings.Fields(out), "")
+	compact := strings.Join(strings.Fields(strings.ReplaceAll(out, "│", "")), "")
 	compactCommand := strings.ReplaceAll(runner.CmdLabel(item), " ", "")
 	if !strings.Contains(compact, compactCommand) {
 		t.Fatalf("wrapped output lost or reordered command characters %q:\n%s", runner.CmdLabel(item), out)
@@ -2945,7 +2945,7 @@ func TestCompactHistoryTruncatesLongActionsToOneRow(t *testing.T) {
 	}
 }
 
-func TestInspectChildScreensUseMonolithRulesWithoutCards(t *testing.T) {
+func TestInspectChildScreensShareRoundedShell(t *testing.T) {
 	m := testGuidedModel()
 	m.width, m.height = 100, 36
 	m.styles = newUIStyles(true)
@@ -2970,8 +2970,8 @@ func TestInspectChildScreensUseMonolithRulesWithoutCards(t *testing.T) {
 				t.Fatalf("screen %v missing %q:\n%s", tc.screen, want, out)
 			}
 		}
-		if strings.ContainsAny(out, "╭╮╰╯") {
-			t.Fatalf("screen %v retained rounded card:\n%s", tc.screen, out)
+		if !strings.ContainsAny(out, "╭╮╰╯") {
+			t.Fatalf("screen %v missing rounded shell:\n%s", tc.screen, out)
 		}
 	}
 }

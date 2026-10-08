@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/snyderb-de/sys-bozo/internal/history"
 	"github.com/snyderb-de/sys-bozo/internal/repostate"
@@ -25,7 +26,7 @@ func (m Model) viewMaintenance() string {
 	s := m.styles
 
 	rows := []string{
-		s.major.Render("SELECT"),
+		screenTitle(s, "SELECT", contentWidth),
 		s.label.Render("WEEKLY MAINTENANCE"),
 		majorRule(s, contentWidth, true),
 		"",
@@ -83,7 +84,7 @@ func (m Model) viewMaintenance() string {
 		"",
 		majorRule(s, contentWidth, false),
 		"",
-		s.muted.Render("ESCAPE BACK   SPACE TOGGLE")+"   "+s.active.Render("ENTER REVIEW"),
+		helpLine(s, contentWidth, "ESCAPE", "BACK", "SPACE", "TOGGLE", "ENTER", "REVIEW", "?", "HELP"),
 	)
 
 	return primaryFrame(s, m.width, strings.Join(rows, "\n"))
@@ -106,7 +107,7 @@ func (m Model) viewReview() string {
 	s := m.styles
 
 	rows := []string{
-		s.major.Render("REVIEW"),
+		screenTitle(s, "REVIEW", contentWidth),
 		s.label.Render("IMMUTABLE EXECUTION PLAN"),
 		majorRule(s, contentWidth, true),
 		"",
@@ -130,7 +131,7 @@ func (m Model) viewReview() string {
 		"",
 		majorRule(s, contentWidth, false),
 		"",
-		s.muted.Render("ESCAPE BACK")+"   "+s.active.Render("ENTER CONFIRM"),
+		helpLine(s, contentWidth, "ESCAPE", "BACK", "ENTER", "CONFIRM", "?", "HELP"),
 	)
 
 	return primaryFrame(s, m.width, strings.Join(rows, "\n"))
@@ -141,7 +142,7 @@ func (m Model) viewRepoReview() string {
 	s := m.styles
 	review := m.reviewed.Repo
 	rows := []string{
-		s.major.Render("REVIEW/REPOSITORY"),
+		screenTitle(s, "REVIEW/REPOSITORY", contentWidth),
 		s.label.Render("IMMUTABLE EXACT-PATH PLAN"),
 		majorRule(s, contentWidth, true),
 		"",
@@ -234,19 +235,18 @@ func (m Model) viewRunning() string {
 		items = m.reviewed.Items
 	}
 	completed := min(max(0, m.queuePos), len(items))
-	percent := 0
-	if len(items) > 0 {
-		percent = completed * 100 / len(items)
-	}
 
+	activity := s.active.Render("• working")
+	if len(m.spinner.Spinner.Frames) > 0 {
+		activity = m.spinner.View() + " " + s.active.Render("working")
+	}
 	rows := []string{
-		s.major.Render("RUN/ACTIVE"),
-		s.label.Render("EXECUTION IN PROGRESS"),
+		screenTitle(s, "RUN/ACTIVE", contentWidth),
+		s.label.Render("Live execution · completed steps / total steps"),
 		majorRule(s, contentWidth, true),
 		"",
-		s.title.Render(fmt.Sprintf("%02d/%02d", completed, len(items))) +
-			"  " + s.active.Render(fmt.Sprintf("%d%%", percent)) +
-			"  " + s.muted.Render(formatRunElapsed(time.Since(m.runStart))),
+		s.title.Render(fmt.Sprintf("%02d/%02d steps", completed, len(items))) + "  " + s.muted.Render(formatRunElapsed(time.Since(m.runStart))) + "  " + activity,
+		progressMeter(s, completed, len(items), contentWidth),
 		"",
 	}
 	for i, item := range items {
@@ -265,10 +265,19 @@ func (m Model) viewRunning() string {
 		}
 		rows = append(rows, reviewCommandRows(s, fmt.Sprintf("%02d", i+1), runner.CmdLabel(item), statusText(s, label, kind), contentWidth)...)
 	}
-	if m.height == 0 || m.height >= 28 {
-		rows = append(rows, "", majorRule(s, contentWidth, false), "", s.label.Render("OUTPUT"), m.logVP.View())
+	log := m.logVP
+	log.Width = contentWidth
+	if m.height > 0 {
+		log.Height = max(1, m.height-len(rows)-8)
 	}
-	rows = append(rows, "", s.muted.Render("J/K SCROLL   F FOLLOW   Q FORCE QUIT"))
+	if log.Height <= 0 {
+		log.Height = 5
+	}
+	if m.logFollow {
+		log.GotoBottom()
+	}
+	rows = append(rows, "", majorRule(s, contentWidth, false), s.label.Render("OUTPUT · live stream"), log.View())
+	rows = append(rows, "", helpLine(s, contentWidth, "J/K", "SCROLL", "F", "FOLLOW", "Q", "FORCE QUIT", "?", "HELP"))
 	return primaryFrame(s, m.width, strings.Join(rows, "\n"))
 }
 
@@ -294,11 +303,11 @@ func (m Model) viewResult() string {
 		rule = s.danger.Render(strings.Repeat("━", contentWidth))
 	}
 	rows := []string{
-		s.major.Render("RUN/RESULT"),
+		screenTitle(s, "RUN/RESULT", contentWidth),
 		s.label.Render("EXECUTION FINISHED"),
 		rule,
 		"",
-		s.title.Render(state) + "  " + s.muted.Render(formatRunElapsed(m.runElapsed)),
+		resultBanner(s, state) + "  " + s.muted.Render(formatRunElapsed(m.runElapsed)),
 		"",
 		s.label.Render("HISTORY ") + statusText(s, strings.ToUpper(string(historyStatus)), kind),
 		"",
@@ -471,15 +480,7 @@ func truncateVisible(text string, width int) string {
 	if width == 1 {
 		return "…"
 	}
-	runes := []rune(text)
-	cut := 0
-	for i := range runes {
-		if lipgloss.Width(string(runes[:i+1])) > width-1 {
-			break
-		}
-		cut = i + 1
-	}
-	return string(runes[:cut]) + "…"
+	return ansi.Truncate(text, width, "…")
 }
 
 func (m Model) resultFooter(logVisible bool) string {

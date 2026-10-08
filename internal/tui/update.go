@@ -14,7 +14,6 @@ import (
 	"github.com/snyderb-de/sys-bozo/internal/history"
 	"github.com/snyderb-de/sys-bozo/internal/packages"
 	"github.com/snyderb-de/sys-bozo/internal/runner"
-	"github.com/snyderb-de/sys-bozo/internal/system"
 )
 
 // ── Init ──────────────────────────────────────────────────────────────────
@@ -27,6 +26,9 @@ func (m Model) Init() tea.Cmd {
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case hostRefreshedMsg:
+		return m.acceptHostRefresh(msg)
+
 	case updatesCheckedMsg:
 		return m, m.acceptUpdatesCheck(msg)
 
@@ -44,7 +46,54 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		return m.handleKey(msg)
+		// Consecutive Escape bytes can arrive as Alt+Esc. Both mean back/cancel
+		// here; comparing the decorated key string would silently discard them.
+		if msg.Type == tea.KeyEsc {
+			msg.Alt = false
+		}
+		// Exit must precede every prompt, text input, overlay, and screen router.
+		if msg.Type == tea.KeyCtrlC {
+			m.cancelPackageSearch()
+			return m, tea.Quit
+		}
+		// Keep back/cancel available after a resize; only forward actions need
+		// a visible screen. Escape still follows the normal overlay/route rules.
+		if m.terminalTooSmall() && msg.Type != tea.KeyEsc {
+			if msg.String() == "q" || msg.String() == "Q" || msg.String() == "ctrl+c" {
+				return m, tea.Quit
+			}
+			return m, nil
+		}
+		if m.helpVisible {
+			switch msg.String() {
+			case "?", "esc", "q":
+				m.helpVisible = false
+			case "ctrl+c":
+				return m, tea.Quit
+			}
+			return m, nil
+		}
+		if msg.String() == "?" && !m.editingText() {
+			m.helpVisible = true
+			return m, nil
+		}
+		if m.scrollFrame(msg.String()) {
+			return m, nil
+		}
+		next, cmd := m.handleKey(msg)
+		result := next.(Model)
+		if result.screen != m.screen {
+			result.frameOffset = 0
+			result.refreshing = false
+			result.refreshID++
+		}
+		switch msg.String() {
+		case "up", "down", "j", "k":
+			if !result.editingText() {
+				result.revealSelection()
+			}
+		}
+		return result, cmd
 
 	case repoStatusMsg:
 		m.acceptRepoStatus(msg)
@@ -536,15 +585,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "r":
 		if m.mode == modeView {
-			m.facts = system.Probe()
-			m.runCtx = runner.Build()
-			m.tasks = runner.DefaultTasks(m.runCtx)
-			m.configFiles = buildConfigFiles(m.runCtx)
-			m.auditReady = false
-			m.auditItems = nil
-			if m.tabs[m.tab] == "Audit" {
-				return m, m.runAudit()
-			}
+			return m, m.refreshHostCmd()
 		}
 
 	case "a":

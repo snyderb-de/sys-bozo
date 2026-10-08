@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/snyderb-de/sys-bozo/internal/packages"
 	"github.com/snyderb-de/sys-bozo/internal/runner"
@@ -16,7 +17,7 @@ func (m Model) viewPackage() string {
 	contentWidth := primaryContentWidth(m.width)
 	s := m.styles
 	rows := []string{
-		s.major.Render("ADD/PACKAGE"),
+		screenTitle(s, "ADD/PACKAGE", contentWidth),
 		s.label.Render("DECLARATIVE INSTALL"),
 		majorRule(s, contentWidth, true),
 		"",
@@ -24,13 +25,23 @@ func (m Model) viewPackage() string {
 	switch m.packageFlow.stage {
 	case packageSearch:
 		query := m.packageFlow.query
-		query.Width = max(1, contentWidth)
+		query.Width = max(1, contentWidth-8)
+		query.Prompt = "⌕ "
+		query.PromptStyle = s.active
+		query.TextStyle = s.text
+		query.PlaceholderStyle = s.muted
+		query.Cursor.Style = s.active
+		queryView := query.View()
+		if s.noColor {
+			queryView = ansi.Strip(queryView)
+		}
 		rows = append(rows,
-			s.label.Render("SEARCH"),
-			query.View(),
-			s.active.Render(strings.Repeat("━", contentWidth)),
+			panel(s, "SEARCH", queryView, contentWidth, true),
 			"",
 			s.muted.Render("Searches nixpkgs and Homebrew. Nix remains default when available."),
+			"",
+			s.active.Render("❄ Nix")+s.muted.Render("  Declarative tools, shared across your machines"),
+			s.attention.Render("🍺 Homebrew")+s.muted.Render("  macOS formulae and applications"),
 			"",
 			s.muted.Render("ESCAPE BACK")+"   "+s.active.Render("ENTER SEARCH"),
 		)
@@ -346,7 +357,7 @@ func (m Model) viewPackageReview() string {
 	diffBottom := min(diffVP.TotalLineCount(), diffVP.YOffset+diffVP.VisibleLineCount())
 	diffPosition := fmt.Sprintf("DIFF  %02d-%02d/%02d", diffTop, diffBottom, diffVP.TotalLineCount())
 	rows := []string{
-		s.major.Render("REVIEW/PACKAGE"),
+		screenTitle(s, "REVIEW/PACKAGE", contentWidth),
 		s.label.Render("DECLARATIVE INSTALL"),
 		majorRule(s, contentWidth, true),
 		"",
