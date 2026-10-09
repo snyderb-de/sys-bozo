@@ -216,7 +216,7 @@ func TestReadmeExplainsGuidedPackageWorkflow(t *testing.T) {
 	readme := string(data)
 	for _, want := range []string{
 		"review every mutating plan",
-		"interactive terminal handoff",
+		"terminal pane",
 		"Add Package",
 		"declarative Nix or Homebrew config",
 	} {

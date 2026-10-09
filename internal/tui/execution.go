@@ -13,6 +13,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/term"
 
 	"github.com/snyderb-de/sys-bozo/internal/history"
 	"github.com/snyderb-de/sys-bozo/internal/repostate"
@@ -171,7 +172,11 @@ func cloneWorkItems(items []runner.WorkItem) []runner.WorkItem {
 func runInteractiveWork(item runner.WorkItem, start time.Time, capture io.Writer) tea.Cmd {
 	cmd := runner.Command(item)
 	if capture != nil {
-		cmd.Stderr = io.MultiWriter(os.Stderr, capture)
+		var output io.Writer = os.Stderr
+		if term.IsTerminal(os.Stderr.Fd()) {
+			output = &terminalLineWriter{output: output}
+		}
+		cmd.Stderr = io.MultiWriter(output, capture)
 	}
 	return tea.Exec(&terminalExecCommand{Cmd: cmd}, func(err error) tea.Msg {
 		return stepDoneMsg{err: err, elapsed: time.Since(start), cancelled: terminalWorkCancelled(err)}
@@ -281,6 +286,9 @@ func (m *Model) advanceQueue() tea.Cmd {
 
 	m.stepStart = time.Now()
 	if item.Mode == runner.ExecutionInteractive {
+		if m.terminalExec == nil {
+			return m.startEmbeddedTerminal(item)
+		}
 		m.logLines = append(m.logLines, logLine{
 			kind: logOutput,
 			text: "  ! terminal handoff — input stays outside sys-bozo",
@@ -288,9 +296,6 @@ func (m *Model) advanceQueue() tea.Cmd {
 		m.logVP.SetContent(m.renderLog())
 		m.logVP.GotoBottom()
 		execInteractive := m.terminalExec
-		if execInteractive == nil {
-			execInteractive = runInteractiveWork
-		}
 		m.termCapture = newTerminalCapture(stepOutputTailLines)
 		return execInteractive(item, m.stepStart, m.termCapture)
 	}
@@ -331,7 +336,7 @@ func (m *Model) recordStepResult(index int, status history.Status, duration time
 			output = m.stepOutputExcerpt()
 		}
 	}
-	m.stepResults[index] = stepResult{Item: item, Status: status, Duration: duration, Err: err, Output: output}
+	m.stepResults[index] = stepResult{Item: item, Status: status, Duration: duration, Err: err, Output: output, PrivateOutput: m.embeddedStep}
 }
 
 const stepOutputTailLines = 8
@@ -404,7 +409,10 @@ func (m *Model) finishRun(err error, cancelled bool, elapsed time.Duration) {
 	}
 	if status != history.StatusSuccess {
 		if failed, ok := m.failedStep(); ok {
-			entry.Step, entry.Output = failed.Item.Title, failed.Output
+			entry.Step = failed.Item.Title
+			if !failed.PrivateOutput {
+				entry.Output = failed.Output
+			}
 			if failed.Err != nil {
 				entry.Error = failed.Err.Error()
 			}

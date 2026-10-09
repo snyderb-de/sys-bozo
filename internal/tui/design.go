@@ -14,29 +14,25 @@ import (
 )
 
 // screenTitle gives every workflow a recognizable location without spending
-// extra terminal rows on decoration. Route labels remain useful in support logs.
+// extra terminal rows on decoration or internal route names.
 func screenTitle(s uiStyles, route string, width int) string {
 	titles := map[string]string{
-		"SELECT": "🧰 Maintenance", "REVIEW": "🔎 Review your changes",
-		"RUN/ACTIVE": "🚀 Running your plan", "RUN/RESULT": "🏁 Run summary",
-		"INSPECT/SYSTEM": "🔭 Explore your workstation", "INSPECT/CONFIG": "📝 Configuration",
-		"INSPECT/AUDIT": "🧪 Configuration audit", "INSPECT/DOCTOR": "🩺 System diagnostics",
-		"INSPECT/HISTORY": "🕘 Recent activity", "ADD/PACKAGE": "📦 Find your next tool",
-		"REPO/TRIAGE": "🌿 Repository", "REVIEW/REPOSITORY": "🔎 Review repository changes",
-		"REVIEW/PACKAGE": "🔎 Review package changes", "REVIEW/CONFIG": "🔎 Review configuration",
-		"UPDATES / MAC MINI": "✨ Update your Mac mini", "RECOVERY / MAC MINI": "🛟 Recovery",
-		"REVIEW / MAC MINI": "🔎 Review your update", "RESULT / MAC MINI": "🏁 Update summary",
+		"HOME": "Overview", "SELECT": "Maintenance", "REVIEW": "Review changes",
+		"RUN/ACTIVE": "Running", "RUN/RESULT": "Run summary",
+		"INSPECT/SYSTEM": "Inspect system", "INSPECT/CONFIG": "Configuration",
+		"INSPECT/AUDIT": "Configuration audit", "INSPECT/DOCTOR": "Diagnostics",
+		"INSPECT/HISTORY": "History", "ADD/PACKAGE": "Packages",
+		"REPO/TRIAGE": "Repository", "REVIEW/REPOSITORY": "Review repository changes",
+		"REVIEW/PACKAGE": "Review package changes", "REVIEW/CONFIG": "Review configuration",
+		"UPDATES / MAC MINI": "Updates", "RECOVERY / MAC MINI": "Recovery",
+		"REVIEW / MAC MINI": "Review update", "RESULT / MAC MINI": "Update summary",
+		"KEYBOARD": "Keyboard shortcuts",
 	}
 	title := titles[route]
 	if title == "" {
-		title = "✦ " + route
+		title = route
 	}
-	right := s.muted.Render(route)
-	if width >= 100 {
-		right = s.badge.Render("BOZO") + "  " + right
-	}
-	left := s.major.Render(truncateVisible(title, max(1, width-lipgloss.Width(right)-2)))
-	return left + strings.Repeat(" ", max(1, width-lipgloss.Width(left)-lipgloss.Width(right))) + right
+	return dashboardPair(s.badge.Render("sys-bozo"), s.title.Render(title), width)
 }
 
 func panel(s uiStyles, title, body string, width int, focused bool) string {
@@ -44,8 +40,8 @@ func panel(s uiStyles, title, body string, width int, focused bool) string {
 	if focused {
 		border = s.active.GetForeground()
 	}
-	return s.panel.Border(lipgloss.RoundedBorder()).BorderForeground(border).
-		Padding(0, 1).Width(max(1, width-2)).Render(s.title.Render(title) + "\n" + body)
+	return s.panel.Border(lipgloss.NormalBorder(), false, false, false, true).BorderForeground(border).
+		Padding(0, 1).Width(max(1, width-1)).Render(s.title.Render(title) + "\n" + body)
 }
 
 // Bubbles help handles visible cell widths and ANSI styles. Split groups before
@@ -80,8 +76,8 @@ func progressMeter(s uiStyles, completed, total, width int) string {
 		fraction = float64(completed) / float64(total)
 	}
 	fraction = math.Min(1, math.Max(0, fraction))
-	p := progress.New(progress.WithGradient("#c4a7ff", "#f6c177"), progress.WithColorProfile(lipgloss.ColorProfile()), progress.WithWidth(max(1, width-7)), progress.WithoutPercentage(), progress.WithFillCharacters('━', '─'))
-	p.EmptyColor = "#514466"
+	p := progress.New(progress.WithSolidFill("#8bbcff"), progress.WithColorProfile(lipgloss.ColorProfile()), progress.WithWidth(max(1, width-7)), progress.WithoutPercentage(), progress.WithFillCharacters('━', '─'))
+	p.EmptyColor = "#394658"
 	if s.noColor {
 		p = progress.New(progress.WithColorProfile(termenv.Ascii), progress.WithWidth(max(1, width-7)), progress.WithoutPercentage(), progress.WithFillCharacters('━', '─'))
 	}
@@ -91,11 +87,11 @@ func progressMeter(s uiStyles, completed, total, width int) string {
 func resultBanner(s uiStyles, state string) string {
 	switch state {
 	case "COMPLETE", "STEPS COMPLETED":
-		return s.success.Render("✅ " + state)
+		return s.success.Render("✓ " + state)
 	case "CANCELLED":
-		return s.attention.Render("⏹ " + state)
+		return s.attention.Render("– " + state)
 	default:
-		return s.danger.Render("❌ " + state)
+		return s.danger.Render("! " + state)
 	}
 }
 
@@ -121,12 +117,12 @@ func (m Model) View() string {
 		if len(lines) > 2 {
 			width := primaryContentWidth(m.width)
 			notice := m.styles.attention.Render(truncateVisible("↻ Refreshing host facts… Esc back · Ctrl-C quit", width))
-			lines[2] = m.styles.rule.Render("│") + m.styles.field.Width(layoutWidth(m.width)-2).Padding(0, primaryFramePadding-1).Render(notice) + m.styles.rule.Render("│")
+			lines[2] = m.styles.field.Width(layoutWidth(m.width)).Padding(0, primaryFramePadding).Render(notice)
 			out = strings.Join(lines, "\n")
 		}
 	}
 	if m.height <= 0 || lipgloss.Height(out) <= m.height {
-		return out
+		return m.styles.field.Width(layoutWidth(m.width)).Height(m.height).Render(out)
 	}
 	return m.pagedFrame(out)
 }
@@ -172,11 +168,11 @@ func (m *Model) scrollFrame(k string) bool {
 
 func (m Model) viewHelp() string {
 	s, w := m.styles, primaryContentWidth(m.width)
-	rows := []string{screenTitle(s, "KEYBOARD", w), s.muted.Render("Everything you need, without leaving the terminal."), majorRule(s, w, true), ""}
-	rows = append(rows, s.title.Render("🧭 Getting around"), helpLine(s, w, "↑/↓ or j/k", "move", "Enter", "open / continue", "Esc", "back"), helpLine(s, w, "PgUp/PgDn", "scroll long pages", "?", "this guide", "q", "quit"), "")
-	rows = append(rows, s.title.Render("🧰 Select → review → run"), s.text.Render("Space toggles a selection. Enter opens its exact plan."), s.text.Render("Enter on Review confirms execution. Esc returns to selection."), "")
-	rows = append(rows, s.title.Render("📦 Packages & 🌿 repository"), s.text.Render("Tab switches package sources or repository files/diff."), s.text.Render("Repository: C commit · S stash · R restore · D delete."), "")
-	rows = append(rows, s.title.Render("🏁 After a run"), helpLine(s, w, "l", "log / summary", "r", "review retry", "v", "review package revert"), s.muted.Render("Only available actions appear in each screen's footer."), "", majorRule(s, w, false), helpLine(s, w, "? / Esc", "close guide"))
+	rows := []string{screenTitle(s, "KEYBOARD", w), s.muted.Render("Navigation and actions"), majorRule(s, w, true), ""}
+	rows = append(rows, s.title.Render("Getting around"), helpLine(s, w, "↑/↓ or j/k", "move", "Enter", "open / continue", "Esc", "back"), helpLine(s, w, "PgUp/PgDn", "scroll long pages", "?", "this guide", "q", "quit"), "")
+	rows = append(rows, s.title.Render("Select → review → run"), s.text.Render("Space toggles a selection. Enter opens its exact plan."), s.text.Render("Enter on Review confirms execution. Esc returns to selection."), "")
+	rows = append(rows, s.title.Render("Packages & repository"), s.text.Render("Tab switches package sources or repository files/diff."), s.text.Render("Repository: C commit · S stash · R restore · D delete."), "")
+	rows = append(rows, s.title.Render("After a run"), helpLine(s, w, "l", "log / summary", "r", "review retry", "v", "review package revert"), s.muted.Render("Only available actions appear in each screen's footer."), "", majorRule(s, w, false), helpLine(s, w, "? / Esc", "close guide"))
 	out := primaryFrame(s, m.width, strings.Join(rows, "\n"))
 	if m.height > 0 && lipgloss.Height(out) > m.height {
 		compact := []string{screenTitle(s, "KEYBOARD", w), "", helpLine(s, w, "↑/↓ j/k", "move", "Enter", "open / confirm", "Esc", "back"), helpLine(s, w, "Space", "select", "Tab", "source / view", "PgUp/PgDn", "scroll"), helpLine(s, w, "l", "log", "r", "review retry", "q", "quit"), "", s.text.Render("Review exact commands before confirming."), "", helpLine(s, w, "? / Esc", "close guide")}

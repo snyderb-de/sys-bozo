@@ -132,7 +132,32 @@ Long package diffs remain scrollable rather than being discarded. With
 Repository FILES, DIFF, delete confirmation, Review, Running, and Result screens
 are held to the same boundary.
 
-### Interactive terminal handoff
+### Embedded interactive terminal
+
+Interactive work in the TUI runs in its own PTY inside the Running screen.
+The dashboard stays visible through prompts, ANSI redraws, and completion.
+Escape returns to dashboard controls; Enter resumes input; Ctrl+] toggles
+focus. With dashboard controls active, Page Up/Down scrolls output, F follows
+live output, and X cancels the command. Ctrl-C stops the child and exits the
+application. Alt+Escape sends a literal Escape to the child (for editors).
+The pane keeps up to 1,000 scrollback lines. Its transcript stays in memory
+and is excluded from persisted run history; input tracing never records text.
+
+```sh
+go test -race ./internal/terminal ./internal/tui -run 'TestEmbedded|TestPrompt|TestTerminalRedraws|TestResize|TestCancellation|TestStartFailure|TestExitCode|TestTerminalAnswers|TestScrollback'
+go test -c -o .tmp/keyboard-tests ./internal/tui
+python3 scripts/embedded-terminal-pty-smoke.py .tmp/keyboard-tests
+```
+
+The real-PTY fixture checks a no-newline prompt reading from `/dev/tty`, hidden
+fixture input, focus switching, resizing, cancellation of a stubborn child,
+return to results, and continuous alternate-screen ownership. Both color and
+`NO_COLOR` are exercised. It uses only a temporary shell script and fake input;
+it never invokes sudo, package managers, or system activation.
+
+### Native terminal compatibility
+
+The CLI and external editor workflows still support native terminal handoff.
 
 ```sh
 go test ./internal/runner ./cmd/sys-bozo ./internal/tui -run 'TestRunInteractiveUsesProvidedStdio|TestRunWorkItemDispatchesInteractiveMode|TestAdvanceQueueUsesTerminalHandoffForInteractiveWork|TestInteractiveHandoffReturnAdvancesToSuccessResult|TestInteractiveFailureStopsQueueAndRestoresDoneState|TestTerminalHandoffCancellationStoresCancelledResult' -count=1 -v
@@ -154,6 +179,19 @@ rm -f "$test_bin"
 The test binary must run directly under the pseudo-terminal; `go test` captures
 its child stdio and therefore cannot be the command wrapped by `script`. The
 test intentionally skips in ordinary non-PTY automation.
+
+For stderr alignment when a child changes terminal output modes:
+
+```sh
+go test -c -o .tmp/keyboard-tests ./internal/tui
+python3 scripts/terminal-output-pty-smoke.py .tmp/keyboard-tests
+```
+
+This fixture uses only a shell, `stty`, and `printf`. It disables output
+post-processing, checks that each stderr line returns to column one, then
+verifies captured errors and restoration, with and without input tracing.
+It never invokes sudo or maintenance. This catches the staircase caused by
+copying piped stderr into a terminal whose child has disabled `OPOST`.
 
 ### Live package discovery pipeline
 

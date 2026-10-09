@@ -20,6 +20,7 @@ import (
 	"github.com/snyderb-de/sys-bozo/internal/repostate"
 	"github.com/snyderb-de/sys-bozo/internal/runner"
 	"github.com/snyderb-de/sys-bozo/internal/system"
+	"github.com/snyderb-de/sys-bozo/internal/terminal"
 )
 
 // ── Log line types ────────────────────────────────────────────────────────
@@ -83,6 +84,8 @@ type stepResult struct {
 	// Output is the tail of the step's own output, kept so a failure can be
 	// read on the result screen instead of only in the log pane.
 	Output []string
+	// PTY output can include echoed input. Keep it in this run's UI only.
+	PrivateOutput bool
 }
 
 // ── Config file entry ─────────────────────────────────────────────────────
@@ -163,10 +166,19 @@ type Model struct {
 	logFollow bool
 	spinner   spinner.Model
 
-	activeScanner *bufio.Scanner
-	activeWait    func() error
-	terminalExec  func(runner.WorkItem, time.Time, io.Writer) tea.Cmd
-	termCapture   *terminalCapture // stderr tee for the running interactive step
+	activeScanner      *bufio.Scanner
+	activeWait         func() error
+	terminalExec       func(runner.WorkItem, time.Time, io.Writer) tea.Cmd
+	termCapture        *terminalCapture // stderr tee for the running interactive step
+	terminalGroup      *terminal.Group
+	activeTerminal     *terminal.Session
+	terminalGeneration uint64
+	terminalStarting   bool
+	terminalFocused    bool
+	terminalQuit       bool
+	terminalCancelling bool
+	embeddedStep       bool
+	terminalNotice     string
 
 	auditItems []system.AuditItem
 	auditReady bool
@@ -240,7 +252,7 @@ func New() Model {
 		logFollow:            true,
 		spinner:              sp,
 		configFiles:          buildConfigFiles(ctx),
-		terminalExec:         runInteractiveWork,
+		terminalGroup:        terminal.NewGroup(),
 		startPackageSearch:   startPackageSearch,
 		packageSearchTimeout: 30 * time.Second,
 		applyPackage:         packages.Apply,

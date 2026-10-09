@@ -18,7 +18,7 @@ func (m Model) viewPackage() string {
 	s := m.styles
 	rows := []string{
 		screenTitle(s, "ADD/PACKAGE", contentWidth),
-		s.label.Render("DECLARATIVE INSTALL"),
+		s.label.Render("Find a tool and choose where it belongs"),
 		majorRule(s, contentWidth, true),
 		"",
 	}
@@ -40,8 +40,8 @@ func (m Model) viewPackage() string {
 			"",
 			s.muted.Render("Searches nixpkgs and Homebrew. Nix remains default when available."),
 			"",
-			s.active.Render("❄ Nix")+s.muted.Render("  Declarative tools, shared across your machines"),
-			s.attention.Render("🍺 Homebrew")+s.muted.Render("  macOS formulae and applications"),
+			s.active.Render("Nix")+s.muted.Render("  Declarative tools, shared across your machines"),
+			s.attention.Render("Homebrew")+s.muted.Render("  macOS formulae and applications"),
 			"",
 			s.muted.Render("ESCAPE BACK")+"   "+s.active.Render("ENTER SEARCH"),
 		)
@@ -95,7 +95,7 @@ func (m Model) viewPackage() string {
 		}
 		rows = append(rows, "", s.muted.Render("ESCAPE BACK   ↑/↓ MOVE")+"   "+s.active.Render("ENTER SELECT"))
 	}
-	return primaryFrame(s, m.width, strings.Join(rows, "\n"))
+	return m.dashboardFrame(rows[:len(rows)-1], majorRule(s, contentWidth, false), rows[len(rows)-1])
 }
 
 func renderPackagePipeline(m Model, width int) []string {
@@ -118,7 +118,7 @@ func renderPackagePipeline(m Model, width int) []string {
 	arch = truncateVisible(arch, 20)
 
 	rows := []string{
-		s.label.Render("DISCOVERY PIPELINE"),
+		s.label.Render("Search status"),
 		packagePipelineRow(s, "01  DETECT", host+" / "+arch, width, statusSuccess),
 		packagePipelineRow(s, "02  DISPATCH", "", width, statusMuted),
 	}
@@ -358,7 +358,7 @@ func (m Model) viewPackageReview() string {
 	diffPosition := fmt.Sprintf("DIFF  %02d-%02d/%02d", diffTop, diffBottom, diffVP.TotalLineCount())
 	rows := []string{
 		screenTitle(s, "REVIEW/PACKAGE", contentWidth),
-		s.label.Render("DECLARATIVE INSTALL"),
+		s.label.Render("Find a tool and choose where it belongs"),
 		majorRule(s, contentWidth, true),
 		"",
 	}

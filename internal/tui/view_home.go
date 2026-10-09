@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/snyderb-de/sys-bozo/internal/history"
 	"github.com/snyderb-de/sys-bozo/internal/runner"
 )
 
@@ -15,9 +16,9 @@ var homeEntries = []struct {
 	number, label string
 	target        screen
 }{
-	{"01", "WEEKLY MAINTENANCE", screenMaintenance},
-	{"02", "ADD PACKAGE", screenPackage},
-	{"03", "INSPECT SYSTEM", screenInspect},
+	{"01", "Weekly maintenance", screenMaintenance},
+	{"02", "Add package", screenPackage},
+	{"03", "Inspect system", screenInspect},
 }
 
 func (m Model) rawView() string {
@@ -73,53 +74,63 @@ func (m Model) viewHome() string {
 	if branch == "" {
 		branch = "unknown"
 	}
-	repo, repoKind := "CLEAN", statusSuccess
+	repo, repoKind := "Clean", statusSuccess
 	if m.facts.DotfilesStatusUnavailable {
-		repo, repoKind = "STATUS UNAVAILABLE", statusDanger
+		repo, repoKind = "Status unavailable", statusDanger
 	} else if m.facts.DotfilesDirty > 0 {
-		repo, repoKind = fmt.Sprintf("%d DIRTY", m.facts.DotfilesDirty), statusAttention
+		repo, repoKind = fmt.Sprintf("%d changed files", m.facts.DotfilesDirty), statusAttention
 	}
-	updates := "No pending Homebrew updates reported"
+	updates, updateKind := "No updates reported", statusMuted
 	if m.facts.BrewOutdated > 0 {
-		updates = fmt.Sprintf("%d Homebrew updates available", m.facts.BrewOutdated)
+		updates, updateKind = fmt.Sprintf("%d updates available", m.facts.BrewOutdated), statusAttention
 	}
 	if m.facts.BrewPath == "" && m.runCtx.BrewBin == "" {
-		updates = "Homebrew is not available on this host"
+		updates = "Not available on this host"
 	}
-	historyLine := "NO HISTORY · Your first run starts here."
-	if m.latestHistory != nil {
-		entry := m.latestHistory
-		historyLine = entry.Action + "  " + strings.ToUpper(string(entry.EffectiveStatus())) + "  " + entry.Ts.Local().Format(time.DateTime)
+	rows := []string{
+		screenTitle(s, "HOME", w),
+		s.muted.Render(truncateVisible(m.targetHost()+"  /  "+branch, w)),
+		majorRule(s, w, true),
+		"",
+		s.title.Render("Workstation"),
+		homeRepoRow(s, repo, repoKind, m.homeRepoFocused),
+		"  " + s.label.Render("Homebrew    ") + statusText(s, updates, updateKind),
+		"",
+		s.title.Render("Actions"),
 	}
-	host := s.text.Render(truncateVisible(m.targetHost(), w-8))
-	status := s.label.Render("HOST") + "  " + host + "\n" +
-		s.label.Render("BRANCH") + "  " + s.text.Render(branch) + "\n" +
-		homeRepoRow(s, repo, repoKind, m.homeRepoFocused) + "\n" +
-		s.attention.Render("↗ "+updates)
-	rows := []string{s.badge.Render("SYS/BOZO") + "  " + s.muted.Render("A little personality. A lot of control."), ""}
-	if w >= 100 && m.height >= 30 {
-		logo := []string{"██████╗  ██████╗ ███████╗ ██████╗ ", "██╔══██╗██╔═══██╗╚══███╔╝██╔═══██╗", "██████╔╝██║   ██║  ███╔╝ ██║   ██║", "██╔══██╗██║   ██║ ███╔╝  ██║   ██║", "██████╔╝╚██████╔╝███████╗╚██████╔╝", "╚═════╝  ╚═════╝ ╚══════╝ ╚═════╝ "}
-		art := s.major.Render(strings.Join(logo, "\n")) + "\n" + s.attention.Render("WORKSTATION CONTROL, WITH CHARACTER.")
-		rows = append(rows, lipgloss.JoinHorizontal(lipgloss.Top, lipgloss.NewStyle().Width(40).Render(art), panel(s, "💻 Your workstation", status, w-40, m.homeRepoFocused)))
-	} else {
-		rows = append(rows, s.major.Render("✦ Make yourself at home."), s.muted.Render("Choose a task. Review the plan. You're in control."), "", status)
-	}
-	rows = append(rows, "", s.label.Render("LET'S GET TO WORK"))
-	icons := []string{"🧰", "📦", "🔭"}
-	descriptions := []string{"Update tools and rebuild your configuration", "Find a tool. Choose where it belongs.", "Configuration, diagnostics, history, and Git"}
+	descriptions := []string{"Update tools and apply configuration", "Search Nix and Homebrew", "Configuration, diagnostics, history, and Git"}
 	for i, entry := range homeEntries {
 		if i == 0 && runner.HasManagedMacWorkflow(m.runCtx) {
-			entry.label = "UPDATES"
-			icons[i] = "✨"
-			descriptions[i] = "A guided update for your Mac mini"
+			entry.label = "Update workstation"
 		}
 		active := i == m.homeCursor && !m.homeRepoFocused
-		label := icons[i] + "  " + entry.label
-		rows = append(rows, numberedRow(s, entry.number, label, s.muted.Render("↵"), w, active))
+		rows = append(rows, numberedRow(s, entry.number, entry.label, "", w, active))
 		rows = append(rows, "     "+s.muted.Render(truncateVisible(descriptions[i], w-5)))
 	}
-	rows = append(rows, "", s.muted.Render(truncateVisible("🕘 LAST RUN  "+historyLine, w)), majorRule(s, w, false), helpLine(s, w, "↑/↓", "MOVE", "1–3", "OPEN", "ENTER", "OPEN", "Q", "QUIT", "?", "HELP"))
-	return primaryFrame(s, m.width, strings.Join(rows, "\n"))
+	rows = append(rows, "", s.title.Render("Last run"))
+	if m.latestHistory == nil {
+		rows = append(rows, s.muted.Render("No history yet"))
+	} else {
+		entry := m.latestHistory
+		kind := statusMuted
+		switch entry.EffectiveStatus() {
+		case history.StatusSuccess:
+			kind = statusSuccess
+		case history.StatusFailure:
+			kind = statusDanger
+		case history.StatusCancelled:
+			kind = statusAttention
+		}
+		rows = append(rows, dashboardPair(s.text.Render(entry.Action), statusText(s, strings.ToUpper(string(entry.EffectiveStatus())), kind), w),
+			s.muted.Render(entry.Ts.Local().Format(time.DateTime)))
+	}
+	return m.dashboardFrame(rows, majorRule(s, w, false), helpLine(s, w, "↑/↓", "MOVE", "1–3", "OPEN", "ENTER", "OPEN", "Q", "QUIT", "?", "HELP"))
+}
+
+// dashboardPair aligns status without letting long host or action names wrap.
+func dashboardPair(left, right string, width int) string {
+	left = truncateVisible(left, max(1, width-lipgloss.Width(right)-2))
+	return left + strings.Repeat(" ", max(1, width-lipgloss.Width(left)-lipgloss.Width(right))) + right
 }
 
 func homeRepoRow(s uiStyles, value string, kind statusKind, focused bool) string {
@@ -127,7 +138,7 @@ func homeRepoRow(s uiStyles, value string, kind statusKind, focused bool) string
 	if focused {
 		prefix = "> "
 	}
-	return prefix + s.label.Render("REPOSITORY") + "  " + statusText(s, value, kind)
+	return prefix + s.label.Render("Repository  ") + statusText(s, value, kind)
 }
 
 const primaryFramePadding = 3
@@ -138,11 +149,22 @@ func primaryContentWidth(width int) int {
 
 func primaryFrame(s uiStyles, width int, content string) string {
 	return s.field.
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(s.rule.GetForeground()).
-		Width(layoutWidth(width)-2).
-		Padding(0, primaryFramePadding-1).
+		Width(layoutWidth(width)).
+		Padding(1, primaryFramePadding).
 		Render(content)
+}
+
+// dashboardFrame anchors controls at the bottom when the body fits. Longer
+// views retain every row and use the existing page navigation.
+func (m Model) dashboardFrame(rows []string, footer ...string) string {
+	bodyHeight := lipgloss.Height(strings.Join(rows, "\n"))
+	footerHeight := lipgloss.Height(strings.Join(footer, "\n"))
+	for bodyHeight < m.height-footerHeight-2 {
+		rows = append(rows, "")
+		bodyHeight++
+	}
+	rows = append(rows, footer...)
+	return primaryFrame(m.styles, m.width, strings.Join(rows, "\n"))
 }
 
 func (m Model) targetHost() string {

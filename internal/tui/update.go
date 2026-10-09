@@ -26,6 +26,10 @@ func (m Model) Init() tea.Cmd {
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case terminalStartedMsg:
+		return m.acceptTerminalStart(msg)
+	case terminalTickMsg:
+		return m.acceptTerminalTick(msg)
 	case hostRefreshedMsg:
 		return m.acceptHostRefresh(msg)
 
@@ -35,6 +39,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		if m.activeTerminal != nil {
+			width, height := m.terminalDimensions()
+			_ = m.activeTerminal.Resize(width, height)
+		}
 		m.logVP = viewport.New(m.logWidth(), m.logHeight())
 		m.logVP.SetContent(m.renderLog())
 		if m.logFollow {
@@ -46,6 +54,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		if m.embeddedTerminalActive() {
+			return m.handleTerminalKey(msg)
+		}
 		// Consecutive Escape bytes can arrive as Alt+Esc. Both mean back/cancel
 		// here; comparing the decorated key string would silently discard them.
 		if msg.Type == tea.KeyEsc {
@@ -237,6 +248,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case stepDoneMsg:
 		status := runStatus(msg.err, msg.cancelled)
 		m.recordStepResult(m.queuePos, status, msg.elapsed, msg.err)
+		m.activeTerminal = nil
+		m.terminalStarting, m.terminalFocused, m.embeddedStep = false, false, false
 		if msg.err != nil {
 			elapsed := time.Since(m.runStart)
 			verb := "failed"
@@ -246,6 +259,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.logLines = append(m.logLines, logLine{kind: logError,
 				text: fmt.Sprintf("  ✗ %s: %s", verb, msg.err)})
 			m.finishRun(msg.err, msg.cancelled, elapsed)
+			if m.terminalQuit {
+				return m, tea.Quit
+			}
 			return m, nil
 		}
 		m.logLines = append(m.logLines, logLine{kind: logSuccess,
