@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise real terminal input after a harmless sys-bozo test handoff.
+"""Exercise real terminal input after harmless embedded sys-bozo work.
 
     go test -c -o .tmp/keyboard-tests ./internal/tui
     python3 scripts/keyboard-pty-smoke.py .tmp/keyboard-tests
@@ -73,63 +73,63 @@ try:
     # Key and description have separate ANSI styles in color mode.
     expect("CONFIRM")
     os.write(fd, b"\r")
-    expect("RUN/RESULT")
-    back_to("SYS/BOZO")
+    expect("Run summary")
+    back_to("Overview")
     for _ in range(30):
         os.write(fd, b"2")
-        expect("ADD/PACKAGE")
-        back_to("SYS/BOZO")
+        expect("Packages")
+        back_to("Overview")
         os.write(fd, b"3")
-        expect("INSPECT/SYSTEM")
+        expect("Configuration, health, and recent activity")
         os.write(fd, b"3")
-        expect("INSPECT/DOCTOR")
-        back_to("INSPECT/SYSTEM")
+        expect("Diagnostics")
+        back_to("Configuration, health, and recent activity")
         os.write(fd, b"5")
-        expect("REPO/TRIAGE")
+        expect("EXACT WORKTREE STATE")
         expect("fixture.nix")
-        back_to("INSPECT/SYSTEM")
-        back_to("SYS/BOZO")
+        back_to("Configuration, health, and recent activity")
+        back_to("Overview")
     for route in ("Inspect", "Repository"):
         os.write(fd, b"3")
-        expect("INSPECT/SYSTEM")
+        expect("Configuration, health, and recent activity")
         if route == "Repository":
             os.write(fd, b"5")
-            expect("REPO/TRIAGE")
+            expect("EXACT WORKTREE STATE")
             expect("fixture.nix")
         print(f"Waiting {args.idle_seconds:g}s on {route} before Escape...", flush=True)
         time.sleep(args.idle_seconds)
-        back_to("INSPECT/SYSTEM" if route == "Repository" else "SYS/BOZO")
+        back_to("Configuration, health, and recent activity" if route == "Repository" else "Overview")
         print(f"{route}: Escape redrew in {back_latencies[-1] * 1000:.0f} ms", flush=True)
         if route == "Repository":
-            back_to("SYS/BOZO")
+            back_to("Overview")
     # Bubble Tea decodes a pair received together as Alt+Esc.
     os.write(fd, b"3")
-    expect("INSPECT/SYSTEM")
+    expect("Configuration, health, and recent activity")
     os.write(fd, b"5")
-    expect("REPO/TRIAGE")
+    expect("EXACT WORKTREE STATE")
     os.write(fd, b"\x1b\x1b")
-    expect("INSPECT/SYSTEM")
+    expect("Configuration, health, and recent activity")
     os.write(fd, b"\x1b\x1b")
-    expect("SYS/BOZO")
+    expect("Overview")
     for rows, cols in ((19, 80), (24, 59)):
         os.write(fd, b"3")
-        expect("INSPECT/SYSTEM")
+        expect("Configuration, health, and recent activity")
         fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
         expect("Resize")
         os.write(fd, b"\x1b")
         # Escape has no visible full-size frame until the terminal grows.
         time.sleep(0.1)
         fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
-        expect("SYS/BOZO")
+        expect("Overview")
     os.write(fd, b"2")
-    expect("ADD/PACKAGE")
+    expect("Packages")
     os.write(fd, b"\x03")
     expect("KEYBOARD_PTY_OK")
     _, status = os.waitpid(pid, 0)
     reaped = True
     if os.waitstatus_to_exitcode(status) != 0:
         raise RuntimeError(f"Fixture exited with status {status}")
-    print(f"PASS: terminal handoff, 30 package/Inspect/Doctor/Repository back cycles, {args.idle_seconds:g}s idle checks, Escape after resize, and Ctrl-C from package input")
+    print(f"PASS: embedded command, 30 package/Inspect/Doctor/Repository back cycles, {args.idle_seconds:g}s idle checks, Escape after resize, and Ctrl-C from package input")
     print(f"Slowest Escape-to-redraw: {max(back_latencies) * 1000:.0f} ms")
 finally:
     os.close(fd)

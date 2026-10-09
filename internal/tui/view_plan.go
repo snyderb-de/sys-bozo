@@ -108,7 +108,7 @@ func (m Model) viewReview() string {
 
 	rows := []string{
 		screenTitle(s, "REVIEW", contentWidth),
-		s.label.Render("IMMUTABLE EXECUTION PLAN"),
+		s.label.Render("Review these commands before running"),
 		majorRule(s, contentWidth, true),
 		"",
 		s.label.Render("TARGET HOST") + "  " + s.text.Render(m.targetHost()),
@@ -143,7 +143,7 @@ func (m Model) viewRepoReview() string {
 	review := m.reviewed.Repo
 	rows := []string{
 		screenTitle(s, "REVIEW/REPOSITORY", contentWidth),
-		s.label.Render("IMMUTABLE EXACT-PATH PLAN"),
+		s.label.Render("Review commands and selected paths"),
 		majorRule(s, contentWidth, true),
 		"",
 		s.label.Render("ACTION") + "  " + s.text.Render(strings.ToUpper(string(review.Operation.Kind))),
@@ -228,6 +228,9 @@ func wrapText(text string, width int) []string {
 }
 
 func (m Model) viewRunning() string {
+	if m.embeddedTerminalActive() {
+		return m.viewEmbeddedTerminal()
+	}
 	contentWidth := primaryContentWidth(m.width)
 	s := m.styles
 	items := m.queue
@@ -242,7 +245,7 @@ func (m Model) viewRunning() string {
 	}
 	rows := []string{
 		screenTitle(s, "RUN/ACTIVE", contentWidth),
-		s.label.Render("Live execution · completed steps / total steps"),
+		s.label.Render("Completed steps / total steps"),
 		majorRule(s, contentWidth, true),
 		"",
 		s.title.Render(fmt.Sprintf("%02d/%02d steps", completed, len(items))) + "  " + s.muted.Render(formatRunElapsed(time.Since(m.runStart))) + "  " + activity,
@@ -298,13 +301,13 @@ func (m Model) viewResult() string {
 		kind = statusDanger
 	}
 
-	rule := s.success.Render(strings.Repeat("━", contentWidth))
+	rule := s.success.Render(strings.Repeat("─", contentWidth))
 	if kind == statusDanger {
-		rule = s.danger.Render(strings.Repeat("━", contentWidth))
+		rule = s.danger.Render(strings.Repeat("─", contentWidth))
 	}
 	rows := []string{
 		screenTitle(s, "RUN/RESULT", contentWidth),
-		s.label.Render("EXECUTION FINISHED"),
+		s.label.Render("Execution finished"),
 		rule,
 		"",
 		resultBanner(s, state) + "  " + s.muted.Render(formatRunElapsed(m.runElapsed)),

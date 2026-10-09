@@ -61,7 +61,7 @@ func TestDirtyRepositoryRowOpensTriageAndShowsExactEntries(t *testing.T) {
 		t.Fatalf("screen=%v", got.screen)
 	}
 	view := got.viewRepoTriage()
-	for _, want := range []string{"REPO/TRIAGE", "flake.nix", "new file", "MODIFIED", "UNTRACKED"} {
+	for _, want := range []string{"Repository", "flake.nix", "new file", "MODIFIED", "UNTRACKED"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("missing %q\n%s", want, view)
 		}
@@ -548,7 +548,7 @@ func TestPackagePipelineShowsRealHostProviderPhasesAndImmediateTabs(t *testing.T
 	m.packageFlow.providers[0].Candidates = []packages.Candidate{{Provider: packages.ProviderNix, ID: "hello"}}
 	m.packageFlow.providers[1].Phase = packages.SearchQuerying
 	view := m.viewPackage()
-	for _, want := range []string{"DISCOVERY PIPELINE", "01  DETECT", "FEDORA / X86_64", "02  DISPATCH", "NIX", "DONE", "DNF", "QUERYING INDEX", "[ NIX 1 ]", "[ DNF … ]"} {
+	for _, want := range []string{"Search status", "01  DETECT", "FEDORA / X86_64", "02  DISPATCH", "NIX", "DONE", "DNF", "QUERYING INDEX", "[ NIX 1 ]", "[ DNF … ]"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("missing %q\n%s", want, view)
 		}
@@ -952,7 +952,7 @@ func TestConfigEditUsesTempResultAndAppliesOnlyAfterReviewedConfirmation(t *test
 		t.Fatalf("cmd=%v screen=%v review=%#v", cmd, m.screen, m.reviewed)
 	}
 	view := m.View()
-	for _, want := range []string{"REVIEW/CONFIG", "-  value = \"before\";", "fixture-hms --safe", "ENTER CONFIRM"} {
+	for _, want := range []string{"Review configuration", "-  value = \"before\";", "fixture-hms --safe", "ENTER CONFIRM"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("missing %q:\n%s", want, view)
 		}
@@ -1155,17 +1155,17 @@ func TestHomeUsesCachedLatestHistoryAndAccurateInspectWording(t *testing.T) {
 	m.width, m.height = 100, 30
 	m.refreshLatestHistory()
 	out := m.viewHome()
-	for _, want := range []string{"LAST RUN", "hms", "SUCCESS", "2026-07-10"} {
+	for _, want := range []string{"Last run", "hms", "SUCCESS", "2026-07-10"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q:\n%s", want, out)
 		}
 	}
 	m.latestHistory = nil
-	if out = m.viewHome(); !strings.Contains(out, "NO HISTORY") {
+	if out = m.viewHome(); !strings.Contains(out, "No history yet") {
 		t.Fatalf("no-history missing:\n%s", out)
 	}
 	m.screen = screenInspect
-	if out = m.View(); !strings.Contains(out, "REVIEW-GATED SYSTEM OPERATIONS") || strings.Contains(out, "READ-ONLY") {
+	if out = m.View(); !strings.Contains(out, "Configuration, health, and recent activity") || strings.Contains(out, "READ-ONLY") {
 		t.Fatalf("inspect wording:\n%s", out)
 	}
 }
@@ -1829,7 +1829,7 @@ func TestPackageWorkflowViewsFit80x24AndPreserveNoColorSemantics(t *testing.T) {
 		setup func(*Model)
 		want  []string
 	}{
-		{"search", func(m *Model) {}, []string{"ADD/PACKAGE", "DECLARATIVE INSTALL", "SEARCH"}},
+		{"search", func(m *Model) {}, []string{"Packages", "Find a tool and choose where it belongs", "SEARCH"}},
 		{"results", func(m *Model) {
 			m.packageFlow.stage = packageChoose
 			m.packageFlow.providers = packageProviderFixture(candidates...)
@@ -1842,12 +1842,12 @@ func TestPackageWorkflowViewsFit80x24AndPreserveNoColorSemantics(t *testing.T) {
 				return "home-manager", []string{"switch", "--flake", ".#fixture"}
 			}}}}}
 			m.buildPackageReview(proposal, packages.VerifySpec{Provider: packages.ProviderNix, Kind: packages.KindPackage, Executable: "lazydocker"})
-		}, []string{"REVIEW/PACKAGE", "lazydocker", "home-manager", "VERIFY", "ENTER CONFIRM"}},
+		}, []string{"Review package changes", "lazydocker", "home-manager", "VERIFY", "ENTER CONFIRM"}},
 		{"config review", func(m *Model) {
 			m.reviewed = reviewedPlan{Action: "config:hms", Items: []runner.WorkItem{{Name: "home-manager", Args: []string{"switch", "--flake", ".#fixture"}}}, Config: &configReview{Proposal: fileedit.ProposeReplacement("/fixture/flake.nix", []byte("before\n"), []byte("after\n"))}}
 			m.screen = screenReview
 			m.initConfigDiffViewport()
-		}, []string{"REVIEW/CONFIG", "before", "home-manager", "ENTER CONFIRM"}},
+		}, []string{"Review configuration", "before", "home-manager", "ENTER CONFIRM"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2324,15 +2324,15 @@ func TestNoColorStylesRenderSemanticLabelsWithoutANSI(t *testing.T) {
 	}
 }
 
-func TestFieldStyleUsesAubergineAndDropsBackgroundWithoutColor(t *testing.T) {
+func TestFieldStyleUsesSlateAndDropsBackgroundWithoutColor(t *testing.T) {
 	colored := newUIStyles(false)
 	background, ok := colored.field.GetBackground().(lipgloss.Color)
-	if !ok || string(background) != "#191724" {
-		t.Fatalf("field background=%T(%v), want aubergine #191724", colored.field.GetBackground(), colored.field.GetBackground())
+	if !ok || string(background) != "#171c24" {
+		t.Fatalf("field background=%T(%v), want slate #171c24", colored.field.GetBackground(), colored.field.GetBackground())
 	}
 	foreground, ok := colored.field.GetForeground().(lipgloss.Color)
-	if !ok || string(foreground) != "#eee9ff" {
-		t.Fatalf("field foreground=%T(%v), want soft white #eee9ff", colored.field.GetForeground(), colored.field.GetForeground())
+	if !ok || string(foreground) != "#e4eaf2" {
+		t.Fatalf("field foreground=%T(%v), want soft white #e4eaf2", colored.field.GetForeground(), colored.field.GetForeground())
 	}
 
 	previousProfile := lipgloss.ColorProfile()
@@ -2441,7 +2441,7 @@ func TestHomeUsesLaunchpadHierarchyAt80And100Columns(t *testing.T) {
 		m.styles = newUIStyles(true)
 		m.facts = system.Facts{User: "bag", Hostname: "mini", DotfilesBranch: "main", BrewOutdated: 3}
 		out := m.View()
-		for _, want := range []string{"SYS/BOZO", "SYSTEM", "WEEKLY MAINTENANCE", "ADD PACKAGE", "INSPECT SYSTEM"} {
+		for _, want := range []string{"sys-bozo", "Workstation", "Weekly maintenance", "Add package", "Inspect system"} {
 			if !strings.Contains(out, want) {
 				t.Fatalf("width %d missing %q:\n%s", width, want, out)
 			}
@@ -2465,7 +2465,7 @@ func TestReviewShowsExactCommandsAndTTYWarning(t *testing.T) {
 		}},
 	}
 	out := m.View()
-	for _, want := range []string{"REVIEW", "brew upgrade", "TTY", "ENTER CONFIRM"} {
+	for _, want := range []string{"Review changes", "brew upgrade", "TTY", "ENTER CONFIRM"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q:\n%s", want, out)
 		}
@@ -2492,7 +2492,7 @@ func TestResultShowsCompletedFailedAndElapsed(t *testing.T) {
 	m.logVP.SetContent(m.renderLog())
 
 	out := m.View()
-	for _, want := range []string{"RUN/RESULT", "FAILED", "nix", "brew", "topgrade", "WAITING", "exit status 1", "00:05", "00:02", "HISTORY FAILURE", "L VIEW LOG", "R REVIEW RETRY"} {
+	for _, want := range []string{"Run summary", "FAILED", "nix", "brew", "topgrade", "WAITING", "exit status 1", "00:05", "00:02", "HISTORY FAILURE", "L VIEW LOG", "R REVIEW RETRY"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q:\n%s", want, out)
 		}
@@ -2690,7 +2690,7 @@ func TestRunningShowsProgressTTYAndStreamedLog(t *testing.T) {
 	m.logVP.SetContent(m.renderLog())
 
 	out := m.View()
-	for _, want := range []string{"RUN/ACTIVE", "50%", "nix flake check", "DONE", "brew upgrade", "TTY", "harmless fixture output"} {
+	for _, want := range []string{"Running", "50%", "nix flake check", "DONE", "brew upgrade", "TTY", "harmless fixture output"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q:\n%s", want, out)
 		}
@@ -2734,7 +2734,7 @@ func TestMaintenanceShowsGroupedCheckboxesAt80And100Columns(t *testing.T) {
 		m.screen = screenMaintenance
 		m.selected["hms"] = true
 		out := m.View()
-		for _, want := range []string{"SELECT", "home-manager", "[x]", "hms", "SPACE TOGGLE", "ENTER REVIEW"} {
+		for _, want := range []string{"Maintenance", "home-manager", "[x]", "hms", "SPACE TOGGLE", "ENTER REVIEW"} {
 			if !strings.Contains(out, want) {
 				t.Fatalf("width %d missing %q:\n%s", width, want, out)
 			}
@@ -2755,7 +2755,7 @@ func TestMaintenanceRemainsUsableAt80By24(t *testing.T) {
 	if lines := strings.Count(out, "\n") + 1; lines > 24 {
 		t.Fatalf("rendered height=%d want <=24:\n%s", lines, out)
 	}
-	for _, want := range []string{"SELECT", "[x]", "SPACE TOGGLE", "ENTER REVIEW"} {
+	for _, want := range []string{"Maintenance", "[x]", "SPACE TOGGLE", "ENTER REVIEW"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output missing %q:\n%s", want, out)
 		}
@@ -2853,7 +2853,7 @@ func TestInspectRenderingDoesNotUseStaleMaintenanceTab(t *testing.T) {
 	m.tab = 1 // rendering must remain stable even if legacy state becomes stale
 
 	out := m.View()
-	for _, want := range []string{"INSPECT/SYSTEM", "CONFIG"} {
+	for _, want := range []string{"Inspect system", "CONFIG"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("inspection output missing %q:\n%s", want, out)
 		}
@@ -2870,7 +2870,7 @@ func TestInspectListsAndRoutesConfigAuditDoctorAndHistory(t *testing.T) {
 	m.screen = screenInspect
 
 	out := m.View()
-	for _, want := range []string{"INSPECT/SYSTEM", "CONFIG", "AUDIT", "DOCTOR", "HISTORY"} {
+	for _, want := range []string{"Inspect system", "CONFIG", "AUDIT", "DOCTOR", "HISTORY"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q:\n%s", want, out)
 		}
@@ -2906,7 +2906,7 @@ func TestHistoryRendersNewestTwentyEntries(t *testing.T) {
 	m.styles = newUIStyles(true)
 	m.screen = screenHistory
 	out := m.View()
-	for _, want := range []string{"INSPECT/HISTORY", "fixture-20", "fixture-01", "SUCCESS"} {
+	for _, want := range []string{"History", "fixture-20", "fixture-01", "SUCCESS"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q:\n%s", want, out)
 		}
@@ -2945,7 +2945,7 @@ func TestCompactHistoryTruncatesLongActionsToOneRow(t *testing.T) {
 	}
 }
 
-func TestInspectChildScreensShareRoundedShell(t *testing.T) {
+func TestInspectChildScreensShareDashboardFrame(t *testing.T) {
 	m := testGuidedModel()
 	m.width, m.height = 100, 36
 	m.styles = newUIStyles(true)
@@ -2959,19 +2959,19 @@ func TestInspectChildScreensShareRoundedShell(t *testing.T) {
 		header string
 		body   string
 	}{
-		{screenConfig, "INSPECT/CONFIG", "flake.nix"},
-		{screenAudit, "INSPECT/AUDIT", "ssh config"},
-		{screenDoctor, "INSPECT/DOCTOR", "gen 4"},
+		{screenConfig, "Configuration", "flake.nix"},
+		{screenAudit, "Configuration audit", "ssh config"},
+		{screenDoctor, "Diagnostics", "gen 4"},
 	} {
 		m.screen = tc.screen
 		out := m.View()
-		for _, want := range []string{tc.header, tc.body, "━"} {
+		for _, want := range []string{tc.header, tc.body, "─"} {
 			if !strings.Contains(out, want) {
 				t.Fatalf("screen %v missing %q:\n%s", tc.screen, want, out)
 			}
 		}
-		if !strings.ContainsAny(out, "╭╮╰╯") {
-			t.Fatalf("screen %v missing rounded shell:\n%s", tc.screen, out)
+		if strings.ContainsAny(out, "╭╮╰╯") {
+			t.Fatalf("screen %v contains decorative outer borders:\n%s", tc.screen, out)
 		}
 	}
 }

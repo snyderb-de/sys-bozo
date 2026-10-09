@@ -58,7 +58,7 @@ func TestMiniRecoveryClearsUpdateSelection(t *testing.T) {
 		t.Fatal("recovery must clear routine update selection without executing")
 	}
 	view := got.View()
-	if !strings.Contains(view, "RECOVERY") || strings.Contains(view, "Update Nix version pins") {
+	if !strings.Contains(view, "Recovery") || strings.Contains(view, "Update Nix version pins") {
 		t.Fatalf("recovery is mixed with routine updates:\n%s", view)
 	}
 }

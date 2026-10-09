@@ -132,22 +132,28 @@ owns its Home Manager packages and interactive Homebrew activation.
 
 ### Existing workflows
 
-The Home screen has three launch entries: `1` Weekly Maintenance, `2` Add
-Package, and `3` Inspect System. When the detected dotfiles repository is dirty
+The Home screen has three launch entries: `1` Update workstation (Weekly
+maintenance on other hosts), `2` Add Package, and `3` Inspect System. When the detected dotfiles repository is dirty
 or Git status is unavailable, its status row also becomes selectable. Use the
 arrow keys or `j`/`k` to move, `Enter` to open, `Escape` to go back, and `q` to
 quit.
 
-For maintenance, open Weekly Maintenance, use `Space` to select one or more
+For maintenance, open the update or maintenance entry, use `Space` to select one or more
 available actions, and press `Enter` to review. The Review screen shows the
 exact command queue. Press `Enter` again to confirm or `Escape` to return
 without running. The safety rule is simple: review every mutating plan before
 the program executes it.
 
-Commands that need a password, prompt, or other native input use an
-interactive terminal handoff. The TUI gives the child process the terminal,
-then restores the Result screen when it exits. Interactive input is not copied
-into sys-bozo's captured output or history.
+Commands that need a password or other interactive input run in an embedded
+terminal pane. The dashboard stays visible through prompts and command output,
+then shows the Result screen when the command finishes. Escape returns to
+dashboard controls; Enter resumes typing; Ctrl+] toggles focus. With dashboard
+controls active, Page Up/Down scrolls output, F follows live output, and X
+cancels the command. Ctrl-C stops the child and quits. Alt+Escape sends a
+literal Escape to the child. Terminal transcripts stay in memory and are
+excluded from persisted history; input tracing never records typed text.
+
+![Embedded terminal at 80×24, rendered with fictional fixture output](docs/assets/embedded-terminal.png)
 
 On macOS, normal `brew` and combined `all` maintenance upgrade formulae and an
 explicit list of outdated casks with DisplayLink excluded. When DisplayLink is

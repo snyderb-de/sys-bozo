@@ -47,7 +47,7 @@ for capture in captures:
     name = html.escape(capture["Name"])
     sections.append(f'<section><h2>{name} <small>{capture["Width"]} × {capture["Height"]}</small></h2><pre>{render_ansi(capture["ANSI"])}</pre></section>')
 page = '''<!doctype html><html lang="en"><meta charset="utf-8"><title>sys-bozo · terminal gallery</title><link rel="icon" href="data:,">
-<style>*{box-sizing:border-box}body{margin:40px;background:#100e18;color:#eee9ff;font:16px system-ui}h1{font-size:32px;margin-bottom:8px}p,small{color:#a59ab8}small{font-size:14px;font-weight:400}section{margin:40px 0;overflow:auto}pre{display:inline-block;padding:22px;background:#191724;border:1px solid #514466;border-radius:16px;font:14px/1.45 Menlo,monospace;white-space:pre;margin:0}h2{font-size:18px;color:#c4a7ff}.cell{display:inline-block;width:1ch;text-align:center;font-weight:400}</style>
-<h1>✦ sys-bozo</h1><p>Terminal redesign · actual application renders with fictional fixture data.</p>'''+"\n".join(sections)
+<style>*{box-sizing:border-box}body{margin:40px;background:#11161d;color:#e4eaf2;font:16px system-ui}h1{font-size:32px;margin-bottom:8px}p,small{color:#95a3b6}small{font-size:14px;font-weight:400}section{margin:40px 0;overflow:auto}pre{display:inline-block;padding:22px;background:#171c24;border:1px solid #394658;border-radius:8px;font:14px/1.45 Menlo,monospace;white-space:pre;margin:0}h2{font-size:18px;color:#8bbcff}.cell{display:inline-block;width:1ch;text-align:center;font-weight:400}</style>
+<h1>sys-bozo</h1><p>Terminal redesign · actual application renders with fictional fixture data.</p>'''+"\n".join(sections)
 source.with_name("index.html").write_text(page)
 print(source.with_name("index.html"))

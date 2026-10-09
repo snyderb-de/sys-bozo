@@ -2,6 +2,7 @@ package tui
 
 import (
 	"bytes"
+	"io"
 	"strings"
 	"sync"
 )
@@ -10,8 +11,7 @@ import (
 // explained after the fact. Interactive steps hand the terminal to the child
 // process, so nothing they print reaches the log pane and a failure arrives as
 // a bare "exit status 1". Stdin and stdout stay wired to the real terminal —
-// only stderr is duplicated here — so prompts, passwords and progress output
-// behave exactly as they did before.
+// only stderr is duplicated here. Input is never captured.
 type terminalCapture struct {
 	mu      sync.Mutex
 	pending []byte
@@ -70,4 +70,35 @@ func (c *terminalCapture) Lines() []string {
 		out = out[len(out)-c.limit:]
 	}
 	return out
+}
+
+// terminalLineWriter returns the cursor to column one before each bare LF.
+// A child such as sudo can disable OPOST on the real terminal while we tee
+// its piped stderr there. The pipe bypasses the child's terminal processing;
+// relying on the parent's current terminal mode produces stair-stepped lines.
+// Only the terminal copy uses this writer, never redirected output or capture.
+type terminalLineWriter struct {
+	output io.Writer
+	lastCR bool
+}
+
+func (w *terminalLineWriter) Write(p []byte) (int, error) {
+	buf := make([]byte, 0, len(p))
+	lastCR := w.lastCR
+	for _, b := range p {
+		if b == '\n' && !lastCR {
+			buf = append(buf, '\r')
+		}
+		buf = append(buf, b)
+		lastCR = b == '\r'
+	}
+	n, err := w.output.Write(buf)
+	if err != nil {
+		return 0, err
+	}
+	if n != len(buf) {
+		return 0, io.ErrShortWrite
+	}
+	w.lastCR = lastCR
+	return len(p), nil
 }

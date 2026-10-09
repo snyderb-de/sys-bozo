@@ -51,13 +51,13 @@ func (m Model) viewMiniUpdates() string {
 		if wide {
 			detailWidth = width - listWidth - 6
 		}
-		details = append(details, s.title.Render("💡 "+option.Label))
+		details = append(details, s.title.Render(option.Label))
 		for _, line := range wrapText(option.Description+" "+option.Detail, detailWidth) {
 			details = append(details, s.text.Render(line))
 		}
 	}
 	if wide {
-		side := panel(s, "ABOUT THIS STEP", strings.Join(details, "\n"), width-listWidth-2, false)
+		side := panel(s, "Selected step", strings.Join(details, "\n"), width-listWidth-2, false)
 		rows = append(rows, lipgloss.JoinHorizontal(lipgloss.Top, strings.Join(choices, "\n"), "  ", side))
 	} else {
 		rows = append(rows, choices...)
@@ -67,7 +67,7 @@ func (m Model) viewMiniUpdates() string {
 			rows = append(rows, details[1:]...)
 		}
 	}
-	rows = append(rows, "", s.active.Render(fmt.Sprintf("%d selected", selected))+"  "+s.muted.Render("① Select  →  ② Review  →  ③ Run"))
+	rows = append(rows, "", s.active.Render(fmt.Sprintf("%d selected", selected))+"  "+s.muted.Render("Select → Review → Run"))
 	if m.updatesNotice != "" {
 		rows = append(rows, s.attention.Render(truncateVisible(m.updatesNotice, width)))
 	}
@@ -77,8 +77,7 @@ func (m Model) viewMiniUpdates() string {
 		footer = helpLine(s, width, "SPACE", "SELECT", "ENTER", "REVIEW")
 		other = helpLine(s, width, "TAB", "UPDATES", "ESC", "BACK", "?", "HELP")
 	}
-	rows = append(rows, footer, other)
-	return primaryFrame(s, m.width, strings.Join(rows, "\n"))
+	return m.dashboardFrame(rows, majorRule(s, width, false), footer, other)
 }
 
 func (m Model) updateReviewRows() []string {

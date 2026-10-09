@@ -26,7 +26,9 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		_, err := tea.NewProgram(tui.New(), tea.WithAltScreen()).Run()
+		model := tui.New()
+		defer model.Close()
+		_, err := tea.NewProgram(model, tea.WithAltScreen()).Run()
 		return err
 	}
 
@@ -69,7 +71,9 @@ func runInputTrace() error {
 	}
 	defer log.Close()
 	fmt.Fprintln(os.Stderr, "Input timing trace:", log.Name())
-	model, input := tui.TraceInput(tui.New(), os.Stdin, log)
+	base := tui.New()
+	defer base.Close()
+	model, input := tui.TraceInput(base, os.Stdin, log)
 	_, err = tea.NewProgram(model, tea.WithInput(input), tea.WithAltScreen()).Run()
 	fmt.Fprintln(os.Stderr, "Input timing trace:", log.Name())
 	return err

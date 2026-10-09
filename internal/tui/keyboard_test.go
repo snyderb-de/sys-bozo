@@ -6,6 +6,7 @@ import (
 	"github.com/snyderb-de/sys-bozo/internal/repostate"
 	"github.com/snyderb-de/sys-bozo/internal/runner"
 	"github.com/snyderb-de/sys-bozo/internal/system"
+	"github.com/snyderb-de/sys-bozo/internal/terminal"
 	"os"
 	"path/filepath"
 	"testing"
@@ -250,7 +251,7 @@ func TestCtrlCCancelsActivePackageSearch(t *testing.T) {
 }
 
 // Driven by a PTY harness: confirm the harmless printf, navigate after the
-// terminal handoff, and exit with Ctrl-C from the package text field.
+// embedded terminal completes, and exit with Ctrl-C from the package text field.
 func TestPTYKeyboardAfterHandoff(t *testing.T) {
 	if os.Getenv("SYS_BOZO_KEYBOARD_PTY") != "1" {
 		t.Skip("requires PTY keyboard driver")
@@ -262,7 +263,9 @@ func TestPTYKeyboardAfterHandoff(t *testing.T) {
 	m.styles = newUIStyles(os.Getenv("NO_COLOR") != "")
 	m.width, m.height = 80, 24
 	m.screen = screenReview
-	m.terminalExec = runInteractiveWork
+	m.terminalExec = nil
+	m.terminalGroup = terminal.NewGroup()
+	defer m.Close()
 	m.inspectRepo = func(context.Context, string) repostate.Status {
 		return repostate.Status{Entries: []repostate.Entry{{
 			Kind: '1', Path: "fixture.nix", Index: repostate.StateUnmodified, Worktree: repostate.StateModified,

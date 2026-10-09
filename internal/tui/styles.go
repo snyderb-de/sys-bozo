@@ -37,20 +37,20 @@ func newUIStyles(noColor bool) uiStyles {
 	}
 
 	return uiStyles{
-		field:     lipgloss.NewStyle().Background(color("#191724")).Foreground(color("#eee9ff")),
-		major:     lipgloss.NewStyle().Foreground(color("#c4a7ff")).Bold(!noColor),
-		title:     lipgloss.NewStyle().Foreground(color("#eee9ff")).Bold(!noColor),
-		label:     lipgloss.NewStyle().Foreground(color("#b7a8d1")),
-		text:      lipgloss.NewStyle().Foreground(color("#eee9ff")),
-		muted:     lipgloss.NewStyle().Foreground(color("#a59ab8")),
-		attention: lipgloss.NewStyle().Foreground(color("#f6c177")).Bold(!noColor),
-		active:    lipgloss.NewStyle().Foreground(color("#c4a7ff")).Bold(!noColor),
-		success:   lipgloss.NewStyle().Foreground(color("#9de0b2")).Bold(!noColor),
-		danger:    lipgloss.NewStyle().Foreground(color("#ff8fa3")).Bold(!noColor),
-		rule:      lipgloss.NewStyle().Foreground(color("#514466")),
-		panel:     lipgloss.NewStyle().Background(color("#221e30")).Foreground(color("#eee9ff")),
-		selected:  lipgloss.NewStyle().Background(color("#392d50")).Foreground(color("#eee9ff")),
-		badge:     lipgloss.NewStyle().Background(color("#c4a7ff")).Foreground(color("#191724")).Bold(!noColor).Padding(0, 1),
+		field:     lipgloss.NewStyle().Background(color("#171c24")).Foreground(color("#e4eaf2")),
+		major:     lipgloss.NewStyle().Foreground(color("#e4eaf2")).Bold(!noColor),
+		title:     lipgloss.NewStyle().Foreground(color("#e4eaf2")).Bold(!noColor),
+		label:     lipgloss.NewStyle().Foreground(color("#a6b2c2")),
+		text:      lipgloss.NewStyle().Foreground(color("#e4eaf2")),
+		muted:     lipgloss.NewStyle().Foreground(color("#95a3b6")),
+		attention: lipgloss.NewStyle().Foreground(color("#e8bb78")),
+		active:    lipgloss.NewStyle().Foreground(color("#8bbcff")).Bold(!noColor),
+		success:   lipgloss.NewStyle().Foreground(color("#91c9ac")),
+		danger:    lipgloss.NewStyle().Foreground(color("#f08e91")).Bold(!noColor),
+		rule:      lipgloss.NewStyle().Foreground(color("#394658")),
+		panel:     lipgloss.NewStyle().Foreground(color("#e4eaf2")),
+		selected:  lipgloss.NewStyle().Background(color("#293c55")).Foreground(color("#eef5ff")),
+		badge:     lipgloss.NewStyle().Foreground(color("#8bbcff")).Bold(!noColor),
 		noColor:   noColor,
 	}
 }
@@ -131,11 +131,10 @@ func layoutWidth(width int) int {
 }
 
 func majorRule(s uiStyles, width int, active bool) string {
-	style := s.rule
 	if active {
-		style = s.active
+		return s.active.Render("─") + s.rule.Render(strings.Repeat("─", max(0, width-1)))
 	}
-	return style.Render(strings.Repeat("━", max(1, width)))
+	return s.rule.Render(strings.Repeat("─", max(1, width)))
 }
 
 func statusText(s uiStyles, text string, kind statusKind) string {

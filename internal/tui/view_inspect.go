@@ -26,18 +26,16 @@ func (m Model) viewInspect() string {
 	s := m.styles
 	rows := []string{
 		screenTitle(s, "INSPECT/SYSTEM", contentWidth),
-		s.label.Render("REVIEW-GATED SYSTEM OPERATIONS"),
+		s.label.Render("Configuration, health, and recent activity"),
 		majorRule(s, contentWidth, true),
 		"",
 	}
-	icons := []string{"📝", "🧪", "🩺", "🕘", "🌿"}
 	descriptions := []string{"Edit a temporary copy, then review the changes", "Find configuration issues and their fixes", "Check managers, generations, and key presence", "See completed runs and failure details", "Inspect exact changes before committing or restoring"}
 	for i, entry := range inspectEntries {
-		rows = append(rows, numberedRow(s, entry.number, icons[i]+"  "+entry.label, s.muted.Render("OPEN"), contentWidth, i == m.inspectCursor))
+		rows = append(rows, numberedRow(s, entry.number, entry.label, s.muted.Render("OPEN"), contentWidth, i == m.inspectCursor))
 		rows = append(rows, "     "+s.muted.Render(truncateVisible(descriptions[i], contentWidth-5)))
 	}
-	rows = append(rows, "", majorRule(s, contentWidth, false), "", helpLine(s, contentWidth, "ESCAPE", "BACK", "ENTER", "OPEN", "?", "HELP"))
-	return primaryFrame(s, m.width, strings.Join(rows, "\n"))
+	return m.dashboardFrame(rows, majorRule(s, contentWidth, false), helpLine(s, contentWidth, "ESCAPE", "BACK", "ENTER", "OPEN", "?", "HELP"))
 }
 
 func (m Model) viewHistory() string {
@@ -45,7 +43,7 @@ func (m Model) viewHistory() string {
 	s := m.styles
 	rows := []string{
 		screenTitle(s, "INSPECT/HISTORY", contentWidth),
-		s.label.Render("RECENT EXECUTION METADATA"),
+		s.label.Render("Recent runs and their outcomes"),
 		majorRule(s, contentWidth, true),
 		"",
 	}
@@ -107,7 +105,7 @@ func (m Model) viewConfig() string {
 	s := m.styles
 	rows := []string{
 		screenTitle(s, "INSPECT/CONFIG", contentWidth),
-		s.label.Render("DECLARATIVE SOURCE FILES"),
+		s.label.Render("Choose a file to edit and review"),
 		majorRule(s, contentWidth, true),
 		"",
 	}

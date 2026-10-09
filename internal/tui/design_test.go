@@ -1,9 +1,11 @@
 package tui
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -17,6 +19,7 @@ import (
 	"github.com/snyderb-de/sys-bozo/internal/history"
 	"github.com/snyderb-de/sys-bozo/internal/runner"
 	"github.com/snyderb-de/sys-bozo/internal/system"
+	"github.com/snyderb-de/sys-bozo/internal/terminal"
 )
 
 func studioFixture() Model {
@@ -43,6 +46,9 @@ func TestStudioScreenSizesAndNoColor(t *testing.T) {
 				m.queue = []runner.WorkItem{{Name: "nix", Args: []string{"flake", "update"}}, {Name: "darwin-rebuild", Args: []string{"switch"}}}
 				m.queuePos = 1
 				m.runStart = time.Now()
+				if m.width >= 80 && screen != screenRunning && lipgloss.Height(m.rawView()) > m.height {
+					t.Fatalf("dashboard screen %d needs unnecessary paging at %dx%d", screen, m.width, m.height)
+				}
 				out := m.View()
 				if lipgloss.Width(out) > m.width || lipgloss.Height(out) > m.height {
 					t.Fatalf("screen %d plain=%v %dx%d rendered %dx%d:\n%s", screen, plain, m.width, m.height, lipgloss.Width(out), lipgloss.Height(out), out)
@@ -143,7 +149,7 @@ func TestRenderStudioGallery(t *testing.T) {
 		for _, target := range []struct {
 			name   string
 			screen screen
-		}{{"Home", screenHome}, {"Updates", screenMaintenance}, {"Inspect", screenInspect}, {"Packages", screenPackage}, {"Running", screenRunning}} {
+		}{{"Home", screenHome}, {"Updates", screenMaintenance}, {"Inspect", screenInspect}, {"Packages", screenPackage}, {"Review", screenReview}, {"Running", screenRunning}, {"Result", screenResult}} {
 			m := studioFixture()
 			m.width, m.height = size[0], size[1]
 			m.screen = target.screen
@@ -153,6 +159,32 @@ func TestRenderStudioGallery(t *testing.T) {
 			m.logVP.SetContent("✓ Version pins refreshed\n$ darwin-rebuild switch --flake .#studio-mini\nBuilding the system configuration…")
 			m.queuePos = 1
 			m.runStart = time.Now().Add(-42 * time.Second)
+			m.reviewed = reviewedPlan{Action: "Update workstation", Items: cloneWorkItems(m.queue)}
+			if target.screen == screenRunning {
+				m.mode = modeRunning
+				m.terminalFocused = true
+				width, height := m.terminalDimensions()
+				child, err := terminal.Start(context.Background(), exec.Command("sh", "-c", `printf 'building the system configuration…\n\n\033[32m✓\033[0m Evaluated workstation configuration\n\033[32m✓\033[0m Downloaded 24 / 24 dependencies\n\033[32m✓\033[0m Built system profile\n\nReady to activate the new configuration.\nPassword: '`), width, height)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(child.Cancel)
+				if err := child.Wait(); err != nil {
+					t.Fatal(err)
+				}
+				m.activeTerminal = child
+			}
+			if target.screen == screenResult {
+				m.mode = modeDone
+				m.runElapsed = 42 * time.Second
+				m.queuePos = 2
+				m.runErr = fmt.Errorf("pnpm: global bin directory is not configured")
+				m.stepResults = []stepResult{
+					{Item: m.queue[0], Status: history.StatusSuccess, Duration: 3 * time.Second},
+					{Item: m.queue[1], Status: history.StatusSuccess, Duration: 38 * time.Second},
+					{Item: m.queue[2], Status: history.StatusFailure, Duration: time.Second, Err: m.runErr},
+				}
+			}
 			captures = append(captures, capture{target.name, m.width, m.height, m.View()})
 		}
 	}
