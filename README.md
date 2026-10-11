@@ -133,10 +133,15 @@ owns its Home Manager packages and interactive Homebrew activation.
 ### Existing workflows
 
 The Home screen has three launch entries: `1` Update workstation (Weekly
-maintenance on other hosts), `2` Add Package, and `3` Inspect System. When the detected dotfiles repository is dirty
-or Git status is unavailable, its status row also becomes selectable. Use the
+maintenance on other hosts), `2` Add Package, and `3` Inspect System. Uncommitted
+dotfiles changes appear as an alert near the top of Home. Press `G` to jump
+directly to the repository files and diffs, or select the alert and press
+`Enter`. Git status failures appear explicitly rather than implying a clean
+repository. The alert refreshes when you return Home. Use the
 arrow keys or `j`/`k` to move, `Enter` to open, `Escape` to go back, and `q` to
 quit.
+
+![Home alert with a direct review shortcut, rendered with fictional fixture data](docs/assets/home-review-alert.png)
 
 For maintenance, open the update or maintenance entry, use `Space` to select one or more
 available actions, and press `Enter` to review. The Review screen shows the

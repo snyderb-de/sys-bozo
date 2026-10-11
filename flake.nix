@@ -13,7 +13,7 @@
         in {
           default = pkgs.buildGoModule {
             pname = "sys-bozo";
-            version = "dev";
+            version = "0.1.0";
             src = ./.;
             vendorHash = "sha256-mw8vr7DRU7RIp+jkRrQCJB+mFjrJsDlHFetkkrDzFP0=";
             nativeCheckInputs = [ pkgs.git ];

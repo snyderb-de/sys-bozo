@@ -75,6 +75,11 @@ try:
     os.write(fd, b"\r")
     expect("Run summary")
     back_to("Overview")
+    expect("Uncommitted changes")
+    os.write(fd, b"g")
+    expect("EXACT WORKTREE STATE")
+    expect("fixture.nix")
+    back_to("Overview")
     for _ in range(30):
         os.write(fd, b"2")
         expect("Packages")

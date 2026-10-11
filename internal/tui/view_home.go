@@ -74,12 +74,6 @@ func (m Model) viewHome() string {
 	if branch == "" {
 		branch = "unknown"
 	}
-	repo, repoKind := "Clean", statusSuccess
-	if m.facts.DotfilesStatusUnavailable {
-		repo, repoKind = "Status unavailable", statusDanger
-	} else if m.facts.DotfilesDirty > 0 {
-		repo, repoKind = fmt.Sprintf("%d changed files", m.facts.DotfilesDirty), statusAttention
-	}
 	updates, updateKind := "No updates reported", statusMuted
 	if m.facts.BrewOutdated > 0 {
 		updates, updateKind = fmt.Sprintf("%d updates available", m.facts.BrewOutdated), statusAttention
@@ -92,12 +86,26 @@ func (m Model) viewHome() string {
 		s.muted.Render(truncateVisible(m.targetHost()+"  /  "+branch, w)),
 		majorRule(s, w, true),
 		"",
-		s.title.Render("Workstation"),
-		homeRepoRow(s, repo, repoKind, m.homeRepoFocused),
-		"  " + s.label.Render("Homebrew    ") + statusText(s, updates, updateKind),
-		"",
-		s.title.Render("Actions"),
 	}
+	if factsRepoActionable(m.facts) {
+		files := "files"
+		if m.facts.DotfilesDirty == 1 {
+			files = "file"
+		}
+		alert := fmt.Sprintf("! Uncommitted changes · %d %s", m.facts.DotfilesDirty, files)
+		if m.facts.DotfilesStatusUnavailable {
+			alert = "! Dotfiles status unavailable"
+		}
+		pointer := "  "
+		if m.homeRepoFocused {
+			pointer = "> "
+		}
+		rows = append(rows, s.attention.Render(truncateVisible(pointer+alert, w)),
+			s.active.Render("    G Review changes")+s.muted.Render(" · dotfiles and diffs"), "")
+	} else {
+		rows = append(rows, s.title.Render("Workstation"), homeRepoRow(s, "Clean", statusSuccess, false))
+	}
+	rows = append(rows, "  "+s.label.Render("Homebrew    ")+statusText(s, updates, updateKind), "", s.title.Render("Actions"))
 	descriptions := []string{"Update tools and apply configuration", "Search Nix and Homebrew", "Configuration, diagnostics, history, and Git"}
 	for i, entry := range homeEntries {
 		if i == 0 && runner.HasManagedMacWorkflow(m.runCtx) {

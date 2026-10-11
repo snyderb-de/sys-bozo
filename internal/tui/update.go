@@ -97,6 +97,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			result.frameOffset = 0
 			result.refreshing = false
 			result.refreshID++
+			if result.screen == screenHome {
+				cmd = tea.Batch(cmd, result.refreshRepoStatus())
+			}
 		}
 		switch msg.String() {
 		case "up", "down", "j", "k":
@@ -361,6 +364,13 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	if m.screen == screenHome {
 		switch strings.ToLower(msg.String()) {
+		case "g":
+			if factsRepoActionable(m.facts) {
+				m.repoFlow.tab = repoFiles
+				m.repoFlow.stage = repoBrowse
+				return m, m.openRepoTriage(screenHome)
+			}
+			return m, nil
 		case "h":
 			m.openMaintenance("hms")
 			return m, nil
