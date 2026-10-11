@@ -44,7 +44,7 @@ func run(args []string) error {
 	case "run":
 		return runAction(args[1:])
 	case "version":
-		fmt.Println("sys-bozo dev")
+		fmt.Println("sys-bozo 0.1.0")
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}

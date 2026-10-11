@@ -124,6 +124,13 @@ func (m *Model) acceptRepoStatus(msg repoStatusMsg) {
 	}
 	m.repoFlow.loading = false
 	m.repoFlow.status = msg.status
+	m.facts.DotfilesStatusUnavailable = msg.status.Err != nil
+	if msg.status.Err == nil {
+		m.facts.DotfilesDirty = len(msg.status.Entries)
+		if !factsRepoActionable(m.facts) {
+			m.homeRepoFocused = false
+		}
+	}
 	available := make(map[[32]byte]bool, len(msg.status.Entries))
 	for _, entry := range msg.status.Entries {
 		available[repoEntryID(entry)] = true
