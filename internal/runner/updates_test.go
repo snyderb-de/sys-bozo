@@ -4,12 +4,63 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
 
 func miniContext() Context {
 	return Context{OS: "darwin", Hostname: MacMiniHost, Repo: "/fixture", NixBin: "nix", NixStoreBin: "nix-store", SudoBin: "sudo", DarwinRebuild: "darwin-rebuild", HomeManager: "home-manager", BrewBin: "brew", Topgrade: "topgrade", BrewOutdatedCasks: []string{"displaylink", "zed"}}
+}
+
+func TestManagedMacTopgradeIncludesMacUpdatesAndStandaloneBrew(t *testing.T) {
+	for _, host := range []string{MacMiniHost, MacBookHost} {
+		for _, tc := range []struct {
+			name     string
+			ids      []string
+			skipBrew bool
+		}{
+			{"standalone", []string{"topgrade"}, false},
+			{"cleanup only", []string{"topgrade", "brew-cleanup"}, false},
+			{"recommended", []string{"recommended"}, true},
+			{"brew selected", []string{"topgrade", "brew"}, true},
+			{"driver selected", []string{"topgrade", "displaylink"}, true},
+		} {
+			t.Run(host+"/"+tc.name, func(t *testing.T) {
+				c := miniContext()
+				c.Hostname = host
+				p, err := BuildMacUpdates(c, tc.ids)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, item := range p.Items {
+					if item.Name != c.Topgrade {
+						continue
+					}
+					if item.Mode != ExecutionInteractive {
+						t.Error("Topgrade needs terminal input")
+					}
+					for _, unwanted := range []string{"system", "--yes", "--no-retry", "--no-ask-retry"} {
+						if slices.Contains(item.Args, unwanted) {
+							t.Errorf("Topgrade suppresses updates or prompts with %q: %v", unwanted, item.Args)
+						}
+					}
+					for _, step := range []string{"brew_formula", "brew_cask"} {
+						if slices.Contains(item.Args, step) != tc.skipBrew {
+							t.Errorf("%s exclusion: got %v, want skip=%v", step, item.Args, tc.skipBrew)
+						}
+					}
+					for _, step := range []string{"nix", "home_manager", "restarts", "remotes"} {
+						if !slices.Contains(item.Args, step) {
+							t.Errorf("missing safeguard %s", step)
+						}
+					}
+					return
+				}
+				t.Fatal("Topgrade missing from queue")
+			})
+		}
+	}
 }
 
 func TestMiniQueueSeparatesCleanupAndKeepsTopgradeInteractive(t *testing.T) {

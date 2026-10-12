@@ -90,10 +90,13 @@ The recommended sequence is:
 4. Run Topgrade with native terminal input and the user's existing configuration.
 5. Query the system profile and check for missing Homebrew formula dependencies.
 
-Topgrade is recommended when available. Bozo adds exclusions for Nix, Home
-Manager, Homebrew, system updates, restart checks, and remote hosts; it does not
-rewrite Topgrade configuration or force `--yes`. The workstation rebuild
-already owns the Homebrew pass. Selecting it replaces **Upgrade Homebrew only**,
+Topgrade is recommended when available and includes macOS updates permitted by
+your Topgrade configuration. Running it on its own also includes Homebrew.
+Bozo excludes Homebrew only when Apply, **Upgrade Homebrew only**, or
+**Upgrade DisplayLink** is selected, preserving those reviewed upgrade choices.
+Bozo always excludes Nix, Home Manager, restart checks, and remote hosts; it does
+not rewrite Topgrade configuration, force `--yes`, or suppress retry prompts.
+The workstation rebuild already owns the Homebrew pass. Selecting it replaces **Upgrade Homebrew only**,
 so a later upgrade cannot reverse choices declined during activation.
 
 Standalone Homebrew upgrades exclude DisplayLink. **Upgrade DisplayLink** and

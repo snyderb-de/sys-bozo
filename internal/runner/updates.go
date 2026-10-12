@@ -53,7 +53,7 @@ func MacUpdateOptions(c Context) []UpdateOption {
 	return []UpdateOption{
 		{"nix-update", "Update Nix version pins", "Refresh flake.lock; installed packages stay unchanged until Apply.", "Recommended first. Changes the dotfiles lock file, not your live profile.", true, false, c.NixBin != ""},
 		{"nds", "Apply " + ManagedMacLabel(c) + " configuration", "Build and activate system + user configuration; includes Homebrew review.", "Password and app prompts use the terminal. Declined upgrades stay declined; removals require separate prompts.", true, false, darwin},
-		{"topgrade", "Run Topgrade", "Update other tools using your Topgrade configuration.", "Bozo also skips Nix, Home Manager, Brew, system updates, restart checks and remote hosts. Prompts use the terminal.", true, false, c.Topgrade != ""},
+		{"topgrade", "Run Topgrade", "Update macOS and other tools using your Topgrade configuration.", "Includes Homebrew unless Apply or a Homebrew upgrade is selected. Skips Nix, Home Manager, restart checks and remote hosts. Update and retry prompts use the terminal.", true, false, c.Topgrade != ""},
 		{"brew", "Upgrade Homebrew only", "Upgrade formulae and reviewed casks without a workstation rebuild.", "Alternative to Apply. DisplayLink is excluded; no dependency cleanup is included.", false, false, c.BrewBin != ""},
 		{"displaylink", "Upgrade DisplayLink", "Upgrade the display driver explicitly; a restart may be needed.", "The workstation rebuild can also offer this upgrade in its native Homebrew prompts.", false, false, c.BrewBin != "" && displayLinkPending(c)},
 		{"brew-cleanup", "Remove unused dependencies", "Run Homebrew autoremove after update checks succeed.", "Optional cleanup. Does not remove Nix generations or purge app data.", false, false, c.BrewBin != ""},
@@ -158,7 +158,15 @@ func BuildMacUpdates(c Context, ids []string) (UpdatePlan, error) {
 		add(options["displaylink"].Label, options["displaylink"].Description, c.BrewBin, []string{"upgrade", "--cask", "displaylink"}, true, false, true, "")
 	}
 	if selected["topgrade"] {
-		add(options["topgrade"].Label, options["topgrade"].Description+" "+options["topgrade"].Detail, c.Topgrade, []string{"--skip-notify", "--no-retry", "--no-self-update", "--disable", "nix", "home_manager", "brew_formula", "brew_cask", "system", "restarts", "remotes"}, true, false, true, "")
+		args := []string{"--skip-notify", "--no-self-update", "--disable", "nix", "home_manager", "restarts", "remotes"}
+		detail := "Includes macOS and Homebrew updates allowed by your Topgrade configuration. Update and retry prompts use the terminal."
+		if selected["nds"] || selected["brew"] || selected["displaylink"] {
+			// Do not let a later sweep reverse declined or explicitly scoped upgrades.
+			args = append(args, "brew_formula", "brew_cask")
+			detail = "Includes macOS updates allowed by your Topgrade configuration. Homebrew is handled by the selected upgrade; Topgrade skips it. Update and retry prompts use the terminal."
+		}
+		detail += " Skips Nix, Home Manager, restart checks and remote hosts."
+		add(options["topgrade"].Label, detail, c.Topgrade, args, true, false, true, "")
 	}
 	if selected["nds"] {
 		add("Check system generation", "Query the selected Nix system profile; this does not test every application.", c.NixStoreBin, []string{"--query", "--deriver", "/nix/var/nix/profiles/system"}, false, true, true, "")
